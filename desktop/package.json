@@ -2,7 +2,7 @@
   "name": "@nexo/desktop",
   "productName": "Nexo",
   "private": true,
-  "version": "0.2.0-alpha.2",
+  "version": "0.2.0-alpha.3",
   "license": "MIT",
   "description": "Nexo desktop client",
   "main": "./out/main/index.js",
