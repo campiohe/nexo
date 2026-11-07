@@ -6,3 +6,6 @@ data/
 *.log
 release/
 *.tsbuildinfo
+
+# electron-builder resources (entitlements); re-included in case a global gitignore excludes build/
+!desktop/build/
