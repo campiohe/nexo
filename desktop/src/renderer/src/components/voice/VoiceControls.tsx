@@ -1,5 +1,6 @@
 // Owner: workstream D. Panel at the bottom of the sidebar while in voice:
 // channel name + connection status, mute / deafen / camera / share / leave. Renders nothing when idle.
+import { useEffect, useState } from 'react'
 import { ConnectionQuality } from 'livekit-client'
 import { useApp } from '@renderer/store/app'
 import { useInputPrefs } from '../../voice/prefs'
@@ -20,6 +21,14 @@ export function VoiceControls() {
   const ptt = useInputPrefs((s) => s.inputMode === 'ptt')
   const pttLabel = useInputPrefs((s) => s.pttBinding?.label ?? null)
   const micLive = useMicLive()
+  const shareStats = useVoice((s) => s.shareStats)
+  const captureLow = useVoice((s) => s.shareCaptureLow)
+  const sharing = useVoice((s) => s.sharing)
+  // The starved-capture hint can be dismissed for the rest of the current share.
+  const [hintDismissed, setHintDismissed] = useState(false)
+  useEffect(() => {
+    if (!sharing) setHintDismissed(false)
+  }, [sharing])
 
   if (status === 'idle') return null
 
@@ -75,9 +84,33 @@ export function VoiceControls() {
       {preset && (
         <div className="vx-panel-live">
           <span className="vx-live-badge">LIVE</span>
-          <span>
+          <span className="vx-grow">
             {preset.label} · {preset.height}p{preset.fps}
           </span>
+          {shareStats && (
+            <span
+              className={`vx-panel-fps ${captureLow ? 'is-warn' : ''}`}
+              title={`Capturing ${shareStats.captureFps} fps, sending ${shareStats.sendFps} fps${
+                shareStats.width ? ` at ${shareStats.width}×${shareStats.height}` : ''
+              }${shareStats.encoder ? ` (${shareStats.encoder})` : ''}${
+                shareStats.limitation !== 'none' ? `, limited by ${shareStats.limitation}` : ''
+              }`}
+            >
+              {captureLow && <AlertIcon size={12} />}
+              {shareStats.captureFps} fps
+            </span>
+          )}
+        </div>
+      )}
+      {preset && captureLow && !hintDismissed && shareStats && (
+        <div className="vx-panel-hint" role="status">
+          <span>
+            Only {shareStats.captureFps} of {preset.fps} fps are being captured. Streaming a game? Cap its frame rate
+            (V-Sync or a max FPS setting). An uncapped game leaves Windows no GPU time to capture it.
+          </span>
+          <button className="vx-icon-btn" onClick={() => setHintDismissed(true)} title="Dismiss" aria-label="Dismiss">
+            <CloseIcon size={12} />
+          </button>
         </div>
       )}
       <div className="vx-panel-buttons">

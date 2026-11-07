@@ -126,6 +126,16 @@
   background: color-mix(in srgb, var(--live) 12%, transparent);
   color: var(--text-1); font-size: 12px;
 }
+.vx-panel-fps { display: inline-flex; align-items: center; gap: 4px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.vx-panel-fps.is-warn { color: var(--warn); }
+.vx-panel-hint {
+  display: flex; align-items: flex-start; gap: 6px;
+  margin: 0 4px 6px; padding: 6px 4px 6px 8px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  color: var(--text-1); font-size: 12px; line-height: 1.35;
+}
+.vx-panel-hint > span { flex: 1; }
 .vx-panel-buttons { display: flex; justify-content: space-between; gap: 2px; }
 .vx-panel-error {
   display: flex; align-items: center; gap: 8px;

@@ -337,6 +337,14 @@ npm run typecheck -w server
 5. If you use WSL **mirrored networking**, Windows' Hyper-V firewall may block inbound connections to
    WSL. Allow ports 3001, 7880, 7881 and 7882/udp, or use the default NAT mode.
 
+**A game stream drops to ~5–15 fps while the game has focus (fine after alt-tab)**: the game is running
+with an **uncapped frame rate**. It floods the GPU and Windows has no time left to capture the screen.
+The game itself still runs smoothly. Cap the game's frame rate with V-Sync, the game's max FPS setting,
+or the NVIDIA/AMD control panel. Any cap fixes it, even 200+ fps. Nexo detects this and shows a hint
+under **LIVE** in the voice panel. The panel shows the live capture fps. Hover it to see the send fps,
+resolution and encoder. Raising Nexo's CPU or GPU priority doesn't help, and Discord has the same
+limitation.
+
 **"Wrong server password"**: the password is only checked when a *new* name is created. Check
 `SERVER_PASSWORD` in `.env` (restart the server after changing it). Returning devices don't need it.
 

@@ -55,6 +55,19 @@ export interface StartShareOptions {
   withAudio: boolean
 }
 
+/** Sender-side numbers for the active screen share, refreshed every couple of seconds. */
+export interface ShareStats {
+  /** Frames per second the OS capture delivers (before encoding). */
+  captureFps: number
+  /** Frames per second actually encoded and sent. */
+  sendFps: number
+  width: number
+  height: number
+  /** WebRTC `qualityLimitationReason`: 'none' | 'cpu' | 'bandwidth' | 'other'. */
+  limitation: string
+  encoder: string | null
+}
+
 export interface VoiceSessionState {
   status: VoiceStatus
   error: string | null
@@ -68,6 +81,13 @@ export interface VoiceSessionState {
   shareStarting: boolean
   /** Preset of the active share (null when not sharing). */
   sharePresetId: SharePreset['id'] | null
+  /** Live sender stats of the active share (null when not sharing / not measured yet). */
+  shareStats: ShareStats | null
+  /**
+   * The capture has been delivering far fewer frames than the preset asks for. Almost always a game
+   * running with an uncapped frame rate: it saturates the GPU and Windows has no time left to capture.
+   */
+  shareCaptureLow: boolean
   /** Browser blocked audio autoplay; call `resumeAudio()` from a click. */
   audioBlocked: boolean
   /** Share picker modal visibility (rendered by <SharePickerHost/>). */
@@ -184,6 +204,8 @@ export const useVoice = create<VoiceSessionState>()((set, get) => ({
   sharing: false,
   shareStarting: false,
   sharePresetId: null,
+  shareStats: null,
+  shareCaptureLow: false,
   audioBlocked: false,
   pickerOpen: false,
 
@@ -196,7 +218,7 @@ export const useVoice = create<VoiceSessionState>()((set, get) => ({
     if (room || s.channelId) await teardown(false)
 
     const seq = ++joinSeq
-    set({ status: 'connecting', channelId, error: null, camera: false, sharing: false, shareStarting: false, sharePresetId: null })
+    set({ status: 'connecting', channelId, error: null, camera: false, sharing: false, shareStarting: false, sharePresetId: null, shareStats: null, shareCaptureLow: false })
 
     let r: Room | null = null
     try {
@@ -391,7 +413,8 @@ export const useVoice = create<VoiceSessionState>()((set, get) => ({
       return
     }
 
-    set({ sharing: true, shareStarting: false, sharePresetId: preset.id })
+    set({ sharing: true, shareStarting: false, sharePresetId: preset.id, shareStats: null, shareCaptureLow: false })
+    startShareStats(share, preset)
     announce()
   },
 
@@ -595,6 +618,8 @@ async function handleUnexpectedDisconnect(reason: DisconnectReason | undefined):
     sharing: false,
     shareStarting: false,
     sharePresetId: null,
+    shareStats: null,
+    shareCaptureLow: false,
     pickerOpen: false,
     error: disconnectReasonText(reason),
   })
@@ -623,6 +648,8 @@ async function teardown(announceLeave: boolean): Promise<void> {
     sharing: false,
     shareStarting: false,
     sharePresetId: null,
+    shareStats: null,
+    shareCaptureLow: false,
     pickerOpen: false,
     audioBlocked: false,
   })
@@ -631,6 +658,7 @@ async function teardown(announceLeave: boolean): Promise<void> {
 
 /** Stop local capture + remove every remote audio element. Safe to call repeatedly. */
 function cleanupLocalMedia(): void {
+  stopShareStats()
   if (share) {
     share.videoMst.removeEventListener('ended', onShareEnded)
     share.stream.getTracks().forEach((t) => t.stop())
@@ -1039,6 +1067,55 @@ function displayMediaOptions(preset: SharePreset, withAudio: boolean, plainBrows
   return opts
 }
 
+/**
+ * LiveKit's SFU offers H.264 as Constrained Baseline (42e01f) first and High (64001f) second. Chromium has
+ * no hardware encoder for Constrained Baseline, so screen shares ended up on OpenH264 (software, heavy on
+ * the CPU while gaming) even on GPUs with NVENC / AMF / Quick Sync. Chromium only advertises H.264 High
+ * when a hardware encoder supports it, so moving High to the front of the screen-share transceiver's H.264
+ * entries gets the hardware encoder where there is one. Other codecs keep their order (VP8 fallback stays
+ * VP8), and other tracks (camera, VP8 backup) are untouched.
+ */
+const codecPrefsApplied = new WeakSet<RTCRtpTransceiver>()
+
+function preferHardwareH264(pc: RTCPeerConnection): void {
+  const target = share?.videoMst
+  if (!target || typeof RTCRtpTransceiver === 'undefined' || !('setCodecPreferences' in RTCRtpTransceiver.prototype)) return
+  for (const t of pc.getTransceivers()) {
+    if (t.sender.track !== target || codecPrefsApplied.has(t)) continue
+    codecPrefsApplied.add(t)
+    const codecs = RTCRtpSender.getCapabilities?.('video')?.codecs
+    if (!codecs) return
+    const isH264 = (c: RTCRtpCodec) => c.mimeType.toLowerCase() === 'video/h264'
+    const isHigh = (c: RTCRtpCodec) =>
+      /profile-level-id=64/i.test(c.sdpFmtpLine ?? '') && /packetization-mode=1/.test(c.sdpFmtpLine ?? '')
+    const h264 = codecs.filter(isH264)
+    if (!h264.some(isHigh)) return // no hardware H.264 High encoder on this machine
+    const ordered = [...h264.filter(isHigh), ...h264.filter((c) => !isHigh(c))]
+    let i = 0
+    try {
+      t.setCodecPreferences(codecs.map((c) => (isH264(c) ? ordered[i++] : c)))
+    } catch (e) {
+      console.warn('[voice] could not prefer H.264 High', e)
+    }
+  }
+}
+
+let codecHookInstalled = false
+/** Applies `preferHardwareH264` right before LiveKit creates each publisher offer. */
+function installCodecPreferenceHook(): void {
+  if (codecHookInstalled || typeof RTCPeerConnection === 'undefined') return
+  codecHookInstalled = true
+  const createOffer = RTCPeerConnection.prototype.createOffer
+  RTCPeerConnection.prototype.createOffer = function (this: RTCPeerConnection, ...args: unknown[]) {
+    try {
+      preferHardwareH264(this)
+    } catch {
+      // never block negotiation
+    }
+    return (createOffer as (...a: unknown[]) => Promise<RTCSessionDescriptionInit>).apply(this, args)
+  } as typeof createOffer
+}
+
 function canEncodeH264(): boolean {
   try {
     const caps = RTCRtpSender.getCapabilities?.('video')
@@ -1060,6 +1137,7 @@ async function publishScreenVideo(r: Room, video: LocalVideoTrack, preset: Share
     degradationPreference: preset.contentHint === 'motion' ? 'maintain-framerate' : 'maintain-resolution',
   }
   if (canEncodeH264()) {
+    installCodecPreferenceHook()
     try {
       // H.264 first (hardware encoders on gaming PCs); VP8 backup for subscribers that can't decode it.
       await r.localParticipant.publishTrack(video, {
@@ -1076,6 +1154,83 @@ async function publishScreenVideo(r: Room, video: LocalVideoTrack, preset: Share
   await r.localParticipant.publishTrack(video, { ...base, videoCodec: 'vp8', backupCodec: false })
 }
 
+// ---- Sender stats + "capture is starved" detection ----
+
+const SHARE_STATS_INTERVAL_MS = 2000
+/** Consecutive low samples (≈ 8 s) before warning, and good samples before clearing the warning. */
+const CAPTURE_LOW_SAMPLES = 4
+const CAPTURE_OK_SAMPLES = 3
+let shareStatsTimer: number | undefined
+
+function stopShareStats(): void {
+  if (shareStatsTimer !== undefined) window.clearInterval(shareStatsTimer)
+  shareStatsTimer = undefined
+}
+
+async function readShareStats(video: LocalVideoTrack): Promise<ShareStats | null> {
+  const sender = video.sender
+  if (!sender) return null
+  const report = await sender.getStats()
+  let captureFps: number | null = null
+  let best: Record<string, unknown> | null = null
+  report.forEach((st: Record<string, unknown>) => {
+    if (st.type === 'media-source' && st.kind === 'video' && typeof st.framesPerSecond === 'number') {
+      captureFps = st.framesPerSecond
+    } else if (st.type === 'outbound-rtp' && st.kind === 'video') {
+      if (!best || Number(st.framesEncoded ?? 0) > Number(best.framesEncoded ?? 0)) best = st
+    }
+  })
+  const out = best as Record<string, unknown> | null
+  const sendFps = Number(out?.framesPerSecond ?? 0)
+  return {
+    captureFps: Math.round(captureFps ?? sendFps),
+    sendFps: Math.round(sendFps),
+    width: Number(out?.frameWidth ?? 0),
+    height: Number(out?.frameHeight ?? 0),
+    limitation: String(out?.qualityLimitationReason ?? 'none'),
+    encoder: typeof out?.encoderImplementation === 'string' ? out.encoderImplementation : null,
+  }
+}
+
+/**
+ * Polls the share's sender stats. Flags `shareCaptureLow` when the capture keeps delivering under half
+ * the preset's frame rate on a motion preset. On Windows that is almost always a game with an uncapped
+ * frame rate: it floods the GPU queue and screen capture gets starved (≈60 → 3–8 fps), while capping
+ * the game (V-Sync or any FPS limit) restores it. Raising Nexo's CPU or GPU priority doesn't help.
+ */
+function startShareStats(active: ActiveShare, preset: SharePreset): void {
+  stopShareStats()
+  let low = 0
+  let ok = 0
+  let busy = false
+  shareStatsTimer = window.setInterval(() => {
+    if (share !== active) return stopShareStats()
+    if (busy) return
+    busy = true
+    readShareStats(active.video)
+      .then((stats) => {
+        if (share !== active || !stats) return
+        let warn = useVoice.getState().shareCaptureLow
+        if (preset.contentHint === 'motion' && stats.captureFps < preset.fps / 2) {
+          ok = 0
+          if (++low >= CAPTURE_LOW_SAMPLES && !warn) {
+            warn = true
+            console.warn('[voice] screen capture starved', stats)
+          }
+        } else {
+          low = 0
+          ok = stats.captureFps >= preset.fps * 0.75 ? ok + 1 : 0
+          if (ok >= CAPTURE_OK_SAMPLES) warn = false
+        }
+        useVoice.setState({ shareStats: stats, shareCaptureLow: warn })
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        busy = false
+      })
+  }, SHARE_STATS_INTERVAL_MS)
+}
+
 function onShareEnded(): void {
   void stopShareInternal(true)
 }
@@ -1083,6 +1238,7 @@ function onShareEnded(): void {
 async function stopShareInternal(announceChange: boolean, r: Room | null = room): Promise<void> {
   const s = share
   share = null
+  stopShareStats()
   if (s) {
     s.videoMst.removeEventListener('ended', onShareEnded)
     if (r) {
@@ -1098,7 +1254,7 @@ async function stopShareInternal(announceChange: boolean, r: Room | null = room)
     if (self) unwatch(self)
   }
   const wasSharing = useVoice.getState().sharing
-  useVoice.setState({ sharing: false, shareStarting: false, sharePresetId: null })
+  useVoice.setState({ sharing: false, shareStarting: false, sharePresetId: null, shareStats: null, shareCaptureLow: false })
   if (announceChange && wasSharing) announce()
   if (room) scheduleParticipantsRebuild(room)
 }
