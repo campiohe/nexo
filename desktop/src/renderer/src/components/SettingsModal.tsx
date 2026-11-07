@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState, type ChangeEvent } from 'react'
-import type { AppPrefs } from '../../../preload/api'
+import type { AppPrefs, UpdateState } from '../../../preload/api'
 import { useApp } from '../store/app'
 import { useUi } from '../store/ui'
 import { SWATCHES } from '../lib/colors'
 import { toast, useToasts } from '../lib/toast'
 import { AVATAR_INPUT_TYPES, loadImageFile, type LoadedImage } from '../lib/imageCrop'
 import { removeAvatar, uploadAvatar } from '../net/avatar'
+import { hasUpdates, useInCall, useUpdates } from '../lib/updates'
 import { DeviceSettings } from './voice/DeviceSettings'
 import { Avatar } from './Avatar'
 import { AvatarCropDialog } from './AvatarCropDialog'
@@ -228,7 +229,86 @@ function AppSection() {
           />
         </label>
       )}
+      {hasUpdates() && <UpdatesPanel />}
     </section>
+  )
+}
+
+function updateStatusLine(s: UpdateState): { text: string; tone?: 'ok' | 'warn' } {
+  const v = s.version ? `Nexo ${s.version}` : 'A new version'
+  switch (s.status) {
+    case 'unsupported':
+      return { text: s.reason ?? 'Updates are not available for this build.' }
+    case 'idle':
+      return { text: 'Nexo checks for updates automatically.' }
+    case 'checking':
+      return { text: 'Checking for updates…' }
+    case 'up-to-date':
+      return { text: "You're up to date.", tone: 'ok' }
+    case 'available':
+      return {
+        text: s.canAutoInstall ? `${v} is available.` : `${v} is available. Download it from the release page.`,
+        tone: 'ok',
+      }
+    case 'downloading':
+      return { text: `Downloading ${v}… ${s.percent ?? 0}%` }
+    case 'ready':
+      return { text: `${v} is downloaded. It installs when you restart or quit Nexo.`, tone: 'ok' }
+    case 'error':
+      return { text: `Couldn't check for updates: ${s.error ?? 'unknown error'}`, tone: 'warn' }
+  }
+}
+
+function UpdatesPanel() {
+  const state = useUpdates((s) => s.state)
+  const checking = useUpdates((s) => s.checking)
+  const inCall = useInCall()
+  if (!state) return null
+
+  const { downloadUrl, releaseNotesUrl } = state
+  const line = updateStatusLine(state)
+  const busy = checking || state.status === 'checking' || state.status === 'downloading'
+  const canCheck = state.status !== 'unsupported' && state.status !== 'ready' && !busy
+  // A failed background check while an update is known: say so, without hiding the update.
+  const staleError = (state.status === 'ready' || state.status === 'available') && state.error
+
+  return (
+    <>
+      <h3 className="settings-heading">Updates</h3>
+      <dl className="kv">
+        <dt>Version</dt>
+        <dd>
+          <code>{state.currentVersion}</code>
+        </dd>
+        <dt>Status</dt>
+        <dd className={line.tone ?? ''}>
+          {line.text}
+          {staleError && <span className="muted small"> (last check failed: {staleError})</span>}
+        </dd>
+      </dl>
+      <div className="settings-actions">
+        {state.status === 'ready' && state.canAutoInstall && (
+          <button className="btn btn-primary btn-sm" onClick={() => useUpdates.getState().install()}>
+            {inCall ? 'Restart to update (leaves the call)' : 'Restart to update'}
+          </button>
+        )}
+        {state.status === 'available' && downloadUrl && (
+          <button className="btn btn-primary btn-sm" onClick={() => window.nexo.openExternal(downloadUrl)}>
+            Download
+          </button>
+        )}
+        {state.status !== 'unsupported' && (
+          <button className="btn btn-ghost btn-sm" disabled={!canCheck} onClick={() => void useUpdates.getState().check()}>
+            {busy && state.status !== 'downloading' ? 'Checking…' : 'Check for updates'}
+          </button>
+        )}
+        {releaseNotesUrl && (
+          <button className="btn btn-ghost btn-sm" onClick={() => window.nexo.openExternal(releaseNotesUrl)}>
+            Release notes
+          </button>
+        )}
+      </div>
+    </>
   )
 }
 

@@ -10,6 +10,8 @@ import {
   type PttBinding,
   type PttStatus,
   type TrayAction,
+  type UpdateState,
+  UPDATE_STATUSES,
 } from './api'
 
 function arg(name: string): string | undefined {
@@ -36,6 +38,23 @@ function subscribe<T>(channel: string, accept: (v: unknown) => v is T, cb: (v: T
 
 const isBoolean = (v: unknown): v is boolean => typeof v === 'boolean'
 const isTrayAction = (v: unknown): v is TrayAction => TRAY_ACTIONS.includes(v as TrayAction)
+
+const OPTIONAL_STRINGS = ['version', 'error', 'reason', 'downloadUrl', 'releaseNotesUrl'] as const
+
+function isUpdateState(v: unknown): v is UpdateState {
+  if (typeof v !== 'object' || v === null) return false
+  const s = v as Record<string, unknown>
+  if (!UPDATE_STATUSES.includes(s.status as UpdateState['status'])) return false
+  if (typeof s.currentVersion !== 'string' || typeof s.canAutoInstall !== 'boolean') return false
+  if (s.percent !== undefined && (typeof s.percent !== 'number' || !Number.isFinite(s.percent))) return false
+  return OPTIONAL_STRINGS.every((k) => s[k] === undefined || typeof s[k] === 'string')
+}
+
+async function invokeUpdateState(channel: string): Promise<UpdateState> {
+  const state: unknown = await ipcRenderer.invoke(channel)
+  if (!isUpdateState(state)) throw new Error('invalid update state')
+  return state
+}
 
 const bridge: NexoBridge = {
   platform,
@@ -69,6 +88,13 @@ const bridge: NexoBridge = {
   tray: {
     setVoiceState: (state): void => ipcRenderer.send(IPC.trayVoiceState, state),
     onAction: (cb: (action: TrayAction) => void): (() => void) => subscribe(IPC.trayAction, isTrayAction, cb),
+  },
+
+  updates: {
+    getState: (): Promise<UpdateState> => invokeUpdateState(IPC.updatesGetState),
+    check: (): Promise<UpdateState> => invokeUpdateState(IPC.updatesCheck),
+    install: (): void => ipcRenderer.send(IPC.updatesInstall),
+    onState: (cb: (state: UpdateState) => void): (() => void) => subscribe(IPC.updatesState, isUpdateState, cb),
   },
 }
 

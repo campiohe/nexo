@@ -1,5 +1,15 @@
 // System tray: icon, tooltip and context menu mirroring the voice session, and the close-to-tray hint.
-import { app, ipcMain, Menu, nativeImage, Notification, Tray, type BrowserWindow, type NativeImage } from 'electron'
+import {
+  app,
+  ipcMain,
+  Menu,
+  nativeImage,
+  Notification,
+  Tray,
+  type BrowserWindow,
+  type MenuItemConstructorOptions,
+  type NativeImage,
+} from 'electron'
 import icon from '../../resources/icon.png?asset'
 import { IPC, type TrayAction } from '../preload/api'
 import { platform } from './platform'
@@ -16,6 +26,8 @@ interface VoiceState {
 interface TrayDeps {
   getWindow(): BrowserWindow | null
   showWindow(): void
+  /** Quit and install the downloaded update. */
+  installUpdate(): void
 }
 
 const MAX_CHANNEL_NAME = 64
@@ -23,6 +35,8 @@ const MAX_CHANNEL_NAME = 64
 let tray: Tray | null = null
 let deps: TrayDeps | null = null
 let voice: VoiceState = { inVoice: false, channelName: null, muted: false, deafened: false }
+/** Version of a downloaded update waiting for a restart (null: none). */
+let updateReady: string | null = null
 
 /** icon.png (1024 px) scaled down; @1x/@1.5x/@2x representations so the OS picks a crisp one for its DPI. */
 function trayImage(): NativeImage {
@@ -69,6 +83,16 @@ function rebuild(): void {
       { label: 'Deafen', type: 'checkbox', checked: voice.deafened, enabled: voice.inVoice, click: act('toggle-deafen') },
       { label: 'Leave voice', enabled: voice.inVoice, click: act('leave-voice') },
       { type: 'separator' },
+      ...(updateReady
+        ? ([
+            {
+              label: voice.inVoice ? 'Restart to update (leaves the call)' : 'Restart to update',
+              toolTip: `Install Nexo ${updateReady}`,
+              click: () => deps?.installUpdate(),
+            },
+            { type: 'separator' },
+          ] satisfies MenuItemConstructorOptions[])
+        : []),
       // app.quit() emits before-quit, which sets the isQuitting flag in index.ts.
       { label: 'Quit Nexo', click: () => app.quit() },
     ]),
@@ -106,6 +130,13 @@ export function installTray(d: TrayDeps): boolean {
   if (platform !== 'darwin') tray.on('click', () => deps?.showWindow())
   rebuild()
   return true
+}
+
+/** Shows or hides the "Restart to update" item (version of the downloaded update, or null). */
+export function setTrayUpdateReady(version: string | null): void {
+  if (updateReady === version) return
+  updateReady = version
+  rebuild()
 }
 
 export function hasTray(): boolean {

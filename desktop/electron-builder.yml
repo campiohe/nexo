@@ -35,6 +35,17 @@ npmRebuild: false
 nodeGypRebuild: false
 buildDependenciesFromSource: false
 
+# Auto-update (src/main/updater.ts). electron-updater is a devDependency on purpose: electron-vite then
+# bundles it into out/main instead of externalizing it, so it needs no node_modules entry above.
+# This writes resources/app-update.yml into the app and latest.yml / latest-mac.yml / latest-linux.yml
+# (plus .blockmap files) next to the installers. CI builds with `--publish never`; the release job uploads
+# those files with the installers. electron-updater builds download URLs from the artifact names, so they
+# must match the uploaded file names exactly (no spaces).
+publish:
+  provider: github
+  owner: campiohe
+  repo: nexo
+
 win:
   target:
     - target: nsis

@@ -1,4 +1,4 @@
-// Owner: workstream B. Electron main process: window, tray, push-to-talk, security, capture, secrets.
+// Owner: workstream B. Electron main process: window, tray, push-to-talk, security, capture, secrets, updates.
 import { app, BrowserWindow, ipcMain, Menu, type MenuItemConstructorOptions } from 'electron'
 import { join, resolve } from 'node:path'
 import icon from '../../resources/icon.png?asset'
@@ -9,12 +9,16 @@ import { getPrefs, installPrefs } from './prefs'
 import { installPtt } from './ptt'
 import { installSecrets } from './secrets'
 import { installSecurity, isAppUrl, openExternalSafe, rendererEntry } from './security'
-import { destroyTray, hasTray, installTray, maybeShowTrayHint } from './tray'
+import { destroyTray, hasTray, installTray, maybeShowTrayHint, setTrayUpdateReady } from './tray'
+import { installUpdate, installUpdater } from './updater'
 import { loadWindowState, trackWindowState } from './window-state'
 
 const BACKGROUND = '#0b0d11'
 let mainWindow: BrowserWindow | null = null
-/** Set on every real quit path (tray Quit, Cmd+Q / app menu, app.quit(), Windows shutdown/log-off). */
+/**
+ * Set on every real quit path (tray Quit, Cmd+Q / app menu, app.quit(), Windows shutdown/log-off, and
+ * "Restart to update"), so close-to-tray doesn't cancel it.
+ */
 let isQuitting = false
 
 function createMainWindow(): BrowserWindow {
@@ -167,8 +171,15 @@ if (!app.requestSingleInstanceLock()) {
       if (isAppUrl(event.senderFrame?.url)) openExternalSafe(url)
     })
 
+    installUpdater({
+      onState: (s) => setTrayUpdateReady(s.status === 'ready' ? (s.version ?? 'update') : null),
+      onQuitForUpdate: () => {
+        isQuitting = true
+      },
+    })
+
     mainWindow = createMainWindow()
-    installTray({ getWindow: () => mainWindow, showWindow: focusMainWindow })
+    installTray({ getWindow: () => mainWindow, showWindow: focusMainWindow, installUpdate })
 
     // macOS: clicking the Dock icon re-shows the window (hidden to the tray or closed).
     app.on('activate', focusMainWindow)

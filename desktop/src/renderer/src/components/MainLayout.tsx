@@ -7,6 +7,7 @@ import { toast } from '../lib/toast'
 import { Sidebar } from './Sidebar'
 import { TextChannel } from './TextChannel'
 import { MemberList } from './MemberList'
+import { UpdateBanner } from './UpdateBanner'
 import { HashIcon, SpeakerIcon, UsersIcon } from './icons'
 
 export function MainLayout() {
@@ -74,6 +75,7 @@ function Center() {
           {connection === 'error' ? 'Connection problem — retrying…' : 'Reconnecting…'}
         </div>
       )}
+      <UpdateBanner />
       <div className="center-body">
         {!channel ? (
           <div className="empty-state">

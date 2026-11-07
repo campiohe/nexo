@@ -429,6 +429,40 @@ input, textarea { user-select: text; }
   flex: none;
 }
 
+.update-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 34px;
+  padding: 3px 6px 3px 12px;
+  background: var(--accent-soft);
+  color: var(--text-0);
+  font-size: 12px;
+  font-weight: 600;
+  border-bottom: 1px solid var(--line);
+  flex: none;
+}
+.update-banner.is-subtle { background: var(--bg-1); font-weight: 500; }
+.update-banner-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.update-banner-close { width: 24px; height: 24px; margin-left: 2px; }
+.update-progress {
+  position: relative;
+  width: 120px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--bg-4);
+  overflow: hidden;
+  flex: none;
+}
+.update-progress > span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 0.3s var(--ease);
+}
+
 .empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; text-align: center; padding: 24px; }
 
 /* ---------- members ---------- */
