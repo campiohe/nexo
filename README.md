@@ -168,7 +168,8 @@ works. The WSL `172.x` IP can change after a reboot, so re-run `scripts/urls.sh`
 ### Installers for friends
 
 Friends download from **[Releases](https://github.com/campiohe/nexo/releases)**. Each release has the
-Windows `.exe`, the macOS `.dmg` and the Linux `.AppImage`.
+Windows `.exe`, the macOS `.dmg` and the Linux `.AppImage`. After the first install, Nexo updates itself
+(see [Updates](#updates)).
 
 To ship a new version:
 
@@ -179,6 +180,16 @@ To ship a new version:
 
 The **Release** workflow (`.github/workflows/release.yml`) builds all three installers and publishes
 the release. Tags with `-alpha`/`-beta`/`-rc` are marked as prereleases.
+
+Installed apps find new versions through the release files (see [Updates](#updates)), so every release
+must have, with the names electron-builder gave them:
+
+- `Nexo-Setup-X.Y.Z.exe`, `Nexo-Setup-X.Y.Z.exe.blockmap` and `latest.yml` (Windows)
+- `Nexo-X.Y.Z-universal.dmg`, `Nexo-X.Y.Z-universal.dmg.blockmap` and `latest-mac.yml` (macOS)
+- `Nexo-X.Y.Z-x86_64.AppImage` and `latest-linux.yml` (Linux; the AppImage carries its own block map)
+
+The workflow uploads all of them. If you ever upload by hand, don't rename anything: the `latest*.yml`
+files name the installer that the app downloads.
 
 The installers are unsigned, so Windows SmartScreen shows a warning: click **More info → Run anyway**.
 For a local build, `npm run dist:win -w desktop` writes to `desktop/release/`. From Linux it may need
@@ -274,6 +285,30 @@ Stream audio has its own volume slider on the stream tile.
 closing the window keeps Nexo running in the tray, and you stay in voice. The tray icon's menu has
 **Open Nexo**, **Mute**, **Deafen**, **Leave voice** and **Quit Nexo**. Clicking the tray icon, or
 starting Nexo again, brings the window back. Turn the setting off to make the close button quit the app.
+
+## Updates
+
+Nexo checks the [GitHub releases](https://github.com/campiohe/nexo/releases) 10 seconds after it starts,
+then every 4 hours. **Settings → App → Updates** shows the version and the status, and has a
+**Check for updates** button.
+
+- **Windows** and the **Linux AppImage:** a new version downloads in the background (on Windows only the
+  changed parts, when possible). Then a bar says **Nexo X.Y.Z is ready** with a **Restart to update**
+  button, which says **Restart (leaves the call)** while you're in voice. The tray menu has the same
+  item. Nexo never restarts on its own: if you dismiss the bar, the update installs the next time you
+  quit Nexo.
+- **macOS:** the app isn't signed with an Apple certificate, so it can't replace itself. Nexo tells you
+  when a new version is out, and **Download** opens the release page. Install the new `.dmg` the same way
+  as the first time.
+- **Linux without the AppImage** and development builds (`scripts/win-run.sh`, `npm run dev`) don't
+  update. The settings page says so.
+
+Alpha builds update to the newest release, whether it's an alpha, a beta or stable; stable builds only
+get stable releases. (electron-updater skips `-rc` tags for alpha builds, so prefer `-beta` for
+prereleases.) Checks that fail, for example when you're offline, only show up as a status line in Settings.
+
+**Coming from v0.1.0-alpha.1?** That version has no updater. Download and install v0.2 by hand once;
+it updates itself after that.
 
 ---
 

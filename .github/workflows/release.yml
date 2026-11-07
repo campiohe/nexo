@@ -25,16 +25,20 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # update-info: the electron-updater metadata file each OS writes next to its installer.
           - name: windows
             os: windows-latest
             builder-args: --win
+            update-info: latest.yml
           - name: macos
             os: macos-latest
             # Unsigned, but ad-hoc signed so the app launches on Apple Silicon.
             builder-args: --mac -c.mac.identity=-
+            update-info: latest-mac.yml
           - name: linux
             os: ubuntu-latest
             builder-args: --linux
+            update-info: latest-linux.yml
     env:
       # The packaged app doesn't need the electron npm binary: electron-builder downloads its own Electron.
       ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
@@ -59,10 +63,29 @@ jobs:
       - name: Build desktop app
         run: npm run build -w desktop
 
+      # Builds the installer plus its auto-update metadata (publish config in electron-builder.yml).
+      # Uploading is left to the release job.
       - name: Package installer
         working-directory: desktop
         run: npx electron-builder ${{ matrix.builder-args }} --publish never
 
+      # electron-updater downloads <release>/download/<tag>/<path from the yml>, so the installer it names
+      # must be one of the uploaded files, with exactly that name.
+      - name: Check update metadata
+        working-directory: desktop/release
+        env:
+          UPDATE_INFO: ${{ matrix.update-info }}
+        run: |
+          cat "$UPDATE_INFO"
+          installer=$(sed -n 's/^path: *//p' "$UPDATE_INFO" | tr -d "'\"\r")
+          if [[ -z "$installer" || ! -f "$installer" ]]; then
+            echo "::error::$UPDATE_INFO names '$installer', which is not in desktop/release"
+            exit 1
+          fi
+          echo "$UPDATE_INFO -> $installer"
+
+      # The .blockmap files let Windows download only the changed parts of the next installer (the
+      # AppImage embeds its block map). Each OS writes its own latest*.yml, so the names don't collide.
       - uses: actions/upload-artifact@v7
         with:
           name: nexo-${{ matrix.name }}
@@ -70,6 +93,8 @@ jobs:
             desktop/release/*.exe
             desktop/release/*.dmg
             desktop/release/*.AppImage
+            desktop/release/*.blockmap
+            desktop/release/latest*.yml
           if-no-files-found: error
           retention-days: 14
 
@@ -96,6 +121,10 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           ls -la dist
+          # Without these, installed apps can't see the release (electron-updater reads the yml first).
+          for f in latest.yml latest-mac.yml latest-linux.yml; do
+            test -f "dist/$f" || { echo "::error::missing dist/$f"; exit 1; }
+          done
           flags=()
           if [[ "$TAG" =~ -(alpha|beta|rc) ]]; then
             flags+=(--prerelease)
