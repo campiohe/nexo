@@ -293,3 +293,14 @@ silence it, run `sudo sysctl -w net.core.rmem_max=5000000`.
 - No account recovery, no roles: everyone can create, rename and delete channels. Plain `ws://` and
   `http://` are fine over Tailscale or a LAN, but a public deployment needs TLS.
 - Windows builds are unsigned (SmartScreen warning).
+
+---
+
+## Contributing
+
+Issues and pull requests are welcome. Before opening a PR, run `npm run typecheck` and `npm test`.
+Architecture and design decisions are in [docs/SPEC.md](docs/SPEC.md).
+
+## License
+
+[MIT](LICENSE) © 2026 Henrique Campiotti
