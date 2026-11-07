@@ -1,0 +1,51 @@
+/* Design tokens shared by every renderer component. Add tokens here; don't hardcode colors in components. */
+:root {
+  color-scheme: dark;
+  --bg-0: #0b0d11;        /* app background / gutters */
+  --bg-1: #12151b;        /* sidebar, panels */
+  --bg-2: #181c24;        /* center pane */
+  --bg-3: #212632;        /* inputs, hover */
+  --bg-4: #2a3040;        /* active / pressed */
+  --line: #262b37;
+  --text-0: #eef1f6;
+  --text-1: #b4bccb;
+  --text-2: #7c8598;
+  --accent: #3ee6b0;      /* mint */
+  --accent-strong: #1fcf96;
+  --accent-ink: #052019;  /* text on accent */
+  --live: #ff4d6d;        /* LIVE badge, streaming */
+  --warn: #ffb547;
+  --danger: #ff5c5c;
+  --speaking: #3ee6b0;
+  --radius-sm: 6px;
+  --radius: 10px;
+  --radius-lg: 16px;
+  --shadow: 0 8px 30px rgb(0 0 0 / 0.45);
+  --font: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+  --mono: 'JetBrains Mono', 'Cascadia Code', ui-monospace, monospace;
+  --sidebar-w: 248px;
+  --members-w: 220px;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html, body, #root { height: 100%; margin: 0; }
+body {
+  background: var(--bg-0);
+  color: var(--text-0);
+  font: 14px/1.45 var(--font);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+/* Added by workstream C (derived tokens; existing values unchanged). */
+:root {
+  --accent-soft: rgb(62 230 176 / 0.14);
+  --accent-glow: rgb(62 230 176 / 0.35);
+  --live-soft: rgb(255 77 109 / 0.16);
+  --danger-soft: rgb(255 92 92 / 0.14);
+  --warn-soft: rgb(255 181 71 / 0.14);
+  --hover: rgb(255 255 255 / 0.045);
+  --focus-ring: 0 0 0 2px var(--bg-0), 0 0 0 4px var(--accent);
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --header-h: 52px;
+}

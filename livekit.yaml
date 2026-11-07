@@ -1,0 +1,18 @@
+# LiveKit SFU config for Nexo.
+# API keys come from $LIVEKIT_KEYS and the advertised node IP from $NODE_IP (see docker-compose.yml).
+port: 7880
+bind_addresses:
+  - 0.0.0.0
+rtc:
+  tcp_port: 7881          # ICE/TCP fallback when UDP is blocked
+  udp_port: 7882          # single UDP port for all media (easy to port-forward)
+  use_external_ip: false  # set true on a VPS/cloud host so LiveKit discovers its public IP via STUN
+  # When a node IP is set (LIVEKIT_NODE_IP, e.g. the Tailscale IP), also keep advertising the
+  # machine's own interface IPs. That way friends use the tailnet IP while the owner's Windows
+  # client can still reach LiveKit through the WSL 172.x address.
+  advertise_internal_ip: true
+room:
+  empty_timeout: 60
+  max_participants: 25
+logging:
+  level: info

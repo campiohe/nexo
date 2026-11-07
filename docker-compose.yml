@@ -1,0 +1,17 @@
+services:
+  livekit:
+    # Pinned so a LiveKit release can't change config semantics under us. Bump deliberately.
+    image: livekit/livekit-server:v1.13.11
+    command: --config /etc/livekit.yaml
+    # Host networking lets WebRTC advertise reachable IPs and use the single UDP port directly
+    # (7880/tcp signaling, 7881/tcp ICE fallback, 7882/udp media — see livekit.yaml).
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      # "key: secret" (with the space). Must match LIVEKIT_API_KEY / LIVEKIT_API_SECRET.
+      LIVEKIT_KEYS: ${LIVEKIT_KEYS:?Set LIVEKIT_KEYS in .env (see .env.example)}
+      # IP advertised to clients as an ICE candidate (livekit-server --node-ip / $NODE_IP).
+      # Set LIVEKIT_NODE_IP to the host's Tailscale 100.x IP. Empty = LiveKit auto-detects.
+      NODE_IP: ${LIVEKIT_NODE_IP:-}
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml:ro

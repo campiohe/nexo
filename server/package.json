@@ -1,0 +1,24 @@
+{
+  "name": "@nexo/server",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node --env-file-if-exists=../.env --watch src/index.ts",
+    "start": "node --env-file-if-exists=../.env src/index.ts",
+    "test": "node --test --test-timeout=60000 \"test/**/*.test.ts\"",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=23.6"
+  },
+  "dependencies": {
+    "livekit-server-sdk": "^2.19.2",
+    "socket.io": "^4.8.4"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "socket.io-client": "^4.8.4",
+    "typescript": "^7.0.2"
+  }
+}

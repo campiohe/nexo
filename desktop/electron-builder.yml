@@ -1,0 +1,71 @@
+# Owner: workstream B. Packaging for Nexo (electron-builder). Run from desktop/: npm run dist[:win|:mac|:linux]
+appId: app.nexo.desktop
+productName: Nexo
+copyright: Copyright © 2026 Nexo
+# electron is hoisted to the workspace root, where electron-builder can't resolve the installed version.
+# Keep in sync with node_modules/electron/package.json when upgrading Electron.
+electronVersion: 45.2.3
+directories:
+  output: release
+  buildResources: build
+
+# main/preload/renderer are fully bundled by electron-vite into out/. The renderer's npm "dependencies"
+# (react, livekit-client, socket.io-client, zustand) are inlined by Vite, and main/preload import only
+# electron + node builtins, so the packaged app needs no node_modules at all. node_modules is excluded
+# explicitly because the workspace hoists everything to the repo root.
+files:
+  - package.json
+  - out/**
+  - resources/icon.png
+  - '!**/*.map'
+  - '!node_modules/**'
+asarUnpack:
+  - resources/**
+npmRebuild: false
+nodeGypRebuild: false
+buildDependenciesFromSource: false
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: resources/icon.png
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
+  shortcutName: Nexo
+  artifactName: ${productName}-Setup-${version}.${ext}
+  uninstallDisplayName: ${productName}
+
+mac:
+  target:
+    - target: dmg
+      arch: [universal]
+  icon: resources/icon.png
+  category: public.app-category.social-networking
+  hardenedRuntime: true
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  notarize: false
+  extendInfo:
+    NSMicrophoneUsageDescription: Nexo uses the microphone for voice chat.
+    NSCameraUsageDescription: Nexo uses the camera for video in voice channels.
+    NSScreenCaptureUsageDescription: Nexo needs screen recording access to share your screen or a window.
+    NSAudioCaptureUsageDescription: Nexo can include system audio when you share your screen.
+dmg:
+  artifactName: ${productName}-${version}-${arch}.${ext}
+
+linux:
+  target:
+    - target: AppImage
+      arch: [x64]
+  icon: resources/icon.png
+  executableName: nexo
+  category: Network
+  synopsis: Chat, voice and screen sharing for friend groups
+  maintainer: Nexo
+appImage:
+  artifactName: ${productName}-${version}-${arch}.${ext}
