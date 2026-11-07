@@ -32,6 +32,12 @@ export interface PttStatus {
 export interface AppPrefs {
   /** Closing the main window hides it to the system tray instead of quitting. Default true. */
   closeToTray: boolean
+  /**
+   * Windows: keep captured screen/window frames on the GPU (Chromium's WGC texture path) instead of
+   * reading every frame back to the CPU. Roughly doubles stream fps when a game keeps the GPU busy.
+   * Applied at startup, so a change needs a restart. Default true; ignored on other platforms.
+   */
+  fastCapture: boolean
 }
 
 export type TrayAction = 'toggle-mute' | 'toggle-deafen' | 'leave-voice'

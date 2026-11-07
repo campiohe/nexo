@@ -170,6 +170,19 @@ function AvatarActions({ hasAvatar }: { hasAvatar: boolean }) {
   )
 }
 
+/**
+ * Main applies fastCapture only at startup. The first read in this renderer happens before the user can
+ * change it (the toggle lives here), so it's the value Nexo is running with.
+ */
+let startupFastCapture: Promise<boolean> | null = null
+function fastCaptureAtStartup(): Promise<boolean> {
+  startupFastCapture ??= window.nexo.prefs
+    .get()
+    .then((p) => p.fastCapture)
+    .catch(() => true)
+  return startupFastCapture
+}
+
 function AppSection() {
   const [prefs, setPrefs] = useState<AppPrefs | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -177,6 +190,7 @@ function AppSection() {
 
   useEffect(() => {
     let alive = true
+    void fastCaptureAtStartup()
     window.nexo.prefs
       .get()
       .then((p) => alive && setPrefs(p))
@@ -189,12 +203,16 @@ function AppSection() {
     }
   }, [])
 
-  const setCloseToTray = async (closeToTray: boolean) => {
+  const [restartNeeded, setRestartNeeded] = useState(false)
+
+  const setPref = async (patch: Partial<AppPrefs>) => {
     if (!prefs || saving) return
     setSaving(true)
-    setPrefs({ ...prefs, closeToTray }) // optimistic
+    setPrefs({ ...prefs, ...patch }) // optimistic
     try {
-      setPrefs(await window.nexo.prefs.set({ closeToTray }))
+      const next = await window.nexo.prefs.set(patch)
+      setPrefs(next)
+      setRestartNeeded(next.fastCapture !== (await fastCaptureAtStartup()))
     } catch (err) {
       setPrefs(prefs)
       toast(err, 'error')
@@ -212,22 +230,44 @@ function AppSection() {
           <span>{error}</span>
         </div>
       ) : (
-        <label className="toggle-row">
-          <span className="toggle-text">
-            <span>Close button minimizes Nexo to the system tray</span>
-            <span className="muted small">
-              Nexo keeps running (and stays in voice) in the tray. Quit from the tray icon's menu.
+        <>
+          <label className="toggle-row">
+            <span className="toggle-text">
+              <span>Close button minimizes Nexo to the system tray</span>
+              <span className="muted small">
+                Nexo keeps running (and stays in voice) in the tray. Quit from the tray icon's menu.
+              </span>
             </span>
-          </span>
-          <input
-            type="checkbox"
-            role="switch"
-            className="switch"
-            checked={prefs?.closeToTray ?? false}
-            disabled={!prefs || saving}
-            onChange={(e) => void setCloseToTray(e.target.checked)}
-          />
-        </label>
+            <input
+              type="checkbox"
+              role="switch"
+              className="switch"
+              checked={prefs?.closeToTray ?? false}
+              disabled={!prefs || saving}
+              onChange={(e) => void setPref({ closeToTray: e.target.checked })}
+            />
+          </label>
+          {window.nexo.platform === 'win32' && (
+            <label className="toggle-row">
+              <span className="toggle-text">
+                <span>Fast game capture</span>
+                <span className="muted small">
+                  Keeps stream frames on the GPU, so streams stay smooth while a game keeps your GPU busy. Turn it off
+                  if your stream shows a black or frozen picture.
+                  {restartNeeded && <strong> Restart Nexo to apply.</strong>}
+                </span>
+              </span>
+              <input
+                type="checkbox"
+                role="switch"
+                className="switch"
+                checked={prefs?.fastCapture ?? false}
+                disabled={!prefs || saving}
+                onChange={(e) => void setPref({ fastCapture: e.target.checked })}
+              />
+            </label>
+          )}
+        </>
       )}
       {hasUpdates() && <UpdatesPanel />}
     </section>

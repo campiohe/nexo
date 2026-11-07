@@ -10,7 +10,8 @@ interface PrefsFile extends AppPrefs {
   trayHintShown: boolean
 }
 
-const DEFAULTS: PrefsFile = { closeToTray: true, trayHintShown: false }
+const DEFAULTS: PrefsFile = { closeToTray: true, fastCapture: true, trayHintShown: false }
+const BOOLEAN_PREFS = ['closeToTray', 'fastCapture'] as const satisfies readonly (keyof AppPrefs)[]
 
 let cache: PrefsFile | null = null
 
@@ -21,7 +22,7 @@ function load(): PrefsFile {
   const data: PrefsFile = { ...DEFAULTS }
   try {
     const raw = JSON.parse(readFileSync(filePath(), 'utf8')) as Record<string, unknown>
-    if (typeof raw.closeToTray === 'boolean') data.closeToTray = raw.closeToTray
+    for (const key of BOOLEAN_PREFS) if (typeof raw[key] === 'boolean') data[key] = raw[key]
     if (typeof raw.trayHintShown === 'boolean') data.trayHintShown = raw.trayHintShown
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'ENOENT') console.warn('[nexo] could not read prefs, using defaults:', err)
@@ -42,7 +43,8 @@ function save(data: PrefsFile): void {
 }
 
 export function getPrefs(): AppPrefs {
-  return { closeToTray: load().closeToTray }
+  const { closeToTray, fastCapture } = load()
+  return { closeToTray, fastCapture }
 }
 
 /** True the first time it's called per install (then remembered in prefs.json). */
@@ -58,9 +60,9 @@ function parsePatch(patch: unknown): Partial<AppPrefs> {
   if (typeof patch !== 'object' || patch === null || Array.isArray(patch)) throw new TypeError('prefs patch must be an object')
   const out: Partial<AppPrefs> = {}
   for (const [key, value] of Object.entries(patch)) {
-    if (key === 'closeToTray') {
-      if (typeof value !== 'boolean') throw new TypeError('closeToTray must be a boolean')
-      out.closeToTray = value
+    if ((BOOLEAN_PREFS as readonly string[]).includes(key)) {
+      if (typeof value !== 'boolean') throw new TypeError(`${key} must be a boolean`)
+      out[key as (typeof BOOLEAN_PREFS)[number]] = value
     } else {
       throw new TypeError(`unknown pref: ${key.slice(0, 64)}`)
     }

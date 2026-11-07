@@ -286,6 +286,13 @@ closing the window keeps Nexo running in the tray, and you stay in voice. The tr
 **Open Nexo**, **Mute**, **Deafen**, **Leave voice** and **Quit Nexo**. Clicking the tray icon, or
 starting Nexo again, brings the window back. Turn the setting off to make the close button quit the app.
 
+**Settings → App → "Fast game capture"** (Windows, on by default). Captured frames stay on the GPU
+instead of being copied back to the CPU for every frame. That keeps streams smooth while a game keeps
+the GPU busy. In testing, a GPU-bound game went from ~30 to ~55 stream fps. It takes effect after
+restarting Nexo. Turn it off if your stream shows a black or frozen picture. On Windows older than
+11 24H2 it only applies when you share a **window**, so share the game's window instead of the
+entire screen.
+
 ## Updates
 
 Nexo checks the [GitHub releases](https://github.com/campiohe/nexo/releases) 10 seconds after it starts,
@@ -339,18 +346,18 @@ npm run typecheck -w server
 
 **A game stream drops to ~5–15 fps while the game has focus (fine after alt-tab)**: the GPU is maxed out.
 Windows captures the screen on the GPU too, and a game that keeps the GPU at ~100% starves it. The game
-itself still runs smoothly. An FPS cap only helps if it's **below** what the game actually reaches, so
-the GPU gets idle time. Two cases:
-- An **uncapped** game on a fast GPU: any cap fixes it (V-Sync, the game's max FPS, or the NVIDIA/AMD
-  control panel).
-- A **heavy game on a mid-range GPU**, running below its cap: lower the graphics settings or turn on
-  upscaling (DLSS/FSR/TSR Quality or Balanced). Then cap the FPS a bit below what it reaches. Aim for
-  GPU usage under ~85% in Task Manager.
+itself still runs smoothly. Check these in order:
+1. **Settings → App → "Fast game capture"** is on (the default since v0.2.0-alpha.3). On Windows older
+   than 11 24H2, share the game's **window** rather than the entire screen.
+2. The game isn't **uncapped**. An uncapped game on a fast GPU starves capture completely. Any cap
+   fixes it: V-Sync, the game's max FPS, or the NVIDIA/AMD control panel.
+3. On a **mid-range GPU in a heavy game** (GPU at ~96%, already below its cap): lower the graphics
+   settings or the upscaler preset, then cap the FPS a bit below what it reaches. A cap above what the
+   game reaches does nothing.
 
 The stream can't be smoother than the game. Nexo detects starved capture and shows a hint under
 **LIVE** in the voice panel. The panel shows the live capture fps. Hover it to see the send fps,
-resolution and encoder. Raising Nexo's CPU or GPU priority doesn't help, and Discord has the same
-limitation.
+resolution and encoder. Raising Nexo's CPU or GPU priority doesn't help.
 
 **"Wrong server password"**: the password is only checked when a *new* name is created. Check
 `SERVER_PASSWORD` in `.env` (restart the server after changing it). Returning devices don't need it.

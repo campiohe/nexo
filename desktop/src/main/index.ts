@@ -147,6 +147,17 @@ function applyUserDataDirSwitch(): void {
 
 applyUserDataDirSwitch()
 
+/**
+ * Windows screen/window capture: hand frames to the encoder as GPU textures (Windows.Graphics.Capture)
+ * instead of mapping each one back to system memory. Chromium's capture loop waits 2× the time a capture
+ * took before the next one, and that readback stalls behind a busy GPU, so a game holding the GPU near
+ * 100% dropped streams to ~8–30 fps. With textures it keeps up with the game (measured 27 → 55 fps).
+ * Off-switch: Settings → App (prefs.fastCapture), applied on the next start.
+ */
+if (platform === 'win32' && getPrefs().fastCapture) {
+  app.commandLine.appendSwitch('enable-features', 'WebRtcAllowWgcUsingTexture')
+}
+
 if (!app.requestSingleInstanceLock()) {
   app.quit()
 } else {
