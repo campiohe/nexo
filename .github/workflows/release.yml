@@ -1,0 +1,113 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: Build (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows
+            os: windows-latest
+            builder-args: --win
+          - name: macos
+            os: macos-latest
+            # Unsigned, but ad-hoc signed so the app launches on Apple Silicon.
+            builder-args: --mac -c.mac.identity=-
+          - name: linux
+            os: ubuntu-latest
+            builder-args: --linux
+    env:
+      # The packaged app doesn't need the electron npm binary: electron-builder downloads its own Electron.
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+      # No Apple certificate: don't look for a signing identity in the keychain.
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      - name: Test (server)
+        if: runner.os == 'Linux'
+        run: npm test
+
+      - name: Build desktop app
+        run: npm run build -w desktop
+
+      - name: Package installer
+        working-directory: desktop
+        run: npx electron-builder ${{ matrix.builder-args }} --publish never
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: nexo-${{ matrix.name }}
+          path: |
+            desktop/release/*.exe
+            desktop/release/*.dmg
+            desktop/release/*.AppImage
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: nexo-*
+          path: dist
+          merge-multiple: true
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          ls -la dist
+          flags=()
+          if [[ "$TAG" =~ -(alpha|beta|rc) ]]; then
+            flags+=(--prerelease)
+          fi
+          notes=".github/release-notes/$TAG.md"
+          if [[ -f "$notes" ]]; then
+            flags+=(--notes-file "$notes")
+          else
+            flags+=(--generate-notes --notes "Nexo $TAG. Installers are unsigned; see the README.")
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* --verify-tag --title "Nexo $TAG" "${flags[@]}"
+          fi

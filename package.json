@@ -1,7 +1,7 @@
 {
   "name": "nexo",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.0-alpha.1",
   "description": "Chat, voice and game/screen sharing for friend groups",
   "workspaces": [
     "server",

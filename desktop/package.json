@@ -2,7 +2,7 @@
   "name": "@nexo/desktop",
   "productName": "Nexo",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.0-alpha.1",
   "description": "Nexo desktop client",
   "main": "./out/main/index.js",
   "author": "Nexo",
