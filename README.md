@@ -165,16 +165,24 @@ On the host PC, use the **`172.x` URL** from `scripts/urls.sh` (`http://172.26.x
 reaches WSL directly on that address. If Tailscale is installed on Windows too, the `100.x` URL also
 works. The WSL `172.x` IP can change after a reboot, so re-run `scripts/urls.sh` when that happens.
 
-### Installer for friends
+### Installers for friends
 
-```bash
-npm run dist:win -w desktop        # → desktop/release/  (NSIS installer .exe)
-```
+Friends download from **[Releases](https://github.com/campiohe/nexo/releases)**. Each release has the
+Windows `.exe`, the macOS `.dmg` and the Linux `.AppImage`.
 
-Send the `.exe` from `desktop/release/` to your friends. electron-builder can build the Windows
-installer from Linux. If it asks for Wine, install it (`sudo apt install wine`) or run the same command
-from a Windows checkout that has Node installed. The build is unsigned, so Windows SmartScreen shows a
-warning: click **More info → Run anyway**.
+To ship a new version:
+
+1. Bump `version` in `package.json`, `desktop/package.json` and `server/package.json`, then run
+   `npm install --package-lock-only`.
+2. Optionally write `.github/release-notes/vX.Y.Z.md`.
+3. Commit, then `git tag -a vX.Y.Z -m "Nexo vX.Y.Z" && git push origin main vX.Y.Z`.
+
+The **Release** workflow (`.github/workflows/release.yml`) builds all three installers and publishes
+the release. Tags with `-alpha`/`-beta`/`-rc` are marked as prereleases.
+
+The installers are unsigned, so Windows SmartScreen shows a warning: click **More info → Run anyway**.
+For a local build, `npm run dist:win -w desktop` writes to `desktop/release/`. From Linux it may need
+Wine; the CI build doesn't.
 
 ---
 
