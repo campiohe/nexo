@@ -1,16 +1,21 @@
-// Owner: workstream B. Electron main process: window, security, capture, secrets.
+// Owner: workstream B. Electron main process: window, tray, push-to-talk, security, capture, secrets.
 import { app, BrowserWindow, ipcMain, Menu, type MenuItemConstructorOptions } from 'electron'
 import { join, resolve } from 'node:path'
 import icon from '../../resources/icon.png?asset'
 import { IPC } from '../preload/api'
 import { installCapture } from './capture'
 import { devMode, isDev, platform, preloadArguments } from './platform'
+import { getPrefs, installPrefs } from './prefs'
+import { installPtt } from './ptt'
 import { installSecrets } from './secrets'
 import { installSecurity, isAppUrl, openExternalSafe, rendererEntry } from './security'
+import { destroyTray, hasTray, installTray, maybeShowTrayHint } from './tray'
 import { loadWindowState, trackWindowState } from './window-state'
 
 const BACKGROUND = '#0b0d11'
 let mainWindow: BrowserWindow | null = null
+/** Set on every real quit path (tray Quit, Cmd+Q / app menu, app.quit(), Windows shutdown/log-off). */
+let isQuitting = false
 
 function createMainWindow(): BrowserWindow {
   const state = loadWindowState({ width: 1280, height: 800, minWidth: 940, minHeight: 600 })
@@ -38,6 +43,8 @@ function createMainWindow(): BrowserWindow {
       webviewTag: false,
       spellcheck: true,
       autoplayPolicy: 'no-user-gesture-required',
+      // Keep voice/stream timers and audio processing at full speed while the window is hidden in the tray.
+      backgroundThrottling: false,
       additionalArguments: preloadArguments(),
     },
   })
@@ -45,6 +52,27 @@ function createMainWindow(): BrowserWindow {
   trackWindowState(win)
 
   win.once('ready-to-show', () => win.show())
+
+  // Close to tray: hide instead of closing, unless the app is really quitting.
+  win.on('close', (event) => {
+    if (isQuitting || !getPrefs().closeToTray || !hasTray()) return
+    event.preventDefault()
+    if (platform === 'darwin' && win.isFullScreen()) {
+      // Hiding a fullscreen window on macOS leaves an empty black Space behind.
+      win.once('leave-full-screen', () => win.hide())
+      win.setFullScreen(false)
+    } else {
+      win.hide()
+    }
+    maybeShowTrayHint()
+  })
+  // Windows shutdown / restart / log-off must not be blocked by close-to-tray.
+  win.on('query-session-end', () => {
+    isQuitting = true
+  })
+  win.on('session-end', () => {
+    isQuitting = true
+  })
   win.on('closed', () => {
     if (mainWindow === win) mainWindow = null
   })
@@ -88,8 +116,12 @@ function installMenu(): void {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
 
+/** Shows (even from the tray), restores and focuses the main window; recreates it if it was closed (macOS). */
 function focusMainWindow(): void {
-  if (!mainWindow) return
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    if (app.isReady() && !isQuitting) mainWindow = createMainWindow()
+    return
+  }
   if (mainWindow.isMinimized()) mainWindow.restore()
   if (!mainWindow.isVisible()) mainWindow.show()
   mainWindow.focus()
@@ -118,22 +150,28 @@ if (!app.requestSingleInstanceLock()) {
   if (platform === 'win32') app.setAppUserModelId('app.nexo.desktop')
 
   app.on('second-instance', focusMainWindow)
+  // Covers the tray Quit item, Cmd+Q / the macOS app menu, app.quit() and autoUpdater restarts.
+  app.on('before-quit', () => {
+    isQuitting = true
+  })
+  app.on('will-quit', destroyTray)
 
   void app.whenReady().then(() => {
     installSecurity()
     installMenu()
     installCapture()
     installSecrets()
+    installPrefs()
+    installPtt(() => mainWindow)
     ipcMain.on(IPC.openExternal, (event, url: unknown) => {
       if (isAppUrl(event.senderFrame?.url)) openExternalSafe(url)
     })
 
     mainWindow = createMainWindow()
+    installTray({ getWindow: () => mainWindow, showWindow: focusMainWindow })
 
-    app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) mainWindow = createMainWindow()
-      else focusMainWindow()
-    })
+    // macOS: clicking the Dock icon re-shows the window (hidden to the tray or closed).
+    app.on('activate', focusMainWindow)
   })
 
   app.on('window-all-closed', () => {

@@ -495,7 +495,7 @@ describe('Nexo protocol', () => {
     const second = await connect(url, { token: alice.token })
     const upsert = nextEvent(bob.socket, 'user:upsert', (u) => u.id === alice.boot.me.id)
     const updated = await requestOk<User>(alice.socket, 'profile:update', { color: '#ABCDEF' })
-    assert.deepEqual(updated, { id: alice.boot.me.id, name: 'Alice', color: '#abcdef' })
+    assert.deepEqual(updated, { id: alice.boot.me.id, name: 'Alice', color: '#abcdef', avatar: null })
     assert.deepEqual(await upsert, updated)
 
     // The other socket mints tokens with the new color.

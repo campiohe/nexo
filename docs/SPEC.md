@@ -42,7 +42,7 @@ Nexo is a desktop app for small friend groups to chat, hang out in voice, and sh
 
 ### Deferred (v2+)
 
-Push-to-talk with global hotkeys, per-user volume, per-application audio capture (see §11), message editing, reactions, image/file uploads, DMs, notifications and unread badges, auto-update, E2EE, roles.
+Per-application audio capture (see §11), message editing, reactions, image/file uploads, DMs, notifications and unread badges, auto-update, E2EE, roles.
 
 ---
 
@@ -201,7 +201,7 @@ Voice and presence state stay in memory on purpose. They are temporary and rebui
 
 ### 5.3 Why socket.io and not REST
 
-All operations are small and need live fan-out. A single socket connection with acks handles request and response (`emit(event, payload, ack)`) as well as broadcasts, and socket.io adds reconnection and buffering. The only HTTP endpoint is `GET /health`.
+All operations are small and need live fan-out. A single socket connection with acks handles request and response (`emit(event, payload, ack)`) as well as broadcasts, and socket.io adds reconnection and buffering. Plain HTTP is used only where it fits better than a socket: `GET /health`, and profile pictures (`PUT`/`DELETE /api/avatar` with the device token as a bearer token, and cacheable `GET /avatars/:userId?v=`). Uploaded image bytes don't belong on the realtime socket.
 
 ---
 

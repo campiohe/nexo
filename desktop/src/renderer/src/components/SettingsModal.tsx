@@ -1,19 +1,27 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState, type ChangeEvent } from 'react'
+import type { AppPrefs } from '../../../preload/api'
 import { useApp } from '../store/app'
 import { useUi } from '../store/ui'
 import { SWATCHES } from '../lib/colors'
-import { toast } from '../lib/toast'
+import { toast, useToasts } from '../lib/toast'
+import { AVATAR_INPUT_TYPES, loadImageFile, type LoadedImage } from '../lib/imageCrop'
+import { removeAvatar, uploadAvatar } from '../net/avatar'
 import { DeviceSettings } from './voice/DeviceSettings'
 import { Avatar } from './Avatar'
+import { AvatarCropDialog } from './AvatarCropDialog'
 import { ColorSwatches } from './ColorSwatches'
 import { ConfirmDialog, Modal } from './Modal'
 import { AlertIcon, LogoutIcon } from './icons'
 
-type Tab = 'profile' | 'av' | 'server'
+type Tab = 'profile' | 'av' | 'app' | 'server'
 
-const TABS: { id: Tab; label: string }[] = [
+/** The App section needs the Electron bridge (window.nexo.prefs); it's hidden in a plain browser. */
+const hasPrefs = () => typeof window.nexo?.prefs?.get === 'function'
+
+const TABS: { id: Tab; label: string; available?: () => boolean }[] = [
   { id: 'profile', label: 'Profile' },
   { id: 'av', label: 'Audio & video' },
+  { id: 'app', label: 'App', available: hasPrefs },
   { id: 'server', label: 'Server' },
 ]
 
@@ -27,7 +35,7 @@ export function SettingsModal() {
     <Modal title="Settings" onClose={close} width={720} className="settings-modal">
       <div className="settings">
         <nav className="settings-nav" role="tablist" aria-label="Settings sections">
-          {TABS.map((t) => (
+          {TABS.filter((t) => !t.available || t.available()).map((t) => (
             <button
               key={t.id}
               role="tab"
@@ -47,6 +55,7 @@ export function SettingsModal() {
               <DeviceSettings />
             </section>
           )}
+          {tab === 'app' && hasPrefs() && <AppSection />}
           {tab === 'server' && <ServerSection onDone={close} />}
         </div>
       </div>
@@ -76,18 +85,149 @@ function ProfileSection() {
     <section>
       <h3 className="settings-heading">Profile</h3>
       <div className="profile-card">
-        <Avatar user={me} size={64} />
-        <div>
+        <Avatar user={me} size={96} />
+        <div className="profile-card-text">
           <div className="profile-name" style={{ color: me.color }}>
             {me.name}
           </div>
           <div className="muted small">Your display name is tied to this device.</div>
+          <AvatarActions hasAvatar={!!me.avatar} />
         </div>
       </div>
       <div className="field">
         <span className="field-label">Color</span>
         <ColorSwatches value={me.color} onChange={pick} colors={SWATCHES} disabled={saving} />
       </div>
+    </section>
+  )
+}
+
+function AvatarActions({ hasAvatar }: { hasAvatar: boolean }) {
+  const fileRef = useRef<HTMLInputElement>(null)
+  const [image, setImage] = useState<LoadedImage | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  // Free the decoded image's blob: URL when the dialog closes (or Settings unmounts).
+  useEffect(() => () => image?.release(), [image])
+
+  const pickFile = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    e.target.value = '' // picking the same file again should still fire `change`
+    if (!file) return
+    try {
+      setImage(await loadImageFile(file))
+    } catch (err) {
+      toast(err, 'error')
+    }
+  }
+
+  const upload = async (picture: Blob) => {
+    const pending = toast('Uploading picture…', 'info', 30_000)
+    try {
+      await uploadAvatar(picture)
+      setImage(null)
+      toast('Profile picture updated', 'success')
+    } finally {
+      useToasts.getState().dismiss(pending)
+    }
+  }
+
+  const remove = async () => {
+    if (busy) return
+    setBusy(true)
+    try {
+      await removeAvatar()
+      toast('Profile picture removed', 'success')
+    } catch (err) {
+      toast(err, 'error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="settings-actions profile-avatar-actions">
+      <input
+        ref={fileRef}
+        type="file"
+        accept={AVATAR_INPUT_TYPES.join(',')}
+        onChange={pickFile}
+        hidden
+        tabIndex={-1}
+        aria-hidden="true"
+      />
+      <button className="btn btn-primary btn-sm" onClick={() => fileRef.current?.click()} disabled={busy}>
+        Upload picture
+      </button>
+      {hasAvatar && (
+        <button className="btn btn-ghost btn-sm" onClick={remove} disabled={busy}>
+          Remove
+        </button>
+      )}
+      {image && <AvatarCropDialog image={image} onCancel={() => setImage(null)} onConfirm={upload} />}
+    </div>
+  )
+}
+
+function AppSection() {
+  const [prefs, setPrefs] = useState<AppPrefs | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    let alive = true
+    window.nexo.prefs
+      .get()
+      .then((p) => alive && setPrefs(p))
+      .catch((err: unknown) => {
+        console.error('[nexo] prefs.get failed', err)
+        if (alive) setError("Couldn't load the app preferences")
+      })
+    return () => {
+      alive = false
+    }
+  }, [])
+
+  const setCloseToTray = async (closeToTray: boolean) => {
+    if (!prefs || saving) return
+    setSaving(true)
+    setPrefs({ ...prefs, closeToTray }) // optimistic
+    try {
+      setPrefs(await window.nexo.prefs.set({ closeToTray }))
+    } catch (err) {
+      setPrefs(prefs)
+      toast(err, 'error')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <section>
+      <h3 className="settings-heading">App</h3>
+      {error ? (
+        <div className="callout callout-warn">
+          <AlertIcon size={16} />
+          <span>{error}</span>
+        </div>
+      ) : (
+        <label className="toggle-row">
+          <span className="toggle-text">
+            <span>Close button minimizes Nexo to the system tray</span>
+            <span className="muted small">
+              Nexo keeps running (and stays in voice) in the tray. Quit from the tray icon's menu.
+            </span>
+          </span>
+          <input
+            type="checkbox"
+            role="switch"
+            className="switch"
+            checked={prefs?.closeToTray ?? false}
+            disabled={!prefs || saving}
+            onChange={(e) => void setCloseToTray(e.target.checked)}
+          />
+        </label>
+      )}
     </section>
   )
 }

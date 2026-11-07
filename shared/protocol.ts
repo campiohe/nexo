@@ -6,6 +6,11 @@ export interface User {
   id: string
   name: string
   color: string
+  /**
+   * Profile picture version token, or null when the user has none.
+   * Image URL: `${serverUrl}/avatars/${id}?v=${avatar}` (see AVATAR_* below).
+   */
+  avatar: string | null
 }
 
 export interface Channel {
@@ -86,6 +91,16 @@ export interface ServerToClientEvents {
   typing: (p: { channelId: string; userId: string }) => void
   'voice:states': (states: VoiceState[]) => void
 }
+
+// ---- Profile pictures (HTTP, not socket.io) ----
+// PUT    /api/avatar   Authorization: Bearer <device token>, body = image bytes
+//                      (Content-Type image/webp | image/png | image/jpeg, <= AVATAR_MAX_BYTES)
+//                      → 200 { user: User }  (server also broadcasts `user:upsert`)
+// DELETE /api/avatar   Authorization: Bearer <device token> → 200 { user: User }
+// GET    /avatars/:userId?v=<avatar>  → the image (long-lived cache; the version changes on update)
+// Clients crop to a square and resize to AVATAR_SIZE×AVATAR_SIZE before uploading.
+export const AVATAR_MAX_BYTES = 512 * 1024
+export const AVATAR_SIZE = 256
 
 export const MESSAGE_PAGE_SIZE = 50
 export const MAX_MESSAGE_LENGTH = 4000

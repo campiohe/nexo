@@ -229,6 +229,7 @@ function InlineNameForm(props: {
 function VoiceMembers({ channelId }: { channelId: string }) {
   const voice = useApp((s) => s.voice)
   const users = useApp((s) => s.users)
+  const meId = useApp((s) => s.me?.id)
   const members = voice.filter((v) => v.channelId === channelId)
   if (members.length === 0) return null
   return (
@@ -237,7 +238,17 @@ function VoiceMembers({ channelId }: { channelId: string }) {
         .map((v) => ({ v, user: users[v.userId] }))
         .sort((a, b) => (a.user?.name ?? '').localeCompare(b.user?.name ?? ''))
         .map(({ v, user }) => (
-          <li key={v.userId} className="voice-member">
+          <li
+            key={v.userId}
+            className={`voice-member ${v.userId !== meId ? 'has-menu' : ''}`}
+            onContextMenu={(e) => {
+              // Right-click someone else: their volume (your own mic level lives in Audio & video settings).
+              if (v.userId === meId) return
+              e.preventDefault()
+              useUi.getState().openVolumePopover(v.userId, { x: e.clientX, y: e.clientY })
+            }}
+            title={v.userId !== meId ? 'Right-click to adjust volume' : undefined}
+          >
             <Avatar user={user} size={20} />
             <span className="voice-member-name">{user?.name ?? 'Unknown'}</span>
             <VoiceBadges state={v} />

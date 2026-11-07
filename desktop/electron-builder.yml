@@ -9,18 +9,28 @@ directories:
   output: release
   buildResources: build
 
-# main/preload/renderer are fully bundled by electron-vite into out/. The renderer's npm "dependencies"
-# (react, livekit-client, socket.io-client, zustand) are inlined by Vite, and main/preload import only
-# electron + node builtins, so the packaged app needs no node_modules at all. node_modules is excluded
-# explicitly because the workspace hoists everything to the repo root.
+# main/preload/renderer are bundled by electron-vite into out/. The renderer's npm "dependencies"
+# (react, livekit-client, socket.io-client, zustand) are inlined by Vite. The one runtime exception is
+# uiohook-napi (global push-to-talk), which main require()s lazily: it ships N-API prebuilds loaded by
+# node-gyp-build, so it and node-gyp-build are the only node_modules packed. electron-builder collects
+# production dependencies itself (also from the hoisted workspace root) and applies only the "!" patterns
+# below to them, so every other package is excluded by name pattern rather than re-included.
+#
+# A platform section's `files` REPLACES this list (it isn't appended), so win/mac/linux each repeat it
+# plus one line dropping the other OSes' uiohook prebuilds. (${platform} can't be used here: it expands to
+# the build host's OS, not the target's, which breaks `--win` builds from WSL.) Keep the copies in sync.
 files:
   - package.json
   - out/**
   - resources/icon.png
   - '!**/*.map'
-  - '!node_modules/**'
+  - '!node_modules/!(uiohook-napi|node-gyp-build){,/**}'
+  # uiohook-napi: only dist/ + prebuilds are needed at runtime, not the C sources.
+  - '!node_modules/uiohook-napi/{binding.gyp,libuiohook,src}{,/**}'
 asarUnpack:
   - resources/**
+  # Native addons can't be dlopen()ed from inside app.asar; Electron redirects require() to app.asar.unpacked.
+  - node_modules/uiohook-napi/prebuilds/**
 npmRebuild: false
 nodeGypRebuild: false
 buildDependenciesFromSource: false
@@ -29,6 +39,14 @@ win:
   target:
     - target: nsis
       arch: [x64]
+  files:
+    - package.json
+    - out/**
+    - resources/icon.png
+    - '!**/*.map'
+    - '!node_modules/!(uiohook-napi|node-gyp-build){,/**}'
+    - '!node_modules/uiohook-napi/{binding.gyp,libuiohook,src}{,/**}'
+    - '!node_modules/uiohook-napi/prebuilds/!(win32-${arch}){,/**}'
   icon: resources/icon.png
 nsis:
   oneClick: false
@@ -44,6 +62,18 @@ mac:
   target:
     - target: dmg
       arch: [universal]
+  # Both darwin prebuilds go into both the x64 and arm64 builds (node-gyp-build picks one by process.arch at
+  # runtime). They are single-arch and identical across the two builds, which @electron/universal only
+  # accepts for files matched by x64ArchFiles.
+  files:
+    - package.json
+    - out/**
+    - resources/icon.png
+    - '!**/*.map'
+    - '!node_modules/!(uiohook-napi|node-gyp-build){,/**}'
+    - '!node_modules/uiohook-napi/{binding.gyp,libuiohook,src}{,/**}'
+    - '!node_modules/uiohook-napi/prebuilds/!(darwin-*){,/**}'
+  x64ArchFiles: '**/node_modules/uiohook-napi/prebuilds/darwin-*/*.node'
   icon: resources/icon.png
   category: public.app-category.social-networking
   hardenedRuntime: true
@@ -62,6 +92,14 @@ linux:
   target:
     - target: AppImage
       arch: [x64]
+  files:
+    - package.json
+    - out/**
+    - resources/icon.png
+    - '!**/*.map'
+    - '!node_modules/!(uiohook-napi|node-gyp-build){,/**}'
+    - '!node_modules/uiohook-napi/{binding.gyp,libuiohook,src}{,/**}'
+    - '!node_modules/uiohook-napi/prebuilds/!(linux-${arch}){,/**}'
   icon: resources/icon.png
   executableName: nexo
   category: Network

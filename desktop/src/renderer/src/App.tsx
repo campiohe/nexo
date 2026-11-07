@@ -8,12 +8,14 @@ import { MainLayout } from './components/MainLayout'
 import { SettingsModal } from './components/SettingsModal'
 import { QuickSwitcher } from './components/QuickSwitcher'
 import { Toasts } from './components/Toasts'
+import { UserVolumePopover } from '@renderer/components/voice/UserVolumePopover'
 
 let started = false
 
 export function App() {
   const view = useApp((s) => s.view)
   const hasSession = useApp((s) => s.me !== null)
+  const volumePopover = useUi((s) => s.volumePopover)
 
   useEffect(() => {
     if (started) return // StrictMode runs effects twice in dev.
@@ -49,6 +51,15 @@ export function App() {
           <MainLayout />
           <SettingsModal />
           <QuickSwitcher />
+          {volumePopover && (
+            <UserVolumePopover
+              // Remount per open so a new right-click repositions it from scratch.
+              key={`${volumePopover.userId}:${volumePopover.anchor.x}:${volumePopover.anchor.y}`}
+              userId={volumePopover.userId}
+              anchor={volumePopover.anchor}
+              onClose={() => useUi.getState().closeVolumePopover()}
+            />
+          )}
         </>
       ) : (
         <Splash />

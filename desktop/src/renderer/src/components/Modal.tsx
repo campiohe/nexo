@@ -11,6 +11,9 @@ interface ModalProps {
   className?: string
 }
 
+/** Open modals, innermost last: Esc only closes the top one (e.g. a crop dialog over Settings). */
+const openModals: object[] = []
+
 /** Accessible modal: Esc / backdrop click closes, focus moves inside and is restored on close. */
 export function Modal({ title, onClose, children, footer, width = 440, className }: ModalProps) {
   const panelRef = useRef<HTMLDivElement>(null)
@@ -22,8 +25,10 @@ export function Modal({ title, onClose, children, footer, width = 440, className
     const panel = panelRef.current
     const first = panel?.querySelector<HTMLElement>('[data-autofocus], input, textarea, select, button:not(.modal-close)')
     ;(first ?? panel)?.focus()
+    const self = {}
+    openModals.push(self)
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
+      if (e.key === 'Escape' && openModals[openModals.length - 1] === self) {
         e.stopPropagation()
         closeRef.current()
       }
@@ -31,6 +36,7 @@ export function Modal({ title, onClose, children, footer, width = 440, className
     window.addEventListener('keydown', onKey, true)
     return () => {
       window.removeEventListener('keydown', onKey, true)
+      openModals.splice(openModals.indexOf(self), 1)
       prev?.focus?.()
     }
   }, [])

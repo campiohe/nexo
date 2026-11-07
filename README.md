@@ -226,6 +226,55 @@ Everything passes through the host PC's internet connection (see SPEC §6.4).
   Over Tailscale, peers usually connect directly. If Tailscale has to relay through DERP, expect lower
   throughput.
 
+## Profile pictures
+
+In **Settings → Profile**, choose **Upload picture** (PNG, JPEG, WebP or GIF; GIFs keep their first frame),
+then drag and zoom the square crop. The app resizes the picture to 256×256 and uploads it as WebP
+(≤ 512 KB). **Remove** goes back to the colored initials. Everyone sees the change right away.
+
+On the server, pictures are stored as `DATA_DIR/avatars/<userId>`. Back that folder up along with `nexo.db`.
+They are served over the same port as socket.io (3001), so there's nothing else to open. The HTTP API:
+
+| Request | Auth | Result |
+|---|---|---|
+| `PUT /api/avatar` (body = image, `Content-Type` `image/webp`/`png`/`jpeg`, ≤ 512 KB) | `Authorization: Bearer <device token>` | `200 {user}` + `user:upsert` broadcast |
+| `DELETE /api/avatar` | same | `200 {user}` + `user:upsert` broadcast |
+| `GET /avatars/<userId>?v=<user.avatar>` | none | the image, cached long-term (the version changes on every upload) |
+
+The server checks the file's magic bytes against its `Content-Type`. It doesn't decode images, so it needs
+no native image libraries. Errors come back as JSON `{error}`: 400 empty, 401 bad token, 413 too big,
+415 wrong type, 429 more than one change per 3 s.
+
+## Push to talk
+
+In **Settings → Audio & video → Input mode**, choose **Push to talk**. Then click the key box and press
+any key or mouse button. Mouse side buttons (Mouse 4/5) work well for gaming. Your mic is sent only
+while you hold it, even when a game has focus, plus a short **release delay** (default 200 ms) so the
+ends of words aren't cut off. Mute and deafen always win over push to talk. The voice panel shows a
+**PTT** badge, and the mic button lights up while you're transmitting.
+
+The global key hook uses [uiohook-napi](https://github.com/SnosMe/uiohook-napi):
+
+- **Windows:** works out of the box.
+- **macOS:** needs **System Settings → Privacy & Security → Accessibility** for Nexo.
+- **Linux:** works on X11. On Wayland, push to talk only works while the Nexo window is focused.
+  The settings page shows a warning when the global hook isn't active.
+
+## Friend volume
+
+Right-click a friend in a voice channel (in the sidebar, the member list, or their tile on the voice
+stage). Set their volume from **0–200%**, or **Mute for me**, which affects only what you hear.
+Settings are remembered per friend on this device. Tiles show a small icon when you've changed
+someone's volume. Deafen still silences everyone, and undeafening restores each friend's level.
+Stream audio has its own volume slider on the stream tile.
+
+## App settings
+
+**Settings → App → "Close button minimizes Nexo to the system tray"** (on by default). With it on,
+closing the window keeps Nexo running in the tray, and you stay in voice. The tray icon's menu has
+**Open Nexo**, **Mute**, **Deafen**, **Leave voice** and **Quit Nexo**. Clicking the tray icon, or
+starting Nexo again, brings the window back. Turn the setting off to make the close button quit the app.
+
 ---
 
 ## Tests

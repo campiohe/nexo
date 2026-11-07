@@ -23,8 +23,12 @@ import {
 } from 'livekit-client'
 import { emit, onConnected, request } from '@renderer/net/socket'
 import { toast } from '@renderer/lib/toast'
-import type { NexoBridge } from '../../../preload/api'
+import { useApp } from '@renderer/store/app'
+import type { NexoBridge, TrayAction } from '../../../preload/api'
 import { idealDevice, saveDevicePref, useDevicePrefs, type DeviceKind } from './devices'
+import { useInputPrefs } from './prefs'
+import { usePtt } from './ptt'
+import { clampUserVolume, persistUserVolumes, useUserVolumes } from './userVolumes'
 import {
   rebuildParticipantsNow,
   resetParticipants,
@@ -110,9 +114,27 @@ interface ActiveShare {
 }
 let share: ActiveShare | null = null
 
+/** Web Audio gain stage used only while a user's volume is boosted above 100%. */
+interface BoostChain {
+  mst: MediaStreamTrack
+  source: MediaStreamAudioSourceNode
+  gain: GainNode
+}
+
+interface AudioEntry {
+  el: HTMLAudioElement
+  track: RemoteAudioTrack
+  identity: string
+  boost: BoostChain | null
+}
+
 /** trackSid -> hidden <audio> element playing a remote audio track. */
-const audioElements = new Map<string, { el: HTMLAudioElement; track: RemoteAudioTrack; identity: string }>()
+const audioElements = new Map<string, AudioEntry>()
 let audioContainer: HTMLDivElement | null = null
+/** Shared AudioContext for boosted (>100%) users; created lazily, closed when leaving voice. */
+let boostCtx: AudioContext | null = null
+/** In-flight first publish of the microphone track (per room). */
+let micPublishing: { room: Room; promise: Promise<void> } | null = null
 
 export function getBridge(): NexoBridge | undefined {
   return (window as { nexo?: NexoBridge }).nexo
@@ -218,15 +240,8 @@ export const useVoice = create<VoiceSessionState>()((set, get) => ({
       r.startAudio().catch(() => {})
       announce()
 
-      if (!get().muted) {
-        try {
-          await r.localParticipant.setMicrophoneEnabled(true)
-        } catch (e) {
-          if (room !== r) return
-          set({ muted: true, error: mediaErrorMessage(e, 'Microphone') })
-          announce()
-        }
-      }
+      // Publishes the mic (muted while the PTT key isn't held) unless the user is muted.
+      await applyMic()
     } catch (e) {
       if (seq !== joinSeq) return
       if (r && room === r) {
@@ -399,6 +414,11 @@ export const useVoice = create<VoiceSessionState>()((set, get) => ({
 // Signaling to the Nexo server
 // ---------------------------------------------------------------------------------------------
 
+/**
+ * `muted` sent to the server is the user's explicit mute only. Push-to-talk gating (key not
+ * held) is NOT reported as muted, so the sidebar doesn't flicker on every press; the PTT-idle mic
+ * is LiveKit track-muted (no audio, no bandwidth) and others see talking via the speaking ring.
+ */
 function announce(): void {
   const s = useVoice.getState()
   if (!room || !s.channelId || (s.status !== 'connected' && s.status !== 'reconnecting')) return
@@ -423,6 +443,56 @@ onConnected(() => announce())
 useVoice.subscribe((s, prev) => {
   if (s.error && s.error !== prev.error) toast(s.error, 'error')
 })
+
+// ---------------------------------------------------------------------------------------------
+// System tray (registered once at module load, so StrictMode can't duplicate listeners)
+// ---------------------------------------------------------------------------------------------
+
+let lastTrayState = ''
+
+function syncTray(): void {
+  const tray = getBridge()?.tray
+  if (!tray) return
+  const s = useVoice.getState()
+  const inVoice = !!s.channelId && (s.status === 'connecting' || s.status === 'connected' || s.status === 'reconnecting')
+  const channelName = inVoice ? (useApp.getState().channels.find((c) => c.id === s.channelId)?.name ?? null) : null
+  const state = { inVoice, channelName, muted: s.muted, deafened: s.deafened }
+  const key = JSON.stringify(state)
+  if (key === lastTrayState) return
+  lastTrayState = key
+  try {
+    tray.setVoiceState(state)
+  } catch (e) {
+    console.warn('[voice] tray.setVoiceState failed', e)
+  }
+}
+
+function onTrayAction(action: TrayAction): void {
+  const v = useVoice.getState()
+  switch (action) {
+    case 'toggle-mute':
+      v.toggleMute()
+      break
+    case 'toggle-deafen':
+      v.toggleDeafen()
+      break
+    case 'leave-voice':
+      void v.leave()
+      break
+  }
+}
+
+const offTrayVoice = useVoice.subscribe(syncTray)
+const offTrayChannels = useApp.subscribe((s, prev) => {
+  if (s.channels !== prev.channels) syncTray()
+})
+let offTrayAction: (() => void) | undefined
+try {
+  offTrayAction = getBridge()?.tray?.onAction(onTrayAction)
+} catch (e) {
+  console.warn('[voice] tray.onAction unavailable', e)
+}
+syncTray()
 
 // ---------------------------------------------------------------------------------------------
 // Room wiring
@@ -571,9 +641,11 @@ function cleanupLocalMedia(): void {
   for (const key of [...audioElements.keys()]) {
     const entry = audioElements.get(key)
     if (!entry) continue
-    entry.track.detach(entry.el)
-    entry.el.remove()
-    audioElements.delete(key)
+    removeAudioEntry(key, entry)
+  }
+  if (boostCtx) {
+    void boostCtx.close().catch(() => {})
+    boostCtx = null
   }
 }
 
@@ -649,53 +721,173 @@ function getAudioContainer(): HTMLDivElement {
   return audioContainer
 }
 
+/**
+ * Effective playback volume. Deafen always wins (0). Microphone tracks use the per-user volume
+ * (0..2) and "mute for me"; stream audio uses the separate per-stream volume (0..1).
+ */
 function volumeFor(track: RemoteAudioTrack, identity: string): number {
   if (useVoice.getState().deafened) return 0
   if (track.source === Track.Source.ScreenShareAudio) {
     return useParticipants.getState().streamVolumes[identity] ?? 1
   }
-  return 1
+  const uv = useUserVolumes.getState()
+  if (uv.muted[identity]) return 0
+  return uv.volumes[identity] ?? 1
+}
+
+type SinkAudioContext = AudioContext & { setSinkId?: (id: string) => Promise<void> }
+
+function applyBoostSink(): void {
+  const ctx = boostCtx as SinkAudioContext | null
+  if (!ctx?.setSinkId) return
+  const id = useDevicePrefs.getState().audiooutput
+  // '' = system default output for AudioContext.setSinkId.
+  ctx.setSinkId(id && id !== 'default' ? id : '').catch((e: unknown) => console.warn('[voice] boost setSinkId failed', e))
+}
+
+function getBoostContext(): AudioContext | null {
+  if (boostCtx && boostCtx.state !== 'closed') return boostCtx
+  try {
+    boostCtx = new AudioContext({ latencyHint: 'interactive' })
+  } catch {
+    boostCtx = null
+    return null
+  }
+  // Re-apply volumes once the context actually runs (it may start suspended).
+  boostCtx.addEventListener('statechange', () => applyRemoteVolumes())
+  applyBoostSink()
+  return boostCtx
+}
+
+function teardownBoost(entry: AudioEntry): void {
+  if (!entry.boost) return
+  try {
+    entry.boost.source.disconnect()
+    entry.boost.gain.disconnect()
+  } catch {
+    /* already disconnected */
+  }
+  entry.boost = null
+}
+
+/**
+ * 0..1 plays through the <audio> element's own volume (no Web Audio, so echo cancellation and
+ * setSinkId behave exactly as before). Above 1 the element is silenced and the track is routed
+ * through a GainNode in a shared AudioContext whose output follows the selected speaker.
+ */
+function applyTrackVolume(entry: AudioEntry): void {
+  const { track, identity } = entry
+  const v = volumeFor(track, identity)
+  if (v > 1 && track.source !== Track.Source.ScreenShareAudio) {
+    const ctx = getBoostContext()
+    if (ctx) {
+      if (ctx.state === 'suspended') void ctx.resume().catch(() => {})
+      if (ctx.state === 'running') {
+        const mst = track.mediaStreamTrack
+        if (!entry.boost || entry.boost.mst !== mst) {
+          teardownBoost(entry)
+          const source = ctx.createMediaStreamSource(new MediaStream([mst]))
+          const gain = ctx.createGain()
+          gain.gain.value = v
+          source.connect(gain)
+          gain.connect(ctx.destination)
+          entry.boost = { mst, source, gain }
+        }
+        entry.boost.gain.gain.setTargetAtTime(v, ctx.currentTime, 0.02)
+        // The element keeps playing (Chromium only feeds remote WebRTC audio into Web Audio while
+        // it is attached to a media element) but silently.
+        track.setVolume(0)
+        return
+      }
+    }
+    // Web Audio unavailable or not running yet: play at 100% until it is (statechange retries).
+    teardownBoost(entry)
+    track.setVolume(1)
+    return
+  }
+  teardownBoost(entry)
+  track.setVolume(v)
+}
+
+function removeAudioEntry(sid: string, entry: AudioEntry): void {
+  teardownBoost(entry)
+  entry.track.detach(entry.el)
+  entry.el.remove()
+  audioElements.delete(sid)
 }
 
 function attachAudio(track: RemoteAudioTrack, identity: string): void {
   const sid = track.sid ?? track.mediaStreamID
   const existing = audioElements.get(sid)
   if (existing?.track === track) return
-  if (existing) {
-    // Re-subscription (e.g. after a reconnect) delivered a new track object for the same sid.
-    existing.track.detach(existing.el)
-    existing.el.remove()
-    audioElements.delete(sid)
-  }
+  // Re-subscription (e.g. after a reconnect) delivered a new track object for the same sid.
+  if (existing) removeAudioEntry(sid, existing)
   const el = document.createElement('audio')
   el.autoplay = true
   getAudioContainer().appendChild(el)
   // attach() applies the room's speaker (sinkId) to the element.
   track.attach(el)
-  track.setVolume(volumeFor(track, identity))
-  audioElements.set(sid, { el, track, identity })
+  const entry: AudioEntry = { el, track, identity, boost: null }
+  audioElements.set(sid, entry)
+  applyTrackVolume(entry)
 }
 
 function detachAudio(track: RemoteTrack): void {
   for (const [sid, entry] of audioElements) {
-    if (entry.track !== track) continue
-    entry.track.detach(entry.el)
-    entry.el.remove()
-    audioElements.delete(sid)
+    if (entry.track === track) removeAudioEntry(sid, entry)
   }
 }
 
 function applyRemoteVolumes(): void {
-  for (const { track, identity } of audioElements.values()) {
-    track.setVolume(volumeFor(track, identity))
-  }
+  for (const entry of audioElements.values()) applyTrackVolume(entry)
 }
+
+// The boost context follows the speaker choice (elements are switched by Room.switchActiveDevice).
+useDevicePrefs.subscribe((s, prev) => {
+  if (s.audiooutput !== prev.audiooutput) applyBoostSink()
+})
 
 /** Per-stream audio volume (0..1) for a participant's ScreenShareAudio; default 1. */
 export function setStreamVolume(identity: string, volume: number): void {
   const v = Math.min(1, Math.max(0, volume))
   useParticipants.setState((s) => ({ streamVolumes: { ...s.streamVolumes, [identity]: v } }))
   applyRemoteVolumes()
+}
+
+// ---------------------------------------------------------------------------------------------
+// Per-user voice volume (microphone tracks only; persisted)
+// ---------------------------------------------------------------------------------------------
+
+/** Set a user's voice volume for me: 0..2 (1 = 100%). Persisted; applies live. */
+export function setUserVolume(userId: string, volume: number): void {
+  const v = clampUserVolume(volume)
+  useUserVolumes.setState((s) => {
+    const volumes = { ...s.volumes }
+    if (v === 1) delete volumes[userId]
+    else volumes[userId] = v
+    return { volumes }
+  })
+  persistUserVolumes()
+  applyRemoteVolumes()
+}
+
+/** Mute a user for me only (they still transmit to everyone else). Persisted; applies live. */
+export function setUserMuted(userId: string, muted: boolean): void {
+  useUserVolumes.setState((s) => {
+    const next = { ...s.muted }
+    if (muted) next[userId] = true
+    else delete next[userId]
+    return { muted: next }
+  })
+  persistUserVolumes()
+  applyRemoteVolumes()
+}
+
+/** `{ volume (0..2), muted }` for a user, as set with setUserVolume / setUserMuted. */
+export function useUserVolume(userId: string): { volume: number; muted: boolean } {
+  const volume = useUserVolumes((s) => s.volumes[userId] ?? 1)
+  const muted = useUserVolumes((s) => !!s.muted[userId])
+  return { volume, muted }
 }
 
 /** Retry audio playback after the browser blocked autoplay. Call from a user gesture. */
@@ -710,18 +902,91 @@ export async function resumeAudio(): Promise<void> {
 // Microphone / devices
 // ---------------------------------------------------------------------------------------------
 
-async function applyMic(): Promise<void> {
+/**
+ * Whether the mic should be sent right now. The user's explicit mute and deafen always win; in
+ * push-to-talk mode the PTT gate (key held + release delay) must also be open.
+ */
+function wantsTransmit(): boolean {
+  const s = useVoice.getState()
+  if (s.muted || s.deafened) return false
+  if (useInputPrefs.getState().inputMode === 'ptt') return usePtt.getState().open
+  return true
+}
+
+function localMicTrack(r: Room): LocalAudioTrack | null {
+  const track = r.localParticipant.getTrackPublication(Track.Source.Microphone)?.track
+  return track instanceof LocalAudioTrack ? track : null
+}
+
+/**
+ * Reconcile the published mic with `wantsTransmit()`. Once published, gating is a plain
+ * LocalAudioTrack.mute()/unmute() (MediaStreamTrack.enabled + a mute signal; the device stays
+ * open because stopMicTrackOnMute is off), so PTT presses never re-acquire the microphone.
+ * The first publish happens as soon as the user isn't muted, already muted when the PTT key isn't
+ * held, so the first press is instant too.
+ */
+function applyMic(): Promise<void> {
   const r = room
-  if (!r || useVoice.getState().status === 'connecting') return // join() applies it after connect
-  const enabled = !useVoice.getState().muted
+  if (!r || useVoice.getState().status === 'connecting') return Promise.resolve() // join() applies it after connect
+  const track = localMicTrack(r)
+  if (track) {
+    const op = wantsTransmit() ? track.unmute() : track.mute()
+    return op.then(
+      () => undefined,
+      (e: unknown) => console.warn('[voice] mic mute/unmute failed', e),
+    )
+  }
+  const s = useVoice.getState()
+  if (s.muted || s.deafened) return Promise.resolve() // nothing published, nothing to send
+  if (micPublishing?.room === r) return micPublishing.promise // reconciled again when it settles
+  const promise = publishMic(r).finally(() => {
+    if (micPublishing?.promise === promise) micPublishing = null
+    if (room === r) void applyMic()
+  })
+  micPublishing = { room: r, promise }
+  return promise
+}
+
+async function publishMic(r: Room): Promise<void> {
+  let track: LocalAudioTrack | null = null
   try {
-    await r.localParticipant.setMicrophoneEnabled(enabled)
+    // createTracks() applies the room's audioCaptureDefaults (selected mic, AEC/NS/AGC).
+    const tracks = await r.localParticipant.createTracks({ audio: true })
+    for (const t of tracks) {
+      if (!track && t instanceof LocalAudioTrack) track = t
+      else t.stop()
+    }
+    if (!track) throw new Error('no audio track was captured')
+    if (room !== r) {
+      track.stop()
+      return
+    }
+    // Publish already muted when we shouldn't transmit (PTT not held): nothing leaks.
+    if (!wantsTransmit()) await track.mute()
+    await r.localParticipant.publishTrack(track, { source: Track.Source.Microphone })
   } catch (e) {
+    track?.stop()
     if (room !== r) return
     useVoice.setState({ muted: true, error: mediaErrorMessage(e, 'Microphone') })
     announce()
   }
 }
+
+/** True while our mic is actually being sent (in voice, not muted/deafened, PTT held if PTT). */
+export function useMicLive(): boolean {
+  const base = useVoice((s) => (s.status === 'connected' || s.status === 'reconnecting') && !s.muted && !s.deafened)
+  const ptt = useInputPrefs((s) => s.inputMode === 'ptt')
+  const open = usePtt((s) => s.open)
+  return base && (!ptt || open)
+}
+
+// PTT gate / input mode changes gate the mic immediately.
+usePtt.subscribe((s, prev) => {
+  if (s.open !== prev.open) void applyMic()
+})
+useInputPrefs.subscribe((s, prev) => {
+  if (s.inputMode !== prev.inputMode) void applyMic()
+})
 
 /** Persist a device choice and apply it live when in voice. `null` = system default. */
 export async function setPreferredDevice(kind: DeviceKind, deviceId: string | null): Promise<void> {
@@ -854,6 +1119,9 @@ window.addEventListener('beforeunload', () => {
 
 if (import.meta.hot) {
   import.meta.hot.dispose(() => {
+    offTrayVoice()
+    offTrayChannels()
+    offTrayAction?.()
     void teardown(true)
   })
 }

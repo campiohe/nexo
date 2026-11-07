@@ -1,14 +1,25 @@
 // Owner: workstream D. Center pane for a voice channel: participant + stream tiles.
-import { memo, useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode, type RefObject } from 'react'
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type MouseEvent,
+  type ReactNode,
+  type RefObject,
+} from 'react'
 import { ConnectionQuality } from 'livekit-client'
 import type { User } from '@shared/protocol'
 import { useApp } from '@renderer/store/app'
-import { initials, inkOn } from '@renderer/lib/colors'
-import { resumeAudio, setStreamVolume, stopWatching, useVoice, watchStream } from '../../voice/session'
+import { Avatar } from '@renderer/components/Avatar'
+import { resumeAudio, setStreamVolume, stopWatching, useUserVolume, useVoice, watchStream } from '../../voice/session'
 import { useParticipants, type ParticipantView } from '../../voice/participants'
 import { CameraButton, DeafenButton, LeaveButton, MuteButton, ShareButton } from './ControlButtons'
 import { SharePickerHost } from './SharePicker'
 import { VideoTrackView, useVideoStats } from './VideoTrackView'
+import { UserVolumePopover } from './UserVolumePopover'
 import {
   AlertIcon,
   CollapseIcon,
@@ -105,7 +116,10 @@ function Stage() {
   const volumes = useParticipants((s) => s.streamVolumes)
   const users = useApp((s) => s.users)
   const [focusKey, setFocusKey] = useState<string | null>(null)
+  const [volumeMenu, setVolumeMenu] = useState<{ userId: string; x: number; y: number } | null>(null)
   const gridRef = useRef<HTMLDivElement>(null)
+  const openVolumeMenu = useCallback((userId: string, x: number, y: number) => setVolumeMenu({ userId, x, y }), [])
+  const closeVolumeMenu = useCallback(() => setVolumeMenu(null), [])
 
   const tiles: TileSpec[] = [
     ...list.filter((p) => p.isStreaming).map((p) => ({ key: `stream:${p.identity}`, kind: 'stream' as const, view: p })),
@@ -146,7 +160,17 @@ function Stage() {
         />
       )
     }
-    return <UserTile key={t.key} view={t.view} user={user} mode={mode} focused={isFocused} onToggleFocus={toggleFocus} />
+    return (
+      <UserTile
+        key={t.key}
+        view={t.view}
+        user={user}
+        mode={mode}
+        focused={isFocused}
+        onToggleFocus={toggleFocus}
+        onVolumeMenu={t.view.isLocal ? undefined : openVolumeMenu}
+      />
+    )
   }
 
   return (
@@ -194,6 +218,14 @@ function Stage() {
         <LeaveButton size="lg" />
       </div>
       <SharePickerHost />
+      {volumeMenu && (
+        <UserVolumePopover
+          key={`${volumeMenu.userId}:${volumeMenu.x}:${volumeMenu.y}`}
+          userId={volumeMenu.userId}
+          anchor={{ x: volumeMenu.x, y: volumeMenu.y }}
+          onClose={closeVolumeMenu}
+        />
+      )}
     </div>
   )
 }
@@ -236,14 +268,9 @@ function nameOf(view: ParticipantView, user: User | undefined): string {
   return user?.name ?? view.name
 }
 
-function Avatar({ user, size, color, name }: { user?: User; size: number; color?: string; name?: string }) {
-  const c = color ?? user?.color ?? '#3a4152'
-  const n = name ?? user?.name ?? '?'
-  return (
-    <span className="vx-avatar" style={{ width: size, height: size, fontSize: Math.round(size * 0.4), background: c, color: inkOn(c) }}>
-      {initials(n)}
-    </span>
-  )
+/** The full User when known (so profile pictures show), else name + color from the token. */
+function avatarUser(view: ParticipantView, user: User | undefined) {
+  return user ?? { id: view.identity, name: view.name, color: colorOf(view, undefined) }
 }
 
 function toggleFullscreen(el: HTMLElement | null) {
@@ -262,11 +289,12 @@ interface TileShellProps {
   focusable: boolean
   focused: boolean
   onToggleFocus(): void
+  onContextMenu?(e: MouseEvent): void
   label: string
   children: ReactNode
 }
 
-function TileShell({ className, mode, focusable, focused, onToggleFocus, label, children }: TileShellProps) {
+function TileShell({ className, mode, focusable, focused, onToggleFocus, onContextMenu, label, children }: TileShellProps) {
   const ref = useRef<HTMLDivElement>(null)
   const clickTimer = useRef<number | undefined>(undefined)
   useEffect(() => () => window.clearTimeout(clickTimer.current), [])
@@ -288,6 +316,7 @@ function TileShell({ className, mode, focusable, focused, onToggleFocus, label, 
       className={`vx-tile is-${mode} ${className} ${focusable ? 'is-focusable' : ''} ${focused ? 'is-focused' : ''}`}
       onClick={focusable ? onClick : undefined}
       onDoubleClick={focusable ? onDoubleClick : undefined}
+      onContextMenu={onContextMenu}
     >
       {children}
       {focusable && mode !== 'strip' && (
@@ -310,13 +339,28 @@ interface UserTileProps {
   mode: 'grid' | 'focus' | 'strip'
   focused: boolean
   onToggleFocus(): void
+  /** Right-click handler for remote users (opens the per-user volume card). */
+  onVolumeMenu?(userId: string, x: number, y: number): void
 }
 
-const UserTile = memo(function UserTile({ view, user, mode, focused, onToggleFocus }: UserTileProps) {
+const UserTile = memo(function UserTile({ view, user, mode, focused, onToggleFocus, onVolumeMenu }: UserTileProps) {
   const name = nameOf(view, user)
   const color = colorOf(view, user)
+  const selfMuted = useVoice((s) => view.isLocal && s.muted)
   const deafenedSelf = useVoice((s) => view.isLocal && s.deafened)
-  const deafened = useApp((s) => s.voice.find((v) => v.userId === view.identity)?.deafened ?? false) || deafenedSelf
+  const serverState = useApp((s) => s.voice.find((v) => v.userId === view.identity))
+  const deafened = (serverState?.deafened ?? false) || deafenedSelf
+  // The mute icon reflects the explicit mute (server voice state), not LiveKit's track mute,
+  // which is also set while a push-to-talk user isn't holding their key.
+  const muted = view.isLocal ? selfMuted : serverState ? serverState.muted : view.micMuted
+  const { volume: userVolume, muted: mutedForMe } = useUserVolume(view.identity)
+  const volumeAdjusted = !view.isLocal && (mutedForMe || userVolume !== 1)
+  const onContextMenu = onVolumeMenu
+    ? (e: MouseEvent) => {
+        e.preventDefault()
+        onVolumeMenu(view.identity, e.clientX, e.clientY)
+      }
+    : undefined
   const poor = view.connectionQuality === ConnectionQuality.Poor || view.connectionQuality === ConnectionQuality.Lost
   const avatarSize = mode === 'strip' ? 44 : mode === 'focus' ? 120 : 76
 
@@ -327,6 +371,7 @@ const UserTile = memo(function UserTile({ view, user, mode, focused, onToggleFoc
       focusable={!!view.cameraTrack}
       focused={focused}
       onToggleFocus={onToggleFocus}
+      onContextMenu={onContextMenu}
       label={name}
     >
       {view.cameraTrack ? (
@@ -334,12 +379,12 @@ const UserTile = memo(function UserTile({ view, user, mode, focused, onToggleFoc
       ) : (
         <div className="vx-user-bg" style={{ ['--tile-color' as string]: color }}>
           <span className="vx-ring">
-            <Avatar color={color} name={name} size={avatarSize} />
+            <Avatar user={avatarUser(view, user)} size={avatarSize} />
           </span>
         </div>
       )}
       <div className="vx-tile-label">
-        {(view.micMuted || deafened) && (
+        {(muted || deafened) && (
           <span className="vx-label-icon is-danger" title={deafened ? 'Deafened' : 'Muted'}>
             {deafened ? <HeadphonesOffIcon size={13} /> : <MicOffIcon size={13} />}
           </span>
@@ -348,6 +393,14 @@ const UserTile = memo(function UserTile({ view, user, mode, focused, onToggleFoc
           {name}
           {view.isLocal && <span className="vx-label-you"> (you)</span>}
         </span>
+        {volumeAdjusted && (
+          <span
+            className={`vx-label-icon ${mutedForMe ? 'is-danger' : 'is-adjusted'}`}
+            title={mutedForMe ? 'Muted for you (right-click to change)' : `Volume ${Math.round(userVolume * 100)}% (right-click to change)`}
+          >
+            {mutedForMe ? <VolumeOffIcon size={13} /> : <VolumeIcon size={13} />}
+          </span>
+        )}
         {view.isStreaming && <span className="vx-live-badge is-small">LIVE</span>}
         {poor && (
           <span className="vx-label-icon is-warn" title="Poor connection">
@@ -380,7 +433,7 @@ const StreamTile = memo(function StreamTile({ view, user, watching, volume, deaf
     return (
       <div role="listitem" aria-label={`${name}'s stream`} className={`vx-tile is-${mode} vx-stream is-unwatched`} style={{ ['--tile-color' as string]: color }}>
         <div className="vx-unwatched">
-          {mode !== 'strip' && <Avatar color={color} name={name} size={mode === 'focus' ? 72 : 48} />}
+          {mode !== 'strip' && <Avatar user={avatarUser(view, user)} size={mode === 'focus' ? 72 : 48} />}
           <span className="vx-unwatched-title">
             <span className="vx-live-badge">LIVE</span> {view.isLocal ? "You're live" : `${name} is streaming`}
           </span>

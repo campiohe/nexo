@@ -2,7 +2,8 @@
 // channel name + connection status, mute / deafen / camera / share / leave. Renders nothing when idle.
 import { ConnectionQuality } from 'livekit-client'
 import { useApp } from '@renderer/store/app'
-import { getSharePreset, useVoice } from '../../voice/session'
+import { useInputPrefs } from '../../voice/prefs'
+import { getSharePreset, useMicLive, useVoice } from '../../voice/session'
 import { useParticipants } from '../../voice/participants'
 import { CameraButton, DeafenButton, LeaveButton, MuteButton, QualityBars, ShareButton } from './ControlButtons'
 import { SharePickerHost } from './SharePicker'
@@ -16,6 +17,9 @@ export function VoiceControls() {
   const sharePresetId = useVoice((s) => s.sharePresetId)
   const channelName = useApp((s) => s.channels.find((c) => c.id === channelId)?.name ?? 'Voice')
   const quality = useParticipants((s) => s.list.find((p) => p.isLocal)?.connectionQuality ?? ConnectionQuality.Unknown)
+  const ptt = useInputPrefs((s) => s.inputMode === 'ptt')
+  const pttLabel = useInputPrefs((s) => s.pttBinding?.label ?? null)
+  const micLive = useMicLive()
 
   if (status === 'idle') return null
 
@@ -49,6 +53,14 @@ export function VoiceControls() {
           <span className="vx-panel-state">
             {status !== 'connected' && <span className="vx-spinner" aria-hidden="true" />}
             {statusText}
+            {ptt && (
+              <span
+                className={`vx-ptt-badge ${micLive ? 'is-live' : ''}`}
+                title={pttLabel ? `Push to talk: hold ${pttLabel}` : 'Push to talk: no key set (Settings → Audio & video)'}
+              >
+                PTT
+              </span>
+            )}
           </span>
           <button
             className="vx-panel-channel"

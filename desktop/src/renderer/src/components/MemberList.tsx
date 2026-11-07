@@ -1,5 +1,6 @@
 import type { User, VoiceState } from '@shared/protocol'
 import { useApp } from '../store/app'
+import { useUi } from '../store/ui'
 import { Avatar } from './Avatar'
 import { SpeakerIcon } from './icons'
 
@@ -18,8 +19,21 @@ export function MemberList() {
 
   const renderUser = (u: User, isOnline: boolean) => {
     const v: VoiceState | undefined = voiceByUser.get(u.id)
+    const canAdjust = !!v && u.id !== meId
     return (
-      <li key={u.id} className={`member ${isOnline ? '' : 'is-offline'}`}>
+      <li
+        key={u.id}
+        className={`member ${isOnline ? '' : 'is-offline'} ${canAdjust ? 'has-menu' : ''}`}
+        onContextMenu={
+          canAdjust
+            ? (e) => {
+                e.preventDefault()
+                useUi.getState().openVolumePopover(u.id, { x: e.clientX, y: e.clientY })
+              }
+            : undefined
+        }
+        title={canAdjust ? 'Right-click to adjust volume' : undefined}
+      >
         <Avatar user={u} size={30} online={isOnline} />
         <div className="member-text">
           <span className="member-name">

@@ -1,6 +1,7 @@
 // Owner: workstream D. Voice control buttons shared by the sidebar panel and the stage toolbar.
 import { ConnectionQuality } from 'livekit-client'
-import { useVoice } from '../../voice/session'
+import { useInputPrefs } from '../../voice/prefs'
+import { useMicLive, useVoice } from '../../voice/session'
 import {
   CameraIcon,
   CameraOffIcon,
@@ -24,12 +25,20 @@ const iconSize = (size: Size) => (size === 'lg' ? 20 : 18)
 export function MuteButton({ size = 'sm' }: CtlProps) {
   const muted = useVoice((s) => s.muted)
   const deafened = useVoice((s) => s.deafened)
+  const ptt = useInputPrefs((s) => s.inputMode === 'ptt')
+  const pttLabel = useInputPrefs((s) => s.pttBinding?.label ?? null)
+  const live = useMicLive()
   const label = muted ? 'Unmute' : 'Mute'
+  const title = deafened
+    ? 'Unmute (also undeafens)'
+    : ptt && !muted
+      ? `${label} · push to talk${pttLabel ? ` (${pttLabel})` : ': no key set'}`
+      : label
   return (
     <button
-      className={`vx-ctl vx-ctl-${size} ${muted ? 'is-danger' : ''}`}
+      className={`vx-ctl vx-ctl-${size} ${muted ? 'is-danger' : ''} ${ptt && live ? 'is-transmitting' : ''}`}
       onClick={() => useVoice.getState().toggleMute()}
-      title={deafened ? 'Unmute (also undeafens)' : label}
+      title={title}
       aria-label={label}
       aria-pressed={muted}
     >

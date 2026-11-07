@@ -1,9 +1,11 @@
-// Owner: workstream D. Mic / speaker / camera selection + mic level meter.
+// Owner: workstream D. Mic / speaker / camera selection + mic level meter + input mode (push to talk).
 // Rendered by workstream C inside the Settings modal. Changes apply live when in voice.
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useDevicePrefs, type DeviceKind } from '../../voice/devices'
+import { PTT_RELEASE_DELAY_MAX, setInputPrefs, useInputPrefs, type InputMode } from '../../voice/prefs'
+import { cancelCapture, captureBinding, usePtt } from '../../voice/ptt'
 import { getLocalMicTrack, setPreferredDevice, useVoice } from '../../voice/session'
-import { CameraIcon, MicIcon, SpeakerIcon } from './icons'
+import { AlertIcon, CameraIcon, MicIcon, SpeakerIcon } from './icons'
 import './voice.css'
 
 type SinkAudio = HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> }
@@ -77,6 +79,7 @@ export function DeviceSettings() {
         loaded={loaded}
       />
       <MicMeter deviceId={prefs.audioinput} />
+      <InputModeSection />
 
       <DeviceSelect
         icon={<SpeakerIcon size={16} />}
@@ -147,7 +150,9 @@ function DeviceSelect({ icon, label, kind, devices, value, loaded, disabledReaso
 function MicMeter({ deviceId }: { deviceId: string | null }) {
   const barRef = useRef<HTMLDivElement>(null)
   const inVoice = useVoice((s) => s.status === 'connected' || s.status === 'reconnecting')
-  const muted = useVoice((s) => s.muted)
+  const muted = useVoice((s) => s.muted || s.deafened)
+  // In push-to-talk mode the call's track is silent while the key is up: meter a separate stream.
+  const ptt = useInputPrefs((s) => s.inputMode === 'ptt')
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -158,7 +163,7 @@ function MicMeter({ deviceId }: { deviceId: string | null }) {
 
     const start = async () => {
       setError(null)
-      let track = inVoice && !muted ? getLocalMicTrack() : null
+      let track = inVoice && !muted && !ptt ? getLocalMicTrack() : null
       if (!track || track.readyState === 'ended') {
         try {
           ownStream = await navigator.mediaDevices.getUserMedia({
@@ -212,7 +217,7 @@ function MicMeter({ deviceId }: { deviceId: string | null }) {
       void ctx?.close().catch(() => {})
       if (barRef.current) barRef.current.style.clipPath = 'inset(0 100% 0 0)'
     }
-  }, [deviceId, inVoice, muted])
+  }, [deviceId, inVoice, muted, ptt])
 
   return (
     <div className="vx-meter-wrap">
@@ -266,5 +271,122 @@ function SpeakerTest({ deviceId }: { deviceId: string | null }) {
     <button className="vx-btn vx-btn-sm vx-speaker-test" onClick={() => void play()} disabled={playing}>
       {playing ? 'Playing…' : 'Play test sound'}
     </button>
+  )
+}
+
+const MODES: { id: InputMode; label: string }[] = [
+  { id: 'voice', label: 'Voice activity' },
+  { id: 'ptt', label: 'Push to talk' },
+]
+
+/** Voice activity vs push to talk, the PTT keybind and its release delay. */
+function InputModeSection() {
+  const mode = useInputPrefs((s) => s.inputMode)
+  const binding = useInputPrefs((s) => s.pttBinding)
+  const delay = useInputPrefs((s) => s.pttReleaseDelayMs)
+  const status = usePtt((s) => s.status)
+  const capturing = usePtt((s) => s.capturing)
+  const held = usePtt((s) => s.open)
+
+  // Leaving the settings mid-recording cancels it.
+  useEffect(() => () => {
+    if (usePtt.getState().capturing) cancelCapture()
+  }, [])
+
+  const record = async () => {
+    if (capturing) {
+      cancelCapture()
+      return
+    }
+    const b = await captureBinding()
+    if (b) setInputPrefs({ pttBinding: b })
+  }
+
+  const warning =
+    mode === 'ptt' && binding && status && !status.active
+      ? (status.reason ?? 'Global push to talk is not running.') + ' Push to talk still works while Nexo is focused.'
+      : null
+
+  return (
+    <div className="vx-input-mode">
+      <div className="vx-field">
+        <span className="vx-field-label" id="vx-input-mode-label">
+          Input mode
+        </span>
+        <div className="vx-seg" role="radiogroup" aria-labelledby="vx-input-mode-label">
+          {MODES.map((m) => (
+            <button
+              key={m.id}
+              type="button"
+              role="radio"
+              aria-checked={mode === m.id}
+              className={`vx-seg-btn ${mode === m.id ? 'is-active' : ''}`}
+              onClick={() => setInputPrefs({ inputMode: m.id })}
+            >
+              {m.label}
+            </button>
+          ))}
+        </div>
+        <p className="vx-field-hint">
+          {mode === 'ptt'
+            ? 'Your mic is only sent while you hold the key, even when another app (like a game) has focus.'
+            : 'Your mic is sent whenever you are unmuted.'}
+        </p>
+      </div>
+
+      {mode === 'ptt' && (
+        <>
+          <div className="vx-field">
+            <span className="vx-field-label">Push to talk key</span>
+            <div className="vx-keybind-row">
+              <button
+                type="button"
+                className={`vx-keybind ${capturing ? 'is-recording' : binding ? '' : 'is-empty'}`}
+                onClick={() => void record()}
+                aria-label={capturing ? 'Recording: press a key or mouse button, Esc to cancel' : 'Change push to talk key'}
+              >
+                {capturing ? 'Press any key or mouse button…' : (binding?.label ?? 'Click to set a key')}
+              </button>
+              {held && !capturing && <span className="vx-ptt-badge is-live">TALKING</span>}
+            </div>
+            <p className="vx-field-hint">
+              {capturing
+                ? 'Esc cancels. Left and right click can’t be used.'
+                : binding
+                  ? 'Click to change. Mouse side buttons work too.'
+                  : 'Choose the key or mouse button to hold while talking.'}
+            </p>
+          </div>
+
+          <div className="vx-field">
+            <label className="vx-field-label" htmlFor="vx-ptt-delay">
+              Release delay
+            </label>
+            <div className="vx-range-row">
+              <input
+                id="vx-ptt-delay"
+                type="range"
+                className="vx-range"
+                min={0}
+                max={PTT_RELEASE_DELAY_MAX}
+                step={10}
+                value={delay}
+                onChange={(e) => setInputPrefs({ pttReleaseDelayMs: Number(e.target.value) })}
+                style={{ ['--fill' as string]: `${(delay / PTT_RELEASE_DELAY_MAX) * 100}%` }}
+              />
+              <span className="vx-range-value">{delay} ms</span>
+            </div>
+            <p className="vx-field-hint">Keeps the mic open briefly after you let go, so word endings aren’t cut off.</p>
+          </div>
+
+          {warning && (
+            <p className="vx-warn-box" role="status">
+              <AlertIcon size={15} />
+              <span>{warning}</span>
+            </p>
+          )}
+        </>
+      )}
+    </div>
   )
 }

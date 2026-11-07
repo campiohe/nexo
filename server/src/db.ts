@@ -15,7 +15,8 @@ const SCHEMA = `
     name        TEXT NOT NULL UNIQUE COLLATE NOCASE,
     color       TEXT NOT NULL,
     token_hash  TEXT NOT NULL UNIQUE,
-    created_at  INTEGER NOT NULL
+    created_at  INTEGER NOT NULL,
+    avatar      TEXT NULL
   );
 
   CREATE TABLE IF NOT EXISTS channels (
@@ -38,6 +39,16 @@ const SCHEMA = `
 
 export type Db = ReturnType<typeof openDb>
 
+/**
+ * Idempotent, additive migrations for databases created by older versions.
+ * (New databases already get every column from SCHEMA.)
+ */
+function migrate(db: DatabaseSync): void {
+  const userCols = new Set((db.prepare('PRAGMA table_info(users)').all() as { name: string }[]).map((c) => c.name))
+  // v0.2: profile pictures. NULL = no picture; otherwise the picture's version token.
+  if (!userCols.has('avatar')) db.exec('ALTER TABLE users ADD COLUMN avatar TEXT NULL')
+}
+
 /** True when `err` is a SQLite UNIQUE constraint violation. */
 export function isUniqueViolation(err: unknown): boolean {
   return err instanceof Error && /UNIQUE constraint failed/i.test(err.message)
@@ -52,8 +63,9 @@ export function openDb(dataDir: string) {
   }
   const db = new DatabaseSync(file)
   db.exec(SCHEMA)
+  migrate(db)
 
-  const userCols = 'id, name, color'
+  const userCols = 'id, name, color, avatar'
   const chanCols = 'id, name, type, position'
   const msgCols = 'id, channel_id AS channelId, user_id AS userId, content, created_at AS createdAt'
 
@@ -64,6 +76,7 @@ export function openDb(dataDir: string) {
     userByName: db.prepare(`SELECT ${userCols} FROM users WHERE name = ?`),
     userInsert: db.prepare('INSERT INTO users (id, name, color, token_hash, created_at) VALUES (?, ?, ?, ?, ?)'),
     userSetColor: db.prepare('UPDATE users SET color = ? WHERE id = ?'),
+    userSetAvatar: db.prepare('UPDATE users SET avatar = ? WHERE id = ?'),
 
     chansAll: db.prepare(`SELECT ${chanCols} FROM channels ORDER BY type, position, created_at`),
     chanById: db.prepare(`SELECT ${chanCols} FROM channels WHERE id = ?`),
@@ -98,12 +111,17 @@ export function openDb(dataDir: string) {
     byName: (name: string): User | undefined => q.userByName.get(name) as User | undefined,
     /** Throws a UNIQUE violation (see isUniqueViolation) if the name is taken. */
     create(name: string, color: string, tokenHash: string): User {
-      const user: User = { id: randomUUID(), name, color }
+      const user: User = { id: randomUUID(), name, color, avatar: null }
       q.userInsert.run(user.id, name, color, tokenHash, Date.now())
       return user
     },
     setColor(id: string, color: string): User | undefined {
       q.userSetColor.run(color, id)
+      return users.get(id)
+    },
+    /** `avatar` is the picture's version token, or null to clear it. */
+    setAvatar(id: string, avatar: string | null): User | undefined {
+      q.userSetAvatar.run(avatar, id)
       return users.get(id)
     },
   }

@@ -63,6 +63,26 @@ if [[ $BUILD == 1 || ! -f "$APP_DIR/out/main/index.js" ]]; then
 EOF
 fi
 
+# 3b. Runtime node_modules: main require()s uiohook-napi (global push-to-talk), which loads its win32-x64
+#     N-API prebuild through node-gyp-build. Copied only when the version changes: a running copy keeps the
+#     .node file locked on Windows.
+copy_module() { # <package name> <files/dirs inside the package...>
+  local name="$1"; shift
+  local src dst want have
+  src="$(cd "$ROOT/desktop" && node -p "require('path').dirname(require.resolve('$name/package.json'))")"
+  dst="$APP_DIR/node_modules/$name"
+  want="$(node -p "require('$src/package.json').version")"
+  have="$( [[ -f "$dst/package.json" ]] && node -p "require('$dst/package.json').version" 2>/dev/null || true)"
+  [[ "$want" == "$have" ]] && return 0
+  rm -rf "$dst" && mkdir -p "$dst"
+  for item in "$@"; do
+    mkdir -p "$dst/$(dirname "$item")"
+    cp -r "$src/$item" "$dst/$item"
+  done
+}
+copy_module node-gyp-build package.json index.js node-gyp-build.js LICENSE
+copy_module uiohook-napi package.json dist LICENSE prebuilds/win32-x64
+
 # 4. Launch. Each profile gets its own user-data dir, so two copies can log in as different users.
 USER_DATA_WIN="$(wslpath -w "$DEV_DIR/profile-$PROFILE")"
 echo "→ Launching Nexo (profile $PROFILE) — logs below, Ctrl+C to quit"

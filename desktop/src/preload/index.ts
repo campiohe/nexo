@@ -2,7 +2,15 @@
 // Runs sandboxed: only contextBridge / ipcRenderer are available. Platform flags come from main via
 // webPreferences.additionalArguments (see src/main/platform.ts).
 import { contextBridge, ipcRenderer } from 'electron'
-import { IPC, type CaptureSource, type NexoBridge } from './api'
+import {
+  IPC,
+  type AppPrefs,
+  type CaptureSource,
+  type NexoBridge,
+  type PttBinding,
+  type PttStatus,
+  type TrayAction,
+} from './api'
 
 function arg(name: string): string | undefined {
   const prefix = `--nexo-${name}=`
@@ -12,6 +20,22 @@ function arg(name: string): string | undefined {
 const platformArg = arg('platform')
 const platform: NexoBridge['platform'] =
   platformArg === 'win32' || platformArg === 'darwin' || platformArg === 'linux' ? platformArg : 'linux'
+
+const TRAY_ACTIONS: readonly TrayAction[] = ['toggle-mute', 'toggle-deafen', 'leave-voice']
+
+/** Subscribes to a main → renderer channel; the returned function unsubscribes. */
+function subscribe<T>(channel: string, accept: (v: unknown) => v is T, cb: (v: T) => void): () => void {
+  const listener = (_event: Electron.IpcRendererEvent, value: unknown): void => {
+    if (accept(value)) cb(value)
+  }
+  ipcRenderer.on(channel, listener)
+  return () => {
+    ipcRenderer.removeListener(channel, listener)
+  }
+}
+
+const isBoolean = (v: unknown): v is boolean => typeof v === 'boolean'
+const isTrayAction = (v: unknown): v is TrayAction => TRAY_ACTIONS.includes(v as TrayAction)
 
 const bridge: NexoBridge = {
   platform,
@@ -30,6 +54,22 @@ const bridge: NexoBridge = {
   },
 
   openExternal: (url: string): void => ipcRenderer.send(IPC.openExternal, url),
+
+  ptt: {
+    setBinding: (binding: PttBinding | null): Promise<PttStatus> => ipcRenderer.invoke(IPC.pttSetBinding, binding),
+    captureBinding: (): Promise<PttBinding | null> => ipcRenderer.invoke(IPC.pttCapture),
+    onChange: (cb: (pressed: boolean) => void): (() => void) => subscribe(IPC.pttChange, isBoolean, cb),
+  },
+
+  prefs: {
+    get: (): Promise<AppPrefs> => ipcRenderer.invoke(IPC.prefsGet),
+    set: (patch: Partial<AppPrefs>): Promise<AppPrefs> => ipcRenderer.invoke(IPC.prefsSet, patch),
+  },
+
+  tray: {
+    setVoiceState: (state): void => ipcRenderer.send(IPC.trayVoiceState, state),
+    onAction: (cb: (action: TrayAction) => void): (() => void) => subscribe(IPC.trayAction, isTrayAction, cb),
+  },
 }
 
 contextBridge.exposeInMainWorld('nexo', bridge)

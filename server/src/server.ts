@@ -14,6 +14,7 @@ import type {
 import { MAX_MESSAGE_LENGTH } from '../../shared/protocol.ts'
 import { loadConfig, type Config } from './config.ts'
 import { isUniqueViolation, openDb } from './db.ts'
+import { createAvatarRoutes } from './avatars.ts'
 
 interface SocketData {
   user: User
@@ -27,6 +28,8 @@ export interface StartOptions extends Partial<Omit<Config, 'livekit'>> {
   livekit?: Partial<Config['livekit']>
   /** Logger for info lines; `false` silences them (errors are still printed). Default: console.log. */
   log?: ((msg: string) => void) | false
+  /** Minimum ms between two profile picture changes by the same user. Default: LIMITS.avatarIntervalMs. */
+  avatarIntervalMs?: number
 }
 
 export interface NexoInstance {
@@ -50,6 +53,8 @@ export const LIMITS = {
   payloadBytes: 64 * 1024,
   typingThrottleMs: 1000,
   tokenTtl: '12h',
+  /** One profile picture change (upload or delete) per user every 3 s. */
+  avatarIntervalMs: 3000,
 } as const
 
 export const HANDSHAKE_ERRORS = {
@@ -106,12 +111,27 @@ function fail(ack: unknown, error: string) {
 
 export async function start(options: StartOptions = {}): Promise<NexoInstance> {
   const base = loadConfig()
-  const { log: logOpt, livekit, ...rest } = options
+  const { log: logOpt, livekit, avatarIntervalMs, ...rest } = options
   const config: Config = { ...base, ...rest, livekit: { ...base.livekit, ...livekit } }
   const log = logOpt === false ? () => {} : (logOpt ?? ((m: string) => console.log(m)))
 
   const db = openDb(config.dataDir)
   const { users, channels, messages } = db
+
+  /** Store `user` as the latest profile on all of its sockets and tell everyone. */
+  function publishUser(user: User) {
+    for (const s of io.of('/').sockets.values()) if (s.data.user?.id === user.id) s.data.user = user
+    io.emit('user:upsert', user)
+  }
+
+  const avatarRoutes = createAvatarRoutes({
+    dataDir: config.dataDir,
+    users,
+    hashToken,
+    onUserUpdated: publishUser,
+    minIntervalMs: avatarIntervalMs ?? LIMITS.avatarIntervalMs,
+    log,
+  })
 
   const http = createServer((req, res) => {
     const pathname = (req.url ?? '/').split('?')[0]
@@ -120,6 +140,7 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
       res.end(JSON.stringify({ ok: true, name: config.serverName }))
       return
     }
+    if (avatarRoutes(req, res)) return
     // socket.io handles /socket.io/* itself; everything else is 404.
     if (!pathname.startsWith('/socket.io')) res.writeHead(404).end()
   })
@@ -376,8 +397,7 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
       if (!isObj(p) || !isStr(p.color) || !COLOR_RE.test(p.color)) return fail(ack, 'Invalid color')
       const updated = users.setColor(userId, p.color.toLowerCase())
       if (!updated) return fail(ack, 'User not found')
-      for (const s of io.of('/').sockets.values()) if (s.data.user?.id === userId) s.data.user = updated
-      io.emit('user:upsert', updated)
+      publishUser(updated)
       ok(ack, updated)
     }))
 

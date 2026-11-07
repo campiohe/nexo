@@ -5,10 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <!-- Owner: workstream B. Strict CSP for dev and prod. The dev-only react-refresh preamble is inlined by
          Vite *above* this tag, so it is not subject to it. connect-src stays open to any http(s)/ws(s) host because
-         the Nexo server and LiveKit URLs are user-entered. -->
+         the Nexo server and LiveKit URLs are user-entered; img-src allows http(s) for the same reason (profile
+         pictures are served by the Nexo server at GET /avatars/:userId). -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' blob: mediastream:; connect-src 'self' http: https: ws: wss:; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: http: https:; font-src 'self' data:; media-src 'self' blob: mediastream:; connect-src 'self' http: https: ws: wss:; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'"
     />
     <title>Nexo</title>
   </head>
