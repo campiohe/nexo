@@ -105,8 +105,9 @@ export function VoiceControls() {
       {preset && captureLow && !hintDismissed && shareStats && (
         <div className="vx-panel-hint" role="status">
           <span>
-            Only {shareStats.captureFps} of {preset.fps} fps are being captured. Streaming a game? Cap its frame rate
-            (V-Sync or a max FPS setting). An uncapped game leaves Windows no GPU time to capture it.
+            Only {shareStats.captureFps} of {preset.fps} fps are being captured. Streaming a game? Your GPU is likely
+            maxed out, which leaves Windows no time to capture it. Lower the game's graphics or turn on upscaling, then
+            cap its FPS a bit below what it reaches, so GPU usage stays under about 85%.
           </span>
           <button className="vx-icon-btn" onClick={() => setHintDismissed(true)} title="Dismiss" aria-label="Dismiss">
             <CloseIcon size={12} />
