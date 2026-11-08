@@ -60,6 +60,12 @@ jobs:
             echo "::error::tag $TAG doesn't match desktop/package.json version $version"
             exit 1
           fi
+          # The server download carries the same version (nexo-server update compares it).
+          server=$(node -p "require('./server-cli/package.json').version")
+          if [[ "$server" != "$version" ]]; then
+            echo "::error::server-cli/package.json is $server, desktop is $version: bump both"
+            exit 1
+          fi
 
       - uses: actions/setup-node@v7
         with:
@@ -70,7 +76,7 @@ jobs:
 
       - run: npm run typecheck
 
-      - name: Test (server)
+      - name: Test (server, server CLI)
         if: runner.os == 'Linux'
         run: npm test
 
@@ -126,6 +132,28 @@ jobs:
             echo "::warning::nexo-media.exe --selftest exited with $code (expected on a runner without a hardware encoder)"
           fi
 
+      # The server download (docs/SPEC-SERVER-CLI.md §8): nexo-server.exe (Node single executable with the
+      # Nexo server) + livekit-server.exe, both pinned and checksum-verified by server-cli/scripts/*.lock.
+      # A flat zip (Windows' "Extract All" makes the folder) with a .sha256 next to it, which
+      # `nexo-server update` verifies.
+      - name: Package server (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          npm run build:win -w server-cli
+          version=$(node -p "require('./server-cli/package.json').version")
+          name="Nexo-Server-${version}-win-x64"
+          stage="server-release/$name"
+          mkdir -p "$stage"
+          cp server-cli/dist/win-x64/nexo-server.exe server-cli/dist/win-x64/livekit-server.exe \
+             server-cli/dist/win-x64/livekit-LICENSE.txt "$stage/"
+          cp LICENSE "$stage/LICENSE.txt"
+          cp server-cli/README.txt "$stage/README.txt"
+          # The exe must start: no SEA or bundling problem slips into a release.
+          "$stage/nexo-server.exe" --version
+          (cd "$stage" && 7z a -tzip "../$name.zip" ./* > /dev/null)
+          (cd server-release && sha256sum "$name.zip" > "$name.zip.sha256" && cat "$name.zip.sha256")
+          ls -la server-release
+
       # Builds the installer plus its auto-update metadata (publish config in electron-builder.yml).
       # Uploading is left to the release job.
       - name: Package installer
@@ -161,6 +189,18 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      # Its own artifact: one artifact's files are stored relative to their common folder, so mixing
+      # desktop/release and server-release would nest the installers. The release job merges nexo-* flat.
+      - uses: actions/upload-artifact@v7
+        if: runner.os == 'Windows'
+        with:
+          name: nexo-${{ matrix.name }}-server
+          path: |
+            server-release/*.zip
+            server-release/*.sha256
+          if-no-files-found: error
+          retention-days: 14
+
   release:
     name: GitHub Release
     needs: build
@@ -186,6 +226,11 @@ jobs:
           ls -la dist
           # Without these, installed apps can't see the release (electron-updater reads the yml first).
           for f in latest.yml latest-mac.yml latest-linux.yml; do
+            test -f "dist/$f" || { echo "::error::missing dist/$f"; exit 1; }
+          done
+          # The server download for hosts (nexo-server update looks for this exact name).
+          version="${TAG#v}"
+          for f in "Nexo-Server-$version-win-x64.zip" "Nexo-Server-$version-win-x64.zip.sha256"; do
             test -f "dist/$f" || { echo "::error::missing dist/$f"; exit 1; }
           done
           flags=()

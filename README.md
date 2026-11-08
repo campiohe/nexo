@@ -47,16 +47,14 @@ and a color.
 
 ## Host a server
 
-The server is a small Node app plus [LiveKit](https://livekit.io) in Docker. It runs on any Linux host,
-a VPS, or Windows through WSL, and friends usually reach it over [Tailscale](https://tailscale.com):
+On Windows, download **`Nexo-Server-<version>-win-x64.zip`** from
+[Releases](https://github.com/campiohe/nexo/releases), extract it and double-click `nexo-server.exe`. It
+asks for a server name and a password, then shows an invite to send your friends. No Node, Docker or WSL,
+and you can play on the same PC.
 
-```bash
-cp .env.example .env    # then set the LiveKit secret
-npm install && npm run media && npm run start -w server
-```
-
-The full guide (systemd service, Tailscale or port forwarding, ports, bandwidth, backups and updates) is
-in **[docs/SERVER.md](docs/SERVER.md)**.
+Linux hosts, VPSs and the Docker setup are covered in the full guide, along with reaching friends through
+[Tailscale](https://tailscale.com) or port forwarding, ports, bandwidth, backups and updates:
+**[docs/SERVER.md](docs/SERVER.md)**.
 
 ## Develop
 

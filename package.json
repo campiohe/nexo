@@ -14,7 +14,7 @@
     "media:down": "docker compose down",
     "server": "npm run dev -w server",
     "desktop": "scripts/win-run.sh",
-    "typecheck": "npm run typecheck -w server && npm run typecheck -w desktop",
-    "test": "npm test -w server"
+    "typecheck": "npm run typecheck -w server && npm run typecheck -w desktop && npm run typecheck -w server-cli",
+    "test": "npm test -w server && npm test -w server-cli"
   }
 }

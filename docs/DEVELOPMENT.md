@@ -21,6 +21,7 @@ build plans are in [PLAN.md](PLAN.md) (v1) and [PLAN-BETA.md](PLAN-BETA.md).
 |---|---|
 | `desktop/` | Electron + React desktop app |
 | `server/` | Nexo server (Node, socket.io, SQLite; TypeScript run natively) |
+| `server-cli/` | `nexo-server`, the one-download server for hosts ([SPEC-SERVER-CLI](SPEC-SERVER-CLI.md)) |
 | `shared/` | Wire types and constants shared by both |
 | `native/` | `nexo-media.exe`, the native Windows capture helper ([SPEC-BETA](SPEC-BETA.md)) |
 | `scripts/` | Dev and host scripts (`dev-up.sh`, `urls.sh`, `win-run.sh`, `native-build.sh`, …) |
@@ -142,10 +143,31 @@ Uploads that no message claims within an hour are deleted. The limit is 20 uploa
 ## Tests
 
 ```bash
-npm test                   # = npm test -w server: protocol tests (boots a server on a random port)
-npm run typecheck          # server + desktop
+npm test                   # server protocol tests (boots a server on a random port) + server CLI tests
+npm run typecheck          # server + desktop + server CLI
 npm run typecheck -w server
 ```
+
+---
+
+## Server CLI
+
+`server-cli/` packages the server for hosts ([SPEC-SERVER-CLI](SPEC-SERVER-CLI.md)): `src/main.ts` (entry),
+`src/cli/` (setup, config.json, commands, lock, logs), `src/network/` (LAN, Tailscale, STUN, UPnP),
+`src/livekit.ts` (LiveKit config and supervision). It imports the server's sources and runs it in-process.
+
+```bash
+npm run dev -w server-cli -- --data /tmp/nexo-dev-data     # from source (needs a LiveKit binary: NEXO_LIVEKIT_BIN)
+npm run build -w server-cli       # dist/nexo-server.cjs (esbuild bundle)
+npm run build:win -w server-cli   # dist/win-x64/: nexo-server.exe (Node single executable) + livekit-server.exe
+```
+
+`build:win` downloads the pinned Node 24 `node.exe` and LiveKit Windows zip (`server-cli/scripts/node.lock`,
+`livekit.lock`, SHA-256 verified, cached in `server-cli/.cache/`), works from WSL or Windows, and takes
+about 10 s with a warm cache. Run the exe from a local Windows disk, not `\\wsl$`. To test without
+firewall prompts, bind to loopback: `HOST=127.0.0.1` (from WSL: `HOST=127.0.0.1 WSLENV=HOST ./nexo-server.exe`).
+
+Keep the LiveKit pin in `livekit.lock` equal to `docker-compose.yml`.
 
 ---
 
@@ -157,13 +179,15 @@ Windows `.exe`, the macOS `.dmg` and the Linux `.AppImage`. After the first inst
 
 To ship a new version:
 
-1. Bump `version` in `package.json`, `desktop/package.json` and `server/package.json`, then run
-   `npm install --package-lock-only`.
+1. Bump `version` in `package.json`, `desktop/package.json`, `server/package.json` and
+   `server-cli/package.json`, then run `npm install --package-lock-only`. The workflow refuses a tag that
+   doesn't match `desktop/package.json`, or a `server-cli` version that differs from it.
 2. Optionally write `.github/release-notes/vX.Y.Z.md`. For a test build (`X.Y.Z-test.N`), see
    [Test builds](#test-builds).
 3. Commit, then `git tag -a vX.Y.Z -m "Nexo vX.Y.Z" && git push origin main vX.Y.Z`.
 
-The **Release** workflow (`.github/workflows/release.yml`) builds all three installers and publishes
+The **Release** workflow (`.github/workflows/release.yml`) builds all three installers and the Windows
+server zip (`Nexo-Server-X.Y.Z-win-x64.zip` + `.sha256`, which `nexo-server update` uses), and publishes
 the release. Tags with `-alpha`/`-beta`/`-rc` are marked as prereleases.
 
 Installed apps find new versions through the release files, so every release must have, with the names
