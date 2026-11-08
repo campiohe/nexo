@@ -130,7 +130,7 @@ int runScalerCompare(const ScalerCompareOptions& o) {
                          D3D11_USAGE_DEFAULT, 0);
     const D3D11_BOX box{0, 0, 0, size.width, size.height, 1};
     device->context()->CopySubresourceRegion(source.get(), 0, 0, 0, 0, frame->texture, 0, &box);
-    ring.release();
+    ring.release(*frame);
     capture.stop();
   }
   const auto sourceImage = readBgra(*device, source.get(), size);

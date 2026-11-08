@@ -6,6 +6,7 @@
 #include "capture/test_pattern.hpp"
 #include "capture/wgc.hpp"
 #include "common/log.hpp"
+#include "common/profile.hpp"
 #include "common/win_error.hpp"
 #include "sys/system_info.hpp"
 
@@ -39,6 +40,11 @@ int envInt(const char* name, int fallback) {
   } catch (...) {
     return fallback;
   }
+}
+
+bool pipelineEnabled() {
+  const auto v = envString("NEXO_MEDIA_PIPELINE");
+  return v.empty() ? kPipelineDefault : envFlag("NEXO_MEDIA_PIPELINE");
 }
 
 /// Which process loopback the share's audio mode means (SPEC-BETA §4.7 table).
@@ -182,7 +188,20 @@ void Share::buildPipeline(bool initial) {
   }
   winrt::com_ptr<ID3D11Device> d3d;
   d3d.copy_from(device_->device());
-  ring_ = std::make_unique<FrameRing>(std::move(d3d));
+  ring_ = std::make_shared<FrameRing>(std::move(d3d));
+  if (pipelineEnabled()) {
+    winrt::com_ptr<ID3D11Device5> d5;
+    if (SUCCEEDED(device_->device()->QueryInterface(IID_PPV_ARGS(d5.put()))) &&
+        SUCCEEDED(device_->context()->QueryInterface(IID_PPV_ARGS(convertContext_.put()))) &&
+        SUCCEEDED(d5->CreateFence(0, D3D11_FENCE_FLAG_NONE, IID_PPV_ARGS(convertFence_.put())))) {
+      convertFenceValue_ = 0;
+      if (!convertEvent_) convertEvent_.attach(CreateEventW(nullptr, FALSE, FALSE, nullptr));
+    } else {
+      log::warn("share: no D3D11 fences on this device, conversions are not pipelined");
+      convertContext_ = nullptr;
+      convertFence_ = nullptr;
+    }
+  }
 
   // Source
   const double fps = initial ? spec_.preset.fps : lastFps_;
@@ -241,12 +260,25 @@ void Share::buildPipeline(bool initial) {
   lastMode_ = ec.rates.mode;
 }
 
+bool Share::canEncodeDirectly(const FrameRing::Frame& frame) const {
+  if (!encoder_->rgbInput() || frame.size != output_) return false;
+  D3D11_TEXTURE2D_DESC d{};
+  frame.texture->GetDesc(&d);
+  // The whole texture is the picture (the MFT reads all of it), in the layout ARGB32 means.
+  return d.Width == output_.width && d.Height == output_.height && d.ArraySize == 1 &&
+         (d.Format == DXGI_FORMAT_B8G8R8A8_UNORM || d.Format == DXGI_FORMAT_B8G8R8X8_UNORM);
+}
+
 std::unique_ptr<MfEncoder> Share::createEncoder(const EncoderRates& rates, double fps) {
   EncoderConfig ec;
   ec.size = output_;
   ec.fps = fps;
   ec.rates = rates;
   ec.profile = h264ProfileFromEnv();
+  // RGB input only pays off when frames need no scaling: the source is at the output size (a game in borderless
+  // full screen, a 1080p monitor for Game). Otherwise every frame needs our conversion anyway, and NV12 is what
+  // that conversion makes best.
+  ec.rgbInput = rgbInputEnabled() && source_ && source_->initialSize() == output_;
   Share* self = this;
   return MfEncoder::create(
       device_, ec, [self](EncodedFrame&& f) { self->onEncoded(std::move(f)); },
@@ -270,6 +302,9 @@ void Share::rebuildEncoder(const char* why) {
     pacer_->takeRateChange();
     fps = spec_.preset.fps;
   }
+  // Converted frames waiting for the GPU are samples of the old encoder's pool: drop them (the new encoder starts
+  // with an IDR anyway).
+  converted_.clear();
   encoder_->shutdown();
   keyframesBase_ += encoder_->keyframes();
   encoder_.reset();
@@ -289,6 +324,9 @@ void Share::rebuildEncoder(const char* why) {
 void Share::teardownPipeline() {
   // Same order as teardown(): nothing pushes into the ring or the encoder while they go away.
   if (source_) source_->stop();
+  converted_.clear(); // back to the encoder's pool before it shuts down
+  convertContext_ = nullptr;
+  convertFence_ = nullptr;
   if (encoder_) {
     encoder_->shutdown();
     keyframesBase_ += encoder_->keyframes();
@@ -663,6 +701,12 @@ void Share::emitStats(int64_t nowUs) {
   s.width = output_.width;
   s.height = output_.height;
   emit(ipc::encodeStats(s));
+  if (profile::enabled()) {
+    log::info("{} capture {:.1f} encode {:.1f} busy {} poolEmpty {}", profile::report(dt), s.captureFps, s.encodeFps,
+              busy_ - profBusy_, poolEmpty_ - profPoolEmpty_);
+    profBusy_ = busy_;
+    profPoolEmpty_ = poolEmpty_;
+  }
 }
 
 void Share::encodeLoop() {
@@ -705,14 +749,28 @@ void Share::encodeLoop() {
     const bool framePending = pendingSeq != 0 && ring_->lastPushUs() != 0 && lastSeq < pendingSeq;
     int64_t wakeAt = framePending ? std::max({now, tat - tolerance, retryAt}) : now + kPollUs;
     wakeAt = std::min(wakeAt, statsAtUs_);
+    // Pipelined conversions: the oldest one goes to the encoder once the GPU has finished it.
+    bool waitConverted = false;
+    if (!converted_.empty()) {
+      if (convertFence_->GetCompletedValue() >= converted_.front().fence) {
+        wakeAt = std::min(wakeAt, std::max(now, retryAt));
+      } else {
+        waitConverted = SUCCEEDED(convertFence_->SetEventOnCompletion(converted_.front().fence, convertEvent_.get()));
+        if (!waitConverted) wakeAt = std::min(wakeAt, now + 1'000);
+      }
+    }
     if (wakeAt > now) {
       LARGE_INTEGER due;
       due.QuadPart = -(wakeAt - now) * 10;
       SetWaitableTimer(timer.get(), &due, 0, nullptr, nullptr, FALSE);
       // A pending-but-early frame only waits for its slot; otherwise a new frame wakes us immediately.
-      const HANDLE handles[] = {stopEvent_.get(), timer.get(), ring_->frameEvent()};
-      const DWORD count = framePending ? 2 : 3;
-      if (WaitForMultipleObjects(count, handles, FALSE, 2000) == WAIT_OBJECT_0) break;
+      HANDLE handles[4] = {stopEvent_.get(), timer.get()};
+      DWORD count = 2;
+      if (waitConverted) handles[count++] = convertEvent_.get();
+      if (!framePending) handles[count++] = ring_->frameEvent();
+      const DWORD waited = WaitForMultipleObjects(count, handles, FALSE, 2000);
+      profile::record(profile::Stage::EncodeWait, qpcMicros() - now);
+      if (waited == WAIT_OBJECT_0) break;
     } else if (WaitForSingleObject(stopEvent_.get(), 0) == WAIT_OBJECT_0) {
       break;
     }
@@ -739,6 +797,32 @@ void Share::encodeLoop() {
 
     handleFeedback(now);
 
+    // Converted frames whose GPU work is done go to the encoder, oldest first.
+    bool encoderFailed = false;
+    bool lost = false;
+    while (!converted_.empty() && convertFence_->GetCompletedValue() >= converted_.front().fence && now >= retryAt) {
+      const auto& c = converted_.front();
+      const auto submit = encoder_->encode(c.input, c.ts, c.keyframe);
+      if (submit == MfEncoder::Submit::Accepted) {
+        profile::record(profile::Stage::ConvertQueue, qpcMicros() - c.convertedUs);
+        converted_.pop_front();
+      } else if (submit == MfEncoder::Submit::Busy) {
+        ++busy_;
+        retryAt = now + 1'000;
+      } else if (deviceLost()) {
+        lost = true;
+        break;
+      } else {
+        encoderFailed = true; // the encoder reported the failure through fail()
+        break;
+      }
+    }
+    if (encoderFailed) break;
+    if (lost) {
+      if (!recover(device_->removedReason())) break;
+      continue;
+    }
+
     if (now >= tat - tolerance) {
       auto frame = ring_->acquire();
       const bool isNew = frame && frame->seq != lastSeq;
@@ -751,30 +835,63 @@ void Share::encodeLoop() {
       // viewer joining now gets the last picture.
       if (decision.encode && decision.repeat && !decision.keyframe && source_->stalled(now)) decision.encode = false;
       if (!decision.encode) {
-        if (frame) ring_->release();
+        if (frame) ring_->release(*frame);
       } else {
         MfEncoder::Submit submit = MfEncoder::Submit::Failed;
         int64_t ts = 0;
         std::optional<MfEncoder::Input> input;
+        bool handedOff = false; // the lease now belongs to the encoder's input sample
         try {
-          input = encoder_->allocateInput();
+          if (profile::enabled() && isNew) profile::record(profile::Stage::FrameAge, qpcMicros() - frame->timestampUs);
+          if (canEncodeDirectly(*frame)) {
+            // RGB input at the output size: the captured texture itself goes to the encoder, no job of ours on
+            // the GPU. The frame stays leased until the MFT lets go of the sample.
+            handedOff = true;
+            input = encoder_->wrapInput(frame->texture, [weak = std::weak_ptr<FrameRing>(ring_), f = *frame] {
+              if (auto ring = weak.lock()) ring->release(f);
+            });
+            profile::count("direct");
+          } else {
+            if (!pipelined() || converted_.size() < kMaxConverted) input = encoder_->allocateInput();
+            if (input) {
+              auto& probe = device_->probe();
+              const int64_t c0 = profile::enabled() ? qpcMicros() : 0;
+              const auto scope = probe.begin();
+              converter_->convert(frame->texture, frame->size, input->texture.get(), input->slice);
+              probe.end(scope, profile::Stage::ConvertGpu, profile::Stage::ConvertDone);
+              // A held capture buffer goes back to DWM on release: our read of it must be submitted first.
+              if (frame->held) device_->context()->Flush();
+              if (c0) profile::record(profile::Stage::ConvertCpu, qpcMicros() - c0);
+            }
+          }
           if (input) {
-            converter_->convert(frame->texture, frame->size, input->texture.get(), input->slice);
             ts = isNew ? frame->timestampUs : now;
             ts = std::max(ts, lastTs + 1); // encoder and RTP want increasing timestamps; repeats use "now"
           }
         } catch (const std::exception&) {
-          ring_->release();
+          if (!handedOff) ring_->release(*frame);
+          input.reset();
           if (!deviceLost()) throw;
           if (!recover(device_->removedReason())) break;
           continue;
         }
-        ring_->release();
+        if (!handedOff) ring_->release(*frame);
         if (!input) {
           ++poolEmpty_; // every input surface is still inside the encoder: retry shortly
           retryAt = now + 1'000;
         } else {
-          submit = encoder_->encode(*input, ts, decision.keyframe);
+          if (!handedOff && pipelined()) {
+            // Don't make the encoder wait for our conversion (it takes one frame at a time, and the conversion
+            // queues behind a foreground game for tens of ms): mark its end with a fence and hand it over once
+            // the GPU is done, keeping several conversions in flight meanwhile.
+            const uint64_t value = ++convertFenceValue_;
+            convertContext_->Signal(convertFence_.get(), value);
+            device_->context()->Flush();
+            converted_.push_back({std::move(*input), ts, decision.keyframe, value, qpcMicros()});
+            submit = MfEncoder::Submit::Accepted;
+          } else {
+            submit = encoder_->encode(*input, ts, decision.keyframe);
+          }
           if (submit == MfEncoder::Submit::Accepted) {
             lastTs = ts;
             tat = std::max(tat, now) + interval;

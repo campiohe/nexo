@@ -24,6 +24,11 @@ improved this (27 → 55 fps measured with a capped game) but did not fix it. Th
 The usual fixes (GPU scheduling priority on the capture device, a short GPU-only path from capture to encode)
 can't be applied to Chromium's GPU process from an Electron app.
 
+**Measured in M3** (synthetic GPU-bound load in the foreground, [benchmarks/beta-m3-fps-gap.md](benchmarks/beta-m3-fps-gap.md)):
+the alpha with its texture flag holds 55–57 fps there, and the beta's pipelined path 55–59 fps at less than half
+the game cost (1.0% vs 2.2–2.5%). On frame rate the beta **matches** the alpha rather than beating it; the win is
+process audio, encoder control and crash isolation. Real games on friends' PCs still need the M4 check.
+
 **What owning the pipeline gives us**
 
 | Capability | Alpha (Chromium) | Beta (native) |
@@ -116,8 +121,8 @@ The Nexo server's only new duty is signing the stream participant's token (§7).
 | Thread | Work |
 |---|---|
 | Control | Reads stdin commands and writes events/stats to stdout (§6) |
-| Capture | WGC `FrameArrived` (free-threaded frame pool): `CopyResource` into our own ring texture, then return the pool buffer immediately |
-| Encode | Woken by each new captured frame and **rate-capped** at the preset fps (a fixed timer drifting against the display's 60 Hz lost ~25% of frames in M0). Takes the **latest** captured texture, converts, encodes, and passes the access unit to `EncodedVideoSource::captureFrame`. Polls `takeFeedback()` every frame |
+| Capture | WGC `FrameArrived` (free-threaded frame pool). **Zero copy** (default): the ring keeps WGC's own buffer and gives it back once a newer frame replaced it and no conversion or encoder still uses it. `NEXO_MEDIA_ZERO_COPY=0` restores the M1 path (`CopyResource` into our own ring texture, buffer returned at once) |
+| Encode | Woken by each new captured frame and **rate-capped** at the preset fps (a fixed timer drifting against the display's 60 Hz lost ~25% of frames in M0). Takes the **latest** captured texture, converts, encodes, and passes the access unit to `EncodedVideoSource::captureFrame`. Polls `takeFeedback()` every frame. **Pipelined** (default, `NEXO_MEDIA_PIPELINE`): each conversion ends with a D3D11 fence, and a frame goes to the MFT only once its fence completed, with up to 6 conversions in flight. Under a GPU-bound foreground game our jobs wait 37–108 ms on the 3D queue; the MFT takes one frame at a time, so handing it unfinished frames capped encode at ≈ 1 / that wait (M3: 6.7–15.6 fps → 55–59 fps, [benchmarks/beta-m3-fps-gap.md](benchmarks/beta-m3-fps-gap.md)) |
 | Audio | WASAPI event-driven capture, 10 ms int16 frames, then `AudioSource::captureFrame` |
 | SDK | LiveKit's internal threads (FFI runtime) |
 
@@ -142,7 +147,10 @@ The Nexo server's only new duty is signing the stream participant's token (§7).
 ### 4.4 Capture (WGC through C++/WinRT)
 
 - Item: `IGraphicsCaptureItemInterop::CreateForWindow(hwnd)` or `CreateForMonitor(hmonitor)`.
-- `Direct3D11CaptureFramePool::CreateFreeThreaded(device, B8G8R8A8UIntNormalized, 2, size)`.
+- `Direct3D11CaptureFramePool::CreateFreeThreaded(device, B8G8R8A8UIntNormalized, 6, size)`: 6 buffers because
+  zero copy holds some of them while their conversion waits on the GPU (2 with `NEXO_MEDIA_ZERO_COPY=0`;
+  `NEXO_MEDIA_WGC_BUFFERS` overrides). M3 measured that WGC itself isn't the bottleneck: with no processing it
+  delivers 56.5–58.9 fps behind a GPU-bound foreground game.
 - Session options, applied when the OS supports them (checked with
   `ApiInformation::IsPropertyPresent`):
 
@@ -442,7 +450,7 @@ Flags: `--doctor` (toolchain check), `--debug`, `--clean`.
 | # | Risk | Impact | Handling |
 |---|---|---|---|
 | B1 | **The C++ SDK is young:** pre-encoded since v1.11.0 (2026-09), frequent releases | Medium | Pin the version, keep it behind `publish/`, M0 proves the path end to end before anything else is built on it |
-| B2 | GPU priority doesn't fix starvation on its own | High (the main goal) | **Happened (M3).** With the GPU-bound game in the foreground, capture was ~20 fps and encode ~10 fps, whatever the priority levers. Follow-up profiling and experiments: [benchmarks/beta-m3-fps-gap.md](benchmarks/beta-m3-fps-gap.md). The capped-game hint stays |
+| B2 | GPU priority doesn't fix starvation on its own | High (the main goal) | **Happened, then mitigated (M3).** With the GPU-bound game in the foreground the M1 pipeline encoded 6.7–15.6 fps, whatever the priority levers (D3D12 `HIGH` queues and D3D11On12 don't help either). Pipelining our conversions and zero-copy capture (§4.2) bring it to **59.4 fps windowed / 55.3 fps heavy full screen** at 1% game cost, which is WGC's own ceiling in the heavy case and on par with the alpha's texture path (57.2 / 54.8): [benchmarks/beta-m3-fps-gap.md](benchmarks/beta-m3-fps-gap.md). Beyond that needs vendor encoder SDKs or D3D12 video encode (post-beta). The capped-game hint stays |
 | B3 | Two congestion controllers on one uplink (Chromium for voice, the helper for the stream) | Low | Voice is ~40 kbps. The stream reacts to its own feedback. Watch for voice drops in M3 tests |
 | B4 | Hardware MFT quirks by vendor (missing SPS/PPS, latency, session limits) | Medium | SPS/PPS repair, test matrix across NVIDIA/AMD/Intel, fallback to the alpha path |
 | B5 | Exclusive fullscreen games: window capture may show black | Medium | Most "fullscreen" games run flip-model borderless on Win10/11. Otherwise recommend screen capture |

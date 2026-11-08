@@ -1,0 +1,81 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>alpha-bench</title>
+<body style="background:#111;color:#ccc;font:12px monospace">
+  <div id="status">starting</div>
+  <script>
+    // Mirrors voice/session.ts: videoConstraints(Game), contentHint 'motion', H.264 High preferred,
+    // maxBitrate 8 Mbps, maxFramerate 60, degradationPreference maintain-framerate, no simulcast.
+    const log = (o) => console.log(JSON.stringify(o))
+    const status = (t) => (document.getElementById('status').textContent = t)
+
+    function preferH264High(transceiver) {
+      const codecs = RTCRtpSender.getCapabilities('video').codecs
+      const isH264 = (c) => c.mimeType.toLowerCase() === 'video/h264'
+      const isHigh = (c) => /profile-level-id=64/i.test(c.sdpFmtpLine ?? '') && /packetization-mode=1/.test(c.sdpFmtpLine ?? '')
+      const h264 = codecs.filter(isH264)
+      const ordered = [...h264.filter(isHigh), ...h264.filter((c) => !isHigh(c))]
+      transceiver.setCodecPreferences([...ordered, ...codecs.filter((c) => !isH264(c))])
+    }
+
+    async function start() {
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: { width: { max: 1920 }, height: { max: 1080 }, frameRate: { ideal: 60, max: 60 } },
+        audio: false,
+      })
+      const track = stream.getVideoTracks()[0]
+      track.contentHint = 'motion'
+      const pc1 = new RTCPeerConnection()
+      const pc2 = new RTCPeerConnection()
+      pc1.onicecandidate = (e) => e.candidate && pc2.addIceCandidate(e.candidate)
+      pc2.onicecandidate = (e) => e.candidate && pc1.addIceCandidate(e.candidate)
+      const transceiver = pc1.addTransceiver(track, {
+        direction: 'sendonly',
+        streams: [stream],
+        sendEncodings: [{ maxBitrate: 8_000_000, maxFramerate: 60, priority: 'high' }],
+      })
+      preferH264High(transceiver)
+      const params = transceiver.sender.getParameters()
+      params.degradationPreference = 'maintain-framerate'
+      await transceiver.sender.setParameters(params)
+      await pc1.setLocalDescription(await pc1.createOffer())
+      await pc2.setRemoteDescription(pc1.localDescription)
+      await pc2.setLocalDescription(await pc2.createAnswer())
+      await pc1.setRemoteDescription(pc2.localDescription)
+      status('sending')
+
+      let last = null
+      setInterval(async () => {
+        const report = await pc1.getStats()
+        const s = { type: 'stats' }
+        let codecId
+        report.forEach((r) => {
+          if (r.type === 'media-source' && r.kind === 'video') {
+            s.captureFps = r.framesPerSecond ?? 0
+            s.captureFrames = r.frames
+          }
+          if (r.type === 'outbound-rtp' && r.kind === 'video') {
+            s.sendFps = r.framesPerSecond ?? 0
+            s.framesEncoded = r.framesEncoded
+            s.encoder = r.encoderImplementation
+            s.powerEfficientEncoder = r.powerEfficientEncoder
+            s.qualityLimitation = r.qualityLimitationReason
+            s.width = r.frameWidth
+            s.height = r.frameHeight
+            codecId = r.codecId
+          }
+        })
+        if (codecId) s.codec = report.get(codecId)?.mimeType + ' ' + (report.get(codecId)?.sdpFmtpLine ?? '')
+        // Frame counters as a cross-check of the *_Fps fields (which are short-window rates).
+        const now = performance.now()
+        if (last) {
+          const dt = (now - last.t) / 1000
+          s.captureRate = (s.captureFrames - last.captureFrames) / dt
+          s.encodeRate = (s.framesEncoded - last.framesEncoded) / dt
+        }
+        last = { t: now, captureFrames: s.captureFrames, framesEncoded: s.framesEncoded }
+        log(s)
+      }, 1000)
+    }
+  </script>
+</body>

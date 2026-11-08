@@ -6,10 +6,12 @@
 #include <winrt/Windows.Graphics.DirectX.Direct3D11.h>
 #include <winrt/Windows.Security.Authorization.AppCapabilityAccess.h>
 
+#include <algorithm>
 #include <chrono>
 #include <format>
 
 #include "common/log.hpp"
+#include "common/profile.hpp"
 #include "common/win_error.hpp"
 
 namespace nexo {
@@ -20,8 +22,21 @@ using winrt::Windows::Foundation::Metadata::ApiInformation;
 namespace {
 
 constexpr auto kPixelFormat = winrt::Windows::Graphics::DirectX::DirectXPixelFormat::B8G8R8A8UIntNormalized;
-// Two buffers: one being copied by us, one being filled by DWM. We return each buffer right after the copy.
+// Copy mode: two buffers, one being copied by us, one being filled by DWM. We return each right after the copy.
 constexpr int32_t kPoolBuffers = 2;
+// Zero copy: the ring keeps the latest frame, the encoder can hold a few (RGB input: until it has read them),
+// and DWM needs at least one free to write the next frame into.
+constexpr int32_t kZeroCopyPoolBuffers = 6;
+
+double envDouble(const char* name, double fallback) {
+  const auto v = envString(name);
+  if (v.empty()) return fallback;
+  try {
+    return std::stod(v);
+  } catch (...) {
+    return fallback;
+  }
+}
 
 bool sessionProperty(const wchar_t* name) {
   try {
@@ -69,6 +84,10 @@ WgcFeatures queryWgcFeatures() {
 
 WgcCapture::WgcCapture(std::shared_ptr<D3DDevice> device, FrameRing& ring, Target target, bool cursor, double fps)
     : device_(std::move(device)), ring_(ring), target_(target), cursor_(cursor), fps_(fps), features_(queryWgcFeatures()) {
+  zeroCopy_ = zeroCopyEnabled();
+  poolBuffers_ = static_cast<int32_t>(std::clamp(envDouble("NEXO_MEDIA_WGC_BUFFERS", zeroCopy_ ? kZeroCopyPoolBuffers : kPoolBuffers), 1.0, 8.0));
+  minIntervalMs_ = envDouble("NEXO_MEDIA_WGC_MIN_INTERVAL_MS", -1);
+  rawCount_ = envFlag("NEXO_MEDIA_PROFILE_RAW");
   if (!features_.supported) throw ShareError(ipc::ErrorCode::CaptureFailed, "Windows.Graphics.Capture is not supported on this system");
   auto interop = winrt::get_activation_factory<wgc::GraphicsCaptureItem, IGraphicsCaptureItemInterop>();
   HRESULT hr = E_INVALIDARG;
@@ -110,7 +129,7 @@ void WgcCapture::start() {
   poolSize_ = item_.Size();
   // Free-threaded: FrameArrived runs on a system thread-pool thread, so no DispatcherQueue is needed and a
   // busy control thread can't delay frames.
-  pool_ = wgc::Direct3D11CaptureFramePool::CreateFreeThreaded(device_->winrtDevice(), kPixelFormat, kPoolBuffers, poolSize_);
+  pool_ = wgc::Direct3D11CaptureFramePool::CreateFreeThreaded(device_->winrtDevice(), kPixelFormat, poolBuffers_, poolSize_);
   frameArrivedToken_ = pool_.FrameArrived([this](const wgc::Direct3D11CaptureFramePool& pool, auto&&) { onFrameArrived(pool); });
   session_ = pool_.CreateCaptureSession(item_);
 
@@ -130,15 +149,17 @@ void WgcCapture::start() {
   }
   applyMinUpdateInterval(fps_);
   session_.StartCapture();
-  log::info("capture: started {} ({}x{}, cursor {}, border {}, minUpdateInterval {})", describe(), poolSize_.Width,
-            poolSize_.Height, cursor_ ? "on" : "off", borderOff ? "off" : "required",
-            features_.minUpdateInterval ? "set" : "unsupported");
+  log::info("capture: started {} ({}x{}, cursor {}, border {}, minUpdateInterval {}, {} buffers{}{})", describe(),
+            poolSize_.Width, poolSize_.Height, cursor_ ? "on" : "off", borderOff ? "off" : "required",
+            !features_.minUpdateInterval ? "unsupported" : minIntervalMs_ == 0 ? "off" : "set", poolBuffers_,
+            zeroCopy_ ? ", zero copy" : "", rawCount_ ? ", RAW COUNT ONLY (profiling)" : "");
 }
 
 void WgcCapture::applyMinUpdateInterval(double fps) {
-  if (!session_ || !features_.minUpdateInterval || fps <= 0) return;
+  if (!session_ || !features_.minUpdateInterval || fps <= 0 || minIntervalMs_ == 0) return;
   // Caps DWM's delivery at the preset rate (24H2+): fewer copies when the game renders far above it.
-  const auto interval = std::chrono::duration_cast<winrt::Windows::Foundation::TimeSpan>(std::chrono::duration<double>(1.0 / fps));
+  const double seconds = minIntervalMs_ > 0 ? minIntervalMs_ / 1000.0 : 1.0 / fps;
+  const auto interval = std::chrono::duration_cast<winrt::Windows::Foundation::TimeSpan>(std::chrono::duration<double>(seconds));
   try {
     session_.MinUpdateInterval(interval);
   } catch (const winrt::hresult_error& e) {
@@ -162,11 +183,22 @@ void WgcCapture::stop() {
 }
 
 void WgcCapture::onFrameArrived(const wgc::Direct3D11CaptureFramePool& pool) {
+  const int64_t enteredUs = profile::enabled() ? qpcMicros() : 0;
   std::lock_guard lock(mutex_);
   if (stopped_) return;
   try {
     auto frame = pool.TryGetNextFrame();
     if (!frame) return;
+    if (profile::enabled()) {
+      if (lastArrivalUs_) profile::record(profile::Stage::WgcArrive, enteredUs - lastArrivalUs_);
+      lastArrivalUs_ = enteredUs;
+      profile::record(profile::Stage::WgcDelay, enteredUs - frame.SystemRelativeTime().count() / 10);
+      if (rawCount_) {
+        // Upper bound: what WGC delivers when we do no GPU work at all.
+        frame.Close();
+        return;
+      }
+    }
     if (target_.hwnd && IsIconic(target_.hwnd)) {
       // Minimizing delivers one last frame of the title-bar stub (~150x23). Streaming it would replace the
       // picture with a letterboxed sliver; viewers keep the last real frame instead (stats say "stalled").
@@ -180,25 +212,52 @@ void WgcCapture::onFrameArrived(const wgc::Direct3D11CaptureFramePool& pool) {
       check(access->GetInterface(IID_PPV_ARGS(texture.put())), "IDirect3DDxgiInterfaceAccess::GetInterface");
       // SystemRelativeTime is QPC-based, in 100 ns units.
       const int64_t timestampUs = frame.SystemRelativeTime().count() / 10;
+      const Size contentSize{static_cast<uint32_t>(std::max(0, content.Width)), static_cast<uint32_t>(std::max(0, content.Height))};
+      if (zeroCopy_) {
+        // No GPU work here at all: the encode thread reads DWM's buffer and the ring gives it back once it is
+        // superseded and no longer used (a copy queues behind a foreground game for ~50 ms, see
+        // docs/benchmarks/beta-m3-fps-gap.md).
+        if (ring_.pushHeld(texture, contentSize, timestampUs, [frame]() { frame.Close(); })) {
+          if (enteredUs) profile::record(profile::Stage::WgcCallback, qpcMicros() - enteredUs);
+          resizeIfNeeded(pool, content);
+          return;
+        }
+        profile::count("ringFull");
+        frame.Close();
+        return;
+      }
+      auto& probe = device_->probe();
+      const auto scope = probe.begin();
       ring_.push(device_->context(), texture.get(),
                  {static_cast<uint32_t>(std::max(0, content.Width)), static_cast<uint32_t>(std::max(0, content.Height))},
                  timestampUs);
+      probe.end(scope, profile::Stage::CopyGpu, profile::Stage::CopyDone);
     }
     frame.Close(); // give the buffer back to DWM right away
+    if (enteredUs) profile::record(profile::Stage::WgcCallback, qpcMicros() - enteredUs);
 
-    if (content.Width > 0 && content.Height > 0 && (content.Width != poolSize_.Width || content.Height != poolSize_.Height)) {
-      // The source was resized. The output size stays fixed (the converter letterboxes, §4.4); only the pool
-      // buffers follow the content.
-      poolSize_ = content;
-      pool.Recreate(device_->winrtDevice(), kPixelFormat, kPoolBuffers, poolSize_);
-      recreates_.fetch_add(1);
-      log::info("capture: source resized to {}x{}", content.Width, content.Height);
-    }
+    resizeIfNeeded(pool, content);
   } catch (const winrt::hresult_error& e) {
     log::warn("capture: frame failed: {}", describeHresult(e.code()));
   } catch (const std::exception& e) {
     log::warn("capture: frame failed: {}", e.what());
   }
+}
+
+void WgcCapture::resizeIfNeeded(const wgc::Direct3D11CaptureFramePool& pool, winrt::Windows::Graphics::SizeInt32 content) {
+  if (content.Width > 0 && content.Height > 0 && (content.Width != poolSize_.Width || content.Height != poolSize_.Height)) {
+    // The source was resized. The output size stays fixed (the converter letterboxes, §4.4); only the pool
+    // buffers follow the content. Frames still held (zero copy) stay valid until they are closed.
+    poolSize_ = content;
+    pool.Recreate(device_->winrtDevice(), kPixelFormat, poolBuffers_, poolSize_);
+    recreates_.fetch_add(1);
+    log::info("capture: source resized to {}x{}", content.Width, content.Height);
+  }
+}
+
+bool zeroCopyEnabled() {
+  const auto v = envString("NEXO_MEDIA_ZERO_COPY");
+  return v.empty() ? kZeroCopyDefault : envFlag("NEXO_MEDIA_ZERO_COPY");
 }
 
 bool WgcCapture::stalled(int64_t nowUs) const {

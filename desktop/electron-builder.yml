@@ -65,7 +65,8 @@ win:
   extraResources:
     - from: ../native/out
       to: native
-      filter: ['**/*']
+      # gpu-burn and queue-probe are benchmark tools (native/tools), not part of the app.
+      filter: ['**/*', '!gpu-burn.exe', '!queue-probe.exe']
   icon: resources/icon.png
 nsis:
   oneClick: false

@@ -1,0 +1,7 @@
+{
+  "name": "nexo-alpha-bench",
+  "private": true,
+  "version": "0.0.0",
+  "description": "The alpha (Chromium) capture path under a GPU-bound game, for docs/benchmarks/beta-m3-fps-gap.md",
+  "main": "main.js"
+}

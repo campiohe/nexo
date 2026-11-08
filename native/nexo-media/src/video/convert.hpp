@@ -23,7 +23,8 @@ class VideoConverter {
   /// `quality`: the `detail` path: `detailScaler`, or the driver's best video-processor scaler for `vp`.
   VideoConverter(std::shared_ptr<D3DDevice> device, Size output, bool quality, ScalerKind detailScaler = scalerFromEnv());
 
-  /// Converts the top-left `content` region of `src` into `dst` (NV12, output size, subresource `dstSlice`).
+  /// Converts the top-left `content` region of `src` into `dst` (output size, subresource `dstSlice`): NV12
+  /// (BT.709 limited), or B8G8R8A8 for an encoder that takes RGB (then it only scales and letterboxes).
   /// Throws HrError on failure.
   void convert(ID3D11Texture2D* src, Size content, ID3D11Texture2D* dst, UINT dstSlice);
 
@@ -34,7 +35,7 @@ class VideoConverter {
   ScalerKind activeScaler() const { return quality_ ? detailScaler_ : ScalerKind::VideoProcessor; }
 
  private:
-  void ensureProcessor(Size input, DXGI_FORMAT format);
+  void ensureProcessor(Size input, DXGI_FORMAT format, DXGI_FORMAT outputFormat);
   ID3D11VideoProcessorInputView* inputView(ID3D11Texture2D* src);
   ID3D11VideoProcessorOutputView* outputView(ID3D11Texture2D* dst, UINT slice);
 
@@ -48,6 +49,7 @@ class VideoConverter {
   winrt::com_ptr<ID3D11VideoProcessor> processor_;
   Size processorInput_;
   DXGI_FORMAT processorFormat_ = DXGI_FORMAT_UNKNOWN;
+  DXGI_FORMAT processorOutputFormat_ = DXGI_FORMAT_UNKNOWN;
   ScalerKind detailScaler_;
   std::unique_ptr<ComputeScaler> compute_;
   // Views hold a reference to their texture, so a cached pointer can't be reused by a new texture.

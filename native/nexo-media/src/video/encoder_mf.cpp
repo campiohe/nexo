@@ -5,10 +5,13 @@
 #include <strmif.h>
 
 #include <atomic>
+#include <deque>
 #include <format>
 #include <mutex>
 
+#include "capture/frame_ring.hpp"
 #include "common/log.hpp"
+#include "common/profile.hpp"
 #include "common/win_error.hpp"
 #include "video/annexb.hpp"
 
@@ -94,6 +97,23 @@ const char* profileName(H264Profile p) {
   return "high";
 }
 
+/// IMFTrackedSample's "allocator": told when the MFT drops its last reference to a wrapped capture frame.
+struct SampleReleased : winrt::implements<SampleReleased, IMFAsyncCallback> {
+  std::function<void()> fn;
+  STDMETHODIMP GetParameters(DWORD*, DWORD*) noexcept override { return E_NOTIMPL; }
+  STDMETHODIMP Invoke(IMFAsyncResult*) noexcept override {
+    auto f = std::move(fn);
+    fn = nullptr;
+    if (f) {
+      try {
+        f();
+      } catch (...) {
+      }
+    }
+    return S_OK;
+  }
+};
+
 // Media Foundation's async callback → our encoder core. Holds the core weakly: the core owns the callback.
 struct EventCallback : winrt::implements<EventCallback, IMFAsyncCallback> {
   std::weak_ptr<MfEncoder::Core> core;
@@ -139,6 +159,11 @@ std::vector<H264EncoderInfo> listH264Encoders(const LUID* adapter) {
   return out;
 }
 
+bool rgbInputEnabled() {
+  const auto v = envString("NEXO_MEDIA_RGB_INPUT");
+  return v.empty() ? kRgbInputDefault : envFlag("NEXO_MEDIA_RGB_INPUT");
+}
+
 H264Profile h264ProfileFromEnv() {
   const auto v = envString("NEXO_MEDIA_H264_PROFILE");
   if (v == "main") return H264Profile::Main;
@@ -156,6 +181,8 @@ class MfEncoder::Core : public std::enable_shared_from_this<MfEncoder::Core> {
   void init(const H264EncoderInfo& info);
   void onEvent(IMFAsyncResult* result);
   std::optional<Input> allocateInput();
+  Input wrapInput(ID3D11Texture2D* texture, std::function<void()> onReleased);
+  bool rgbInput() const { return rgbInput_; }
   Submit encode(const Input& input, int64_t timestampUs, bool keyframe);
   bool applyRates(const EncoderRates& rates) {
     std::lock_guard lock(mutex_);
@@ -177,6 +204,7 @@ class MfEncoder::Core : public std::enable_shared_from_this<MfEncoder::Core> {
   void configureCodecApi();
   void setOutputType();
   void setInputType();
+  HRESULT trySetInputType(const GUID& subtype);
   void initAllocator();
   void processOutput(std::vector<EncodedFrame>& out, std::string& error);
   void failLocked(std::string& error, std::string message);
@@ -192,6 +220,8 @@ class MfEncoder::Core : public std::enable_shared_from_this<MfEncoder::Core> {
   winrt::com_ptr<IMFMediaEventGenerator> generator_;
   winrt::com_ptr<IMFAsyncCallback> callback_;
   winrt::com_ptr<IMFVideoSampleAllocatorEx> allocator_;
+  bool rgbInput_ = false; ///< the input type set is ARGB32
+  GUID inputSubtype_ = MFVideoFormat_NV12;
   DWORD inputId_ = 0;
   DWORD outputId_ = 0;
   int needInput_ = 0;
@@ -201,6 +231,7 @@ class MfEncoder::Core : public std::enable_shared_from_this<MfEncoder::Core> {
   h264::ParameterSetCache paramSets_;
   bool loggedSps_ = false;
   uint64_t repairs_ = 0;
+  std::deque<std::pair<LONGLONG, int64_t>> inFlight_; ///< profiling: sample time -> ProcessInput QPC (µs)
 
   /// Held while an output is handed to onOutput_, so shutdown() can wait for it (the publisher it calls into is
   /// destroyed right after the encoder).
@@ -380,22 +411,41 @@ void MfEncoder::Core::setInputType() {
     }
     log::debug("encoder: {} input types: {}", name, offered);
   }
+  // ARGB32 first when asked (the MFT converts to YUV itself, with no job of ours on the 3D queue), NV12 otherwise
+  // or when the MFT refuses it.
+  if (config_.rgbInput) {
+    if (const HRESULT hr = trySetInputType(MFVideoFormat_ARGB32); SUCCEEDED(hr)) {
+      rgbInput_ = true;
+      inputSubtype_ = MFVideoFormat_ARGB32;
+      return;
+    } else {
+      log::info("encoder: {} refused ARGB32 input ({}), using NV12", name, describeHresult(hr));
+    }
+  }
+  check(trySetInputType(MFVideoFormat_NV12), "SetInputType (NV12)");
+  inputSubtype_ = MFVideoFormat_NV12;
+}
+
+HRESULT MfEncoder::Core::trySetInputType(const GUID& wanted) {
   for (DWORD i = 0;; ++i) {
     winrt::com_ptr<IMFMediaType> type;
     const HRESULT hr = transform_->GetInputAvailableType(inputId_, i, type.put());
     if (hr == MF_E_NO_MORE_TYPES) break;
-    check(hr, "GetInputAvailableType");
+    if (FAILED(hr)) return hr;
     GUID subtype{};
     type->GetGUID(MF_MT_SUBTYPE, &subtype);
-    if (subtype != MFVideoFormat_NV12) continue;
-    check(MFSetAttributeSize(type.get(), MF_MT_FRAME_SIZE, config_.size.width, config_.size.height), "input MF_MT_FRAME_SIZE");
-    check(MFSetAttributeRatio(type.get(), MF_MT_FRAME_RATE, static_cast<UINT32>(std::lround(config_.fps)), 1), "input MF_MT_FRAME_RATE");
-    type->SetUINT32(MF_MT_VIDEO_NOMINAL_RANGE, MFNominalRange_16_235);
-    type->SetUINT32(MF_MT_YUV_MATRIX, MFVideoTransferMatrix_BT709);
-    check(transform_->SetInputType(inputId_, type.get(), 0), "SetInputType (NV12)");
-    return;
+    if (subtype != wanted) continue;
+    if (HRESULT r = MFSetAttributeSize(type.get(), MF_MT_FRAME_SIZE, config_.size.width, config_.size.height); FAILED(r)) return r;
+    if (HRESULT r = MFSetAttributeRatio(type.get(), MF_MT_FRAME_RATE, static_cast<UINT32>(std::lround(config_.fps)), 1); FAILED(r)) return r;
+    if (wanted == MFVideoFormat_NV12) {
+      type->SetUINT32(MF_MT_VIDEO_NOMINAL_RANGE, MFNominalRange_16_235);
+      type->SetUINT32(MF_MT_YUV_MATRIX, MFVideoTransferMatrix_BT709);
+    }
+    // Only size and rate on the ARGB32 type: the NVIDIA MFT refuses it with a nominal range or interlace mode
+    // (MF_E_INVALIDMEDIATYPE).
+    return transform_->SetInputType(inputId_, type.get(), 0);
   }
-  throw HrError(MF_E_INVALIDMEDIATYPE, "MFT offers no NV12 input type");
+  return MF_E_INVALIDMEDIATYPE;
 }
 
 void MfEncoder::Core::initAllocator() {
@@ -404,7 +454,7 @@ void MfEncoder::Core::initAllocator() {
   winrt::com_ptr<IMFMediaType> type;
   check(MFCreateMediaType(type.put()), "MFCreateMediaType");
   type->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
-  type->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12);
+  type->SetGUID(MF_MT_SUBTYPE, inputSubtype_);
   check(MFSetAttributeSize(type.get(), MF_MT_FRAME_SIZE, config_.size.width, config_.size.height), "allocator MF_MT_FRAME_SIZE");
   check(MFSetAttributeRatio(type.get(), MF_MT_FRAME_RATE, static_cast<UINT32>(std::lround(config_.fps)), 1), "allocator MF_MT_FRAME_RATE");
   type->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
@@ -420,7 +470,7 @@ void MfEncoder::Core::initAllocator() {
     attrs->SetUINT32(MF_SA_D3D11_BINDFLAGS, D3D11_BIND_RENDER_TARGET);
     hr = allocator_->InitializeSampleAllocatorEx(kInputPoolInitial, kInputPoolMax, attrs.get(), type.get());
   }
-  check(hr, "InitializeSampleAllocatorEx (NV12)");
+  check(hr, rgbInput_ ? "InitializeSampleAllocatorEx (ARGB32)" : "InitializeSampleAllocatorEx (NV12)");
 }
 
 std::optional<MfEncoder::Input> MfEncoder::Core::allocateInput() {
@@ -438,6 +488,31 @@ std::optional<MfEncoder::Input> MfEncoder::Core::allocateInput() {
   return in;
 }
 
+MfEncoder::Input MfEncoder::Core::wrapInput(ID3D11Texture2D* texture, std::function<void()> onReleased) {
+  auto released = winrt::make_self<SampleReleased>();
+  released->fn = std::move(onReleased);
+  // From here on, every failure path ends with the tracked sample (or the callback) released, which runs it.
+  winrt::com_ptr<IMFTrackedSample> tracked;
+  const HRESULT created = MFCreateTrackedSample(tracked.put());
+  if (FAILED(created)) {
+    released->Invoke(nullptr);
+    check(created, "MFCreateTrackedSample");
+  }
+  if (const HRESULT hr = tracked->SetAllocator(released.get(), nullptr); FAILED(hr)) {
+    released->Invoke(nullptr);
+    check(hr, "IMFTrackedSample::SetAllocator");
+  }
+  // Armed: if anything below throws, the sample's last release runs the callback.
+  Input in;
+  in.sample = tracked.as<IMFSample>();
+  winrt::com_ptr<IMFMediaBuffer> buffer;
+  check(MFCreateDXGISurfaceBuffer(__uuidof(ID3D11Texture2D), texture, 0, FALSE, buffer.put()), "MFCreateDXGISurfaceBuffer");
+  check(in.sample->AddBuffer(buffer.get()), "IMFSample::AddBuffer");
+  in.texture.copy_from(texture);
+  in.slice = 0;
+  return in;
+}
+
 MfEncoder::Submit MfEncoder::Core::encode(const Input& input, int64_t timestampUs, bool keyframe) {
   std::string error;
   Submit result = Submit::Accepted;
@@ -452,7 +527,16 @@ MfEncoder::Submit MfEncoder::Core::encode(const Input& input, int64_t timestampU
       if (FAILED(khr)) log::warn("encoder: force keyframe failed: {}", describeHresult(khr));
       else log::debug("encoder: IDR forced at {} us", timestampUs);
     }
+    const int64_t t0 = profile::enabled() ? qpcMicros() : 0;
     const HRESULT hr = transform_->ProcessInput(inputId_, input.sample.get(), 0);
+    if (t0) {
+      const int64_t t1 = qpcMicros();
+      profile::record(profile::Stage::EncodeInCpu, t1 - t0);
+      if (SUCCEEDED(hr)) {
+        inFlight_.emplace_back(timestampUs * 10, t1);
+        if (inFlight_.size() > 64) inFlight_.pop_front();
+      }
+    }
     if (hr == MF_E_NOTACCEPTING) return Submit::Busy;
     if (FAILED(hr)) {
       failLocked(error, "ProcessInput: " + describeHresult(hr));
@@ -572,6 +656,13 @@ void MfEncoder::Core::processOutput(std::vector<EncodedFrame>& out, std::string&
   frame.keyframe = cleanPoint != 0 || h264::containsIdr(frame.data);
   LONGLONG time = 0;
   if (SUCCEEDED(sample->GetSampleTime(&time))) frame.timestampUs = time / 10;
+  if (profile::enabled()) {
+    while (!inFlight_.empty() && inFlight_.front().first < time) inFlight_.pop_front();
+    if (!inFlight_.empty() && inFlight_.front().first == time) {
+      profile::record(profile::Stage::EncodeLatency, qpcMicros() - inFlight_.front().second);
+      inFlight_.pop_front();
+    }
+  }
 
   if (repaired && ++repairs_ <= 3) log::info("encoder: prepended cached SPS/PPS to an IDR ({} so far)", repairs_);
   if (!loggedSps_ && paramSets_.hasParameterSets()) {
@@ -630,8 +721,9 @@ std::unique_ptr<MfEncoder> MfEncoder::create(std::shared_ptr<D3DDevice> device, 
     auto core = std::make_shared<Core>(device, config, onOutput, onError);
     try {
       core->init(info);
-      log::info("encoder: {} ({}) {}x{}@{} {} {} kbps", core->name, core->vendor, config.size.width, config.size.height,
-                config.fps, config.rates.mode == RateMode::Cbr ? "CBR" : "PCVBR", config.rates.meanBitrate / 1000);
+      log::info("encoder: {} ({}) {}x{}@{} {} {} kbps, {} input", core->name, core->vendor, config.size.width, config.size.height,
+                config.fps, config.rates.mode == RateMode::Cbr ? "CBR" : "PCVBR", config.rates.meanBitrate / 1000,
+                core->rgbInput() ? "ARGB32" : "NV12");
       return std::make_unique<MfEncoder>(std::move(core));
     } catch (const std::exception& e) {
       // Typical: the NVENC session limit (another app is encoding) surfaces here as E_FAIL / MF_E_*.
@@ -645,6 +737,14 @@ std::unique_ptr<MfEncoder> MfEncoder::create(std::shared_ptr<D3DDevice> device, 
 
 std::optional<MfEncoder::Input> MfEncoder::allocateInput() {
   return core_->allocateInput();
+}
+
+MfEncoder::Input MfEncoder::wrapInput(ID3D11Texture2D* texture, std::function<void()> onReleased) {
+  return core_->wrapInput(texture, std::move(onReleased));
+}
+
+bool MfEncoder::rgbInput() const {
+  return core_->rgbInput();
 }
 
 MfEncoder::Submit MfEncoder::encode(const Input& input, int64_t timestampUs, bool keyframe) {

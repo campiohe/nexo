@@ -2,6 +2,10 @@
 // One share: source → FrameRing → VideoConverter → MfEncoder → Publisher, plus the encode thread that paces it,
 // the stream audio and the 1 Hz stats (SPEC-BETA §4.2). Emits state / stats / error / ended events itself.
 //
+// Under a GPU-bound foreground game each job we put on the 3D queue waits tens of ms (beta-m3-fps-gap.md), so by
+// default the ring keeps WGC's own buffers (no copy) and the encoder only ever gets a frame whose conversion the
+// GPU has already finished, with several conversions in flight: the waits overlap instead of adding up.
+//
 // Lifecycle (protocol rules agreed with the Electron supervisor):
 //   prepare()  synchronous, validates and builds everything local (device, capture item, encoder). Throws
 //              ShareError → the `start` result fails and nothing else is emitted for this share.
@@ -17,6 +21,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -37,6 +42,10 @@
 #include "video/pacer.hpp"
 
 namespace nexo {
+
+/// Pipelined conversion (docs/benchmarks/beta-m3-fps-gap.md): a converted frame goes to the encoder only once
+/// the GPU has finished the conversion, with up to Share::kMaxConverted in flight. NEXO_MEDIA_PIPELINE=0|1.
+inline constexpr bool kPipelineDefault = true;
 
 struct ShareSpec {
   enum class Kind { Window, Monitor, TestPattern };
@@ -96,6 +105,8 @@ class Share {
   void buildPipeline(bool initial);
   void teardownPipeline();
   std::unique_ptr<MfEncoder> createEncoder(const EncoderRates& rates, double fps);
+  /// RGB-input encoder and a frame that is exactly the output: it can go to the MFT as is.
+  bool canEncodeDirectly(const FrameRing::Frame& frame) const;
   /// A new encoder on the same device: for changes the MFT can't take mid-stream (rate-control mode, fps).
   void rebuildEncoder(const char* why);
   /// SPEC-BETA §4.3: rebuild everything but the publisher, keeping the track published.
@@ -113,10 +124,27 @@ class Share {
 
   ShareSpec spec_;
   std::shared_ptr<D3DDevice> device_;
-  std::unique_ptr<FrameRing> ring_;
+  bool pipelined() const { return static_cast<bool>(convertFence_); }
+
+  std::shared_ptr<FrameRing> ring_; ///< shared: encoder input samples give their frame back through a weak_ptr
   std::unique_ptr<FrameSource> source_;
   std::unique_ptr<VideoConverter> converter_;
   std::unique_ptr<MfEncoder> encoder_;
+
+  // Pipelined conversion (encode thread only).
+  static constexpr size_t kMaxConverted = 6;
+  struct Converted {
+    MfEncoder::Input input;
+    int64_t ts = 0;
+    bool keyframe = false;
+    uint64_t fence = 0;
+    int64_t convertedUs = 0;
+  };
+  std::deque<Converted> converted_;
+  winrt::com_ptr<ID3D11DeviceContext4> convertContext_;
+  winrt::com_ptr<ID3D11Fence> convertFence_;
+  uint64_t convertFenceValue_ = 0;
+  winrt::handle convertEvent_;
   /// shared: an abandoned connect keeps it alive (and closes it) after this share is gone.
   std::shared_ptr<Publisher> publisher_;
   std::shared_ptr<void> liveKitTicket_; ///< holds the process-wide LiveKit gate while this share uses it
@@ -152,6 +180,8 @@ class Share {
   uint64_t dropped_ = 0;
   uint64_t busy_ = 0;
   uint64_t poolEmpty_ = 0;
+  uint64_t profBusy_ = 0;      ///< NEXO_MEDIA_PROFILE: counters at the last profile line
+  uint64_t profPoolEmpty_ = 0;
   uint64_t keyframesBase_ = 0;
   std::atomic<uint64_t> rejected_{0};
   std::atomic<uint64_t> keyframeRequests_{0};

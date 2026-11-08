@@ -69,6 +69,7 @@ target_link_libraries(nexo_core PUBLIC nexo_options nlohmann_json::nlohmann_json
 add_library(nexo_win STATIC
   src/audio/wasapi_capture.cpp
   src/common/log.cpp
+  src/common/profile.cpp
   src/common/wic.cpp
   src/common/win_error.cpp
   src/d3d/device.cpp
@@ -111,7 +112,12 @@ target_link_libraries(gpu-burn PRIVATE nexo_options d3d11 dxgi d3dcompiler windo
 
 # ── Install: everything flat in the prefix (native/out), ready for electron-builder extraResources ─────
 
-install(TARGETS nexo-media gpu-burn RUNTIME DESTINATION .)
+# queue-probe: how long a tiny copy waits behind a GPU-bound game on each D3D11/D3D12 queue kind and priority
+# (docs/benchmarks/beta-m3-fps-gap.md).
+add_executable(queue-probe ../tools/queue-probe/queue_probe.cpp)
+target_link_libraries(queue-probe PRIVATE nexo_options d3d11 d3d12 dxgi windowsapp)
+
+install(TARGETS nexo-media gpu-burn queue-probe RUNTIME DESTINATION .)
 if(NEXO_WITH_LIVEKIT)
   install(FILES ${LIVEKIT_SDK_RUNTIME_DLLS} DESTINATION .)
 endif()

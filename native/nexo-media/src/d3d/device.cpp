@@ -83,6 +83,7 @@ std::shared_ptr<D3DDevice> D3DDevice::create(const AdapterDesc& wanted) {
   self->winrtDevice_ = inspectable.as<winrt::Windows::Graphics::DirectX::Direct3D11::IDirect3DDevice>();
 
   self->applyPriorityLevers();
+  self->probe_ = std::make_unique<profile::GpuProbe>(self->device_.get(), self->context_.get());
   return self;
 }
 

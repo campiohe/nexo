@@ -5,11 +5,11 @@
 // exactly the situation that starved the alpha's Chromium capture (SPEC-BETA §1). Harmless: it only draws.
 //
 //   gpu-burn.exe [--width 1920] [--height 1080] [--x 0] [--y 0] [--iterations 600] [--duration <s>]
-//                [--foreground 1|0]
+//                [--foreground 1|0|2] [--borderless 0|1]
 //
 // --foreground 1 (default) makes the window the foreground window, like a game the user is playing. That
 // matters: Windows' GPU scheduler favours the foreground process, and a process started from a script is
-// normally refused focus.
+// normally refused focus. --foreground 2 also takes the focus back (once a second) whenever it loses it.
 //
 // stdout, one JSON object per line:
 //   {"type":"ready","hwnd":"<decimal HWND>","pid":…,"tearing":true,"adapter":"…"}
@@ -70,6 +70,18 @@ struct Params {
 
 bool g_quit = false;
 
+/// The foreground lock refuses SetForegroundWindow to a process that didn't receive the last input. Attaching
+/// to the current foreground thread's input queue is the usual way around it for a test tool.
+void forceForeground(HWND hwnd) {
+  const DWORD fgThread = GetWindowThreadProcessId(GetForegroundWindow(), nullptr);
+  const DWORD self = GetCurrentThreadId();
+  const bool attached = fgThread != 0 && fgThread != self && AttachThreadInput(self, fgThread, TRUE);
+  ShowWindow(hwnd, SW_SHOW);
+  BringWindowToTop(hwnd);
+  SetForegroundWindow(hwnd);
+  if (attached) AttachThreadInput(self, fgThread, FALSE);
+}
+
 LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
   switch (msg) {
     case WM_CLOSE: g_quit = true; return 0;
@@ -116,7 +128,10 @@ int wmain(int argc, wchar_t** argv) {
   const int y = intArg(argc, argv, L"--y", 0);
   const UINT iterations = static_cast<UINT>(intArg(argc, argv, L"--iterations", 600));
   const int duration = intArg(argc, argv, L"--duration", 0);
-  const bool wantForeground = intArg(argc, argv, L"--foreground", 1) != 0;
+  const int foregroundMode = intArg(argc, argv, L"--foreground", 1);
+  const bool wantForeground = foregroundMode != 0;
+  const bool keepForeground = foregroundMode == 2;
+  const bool borderless = intArg(argc, argv, L"--borderless", 0) != 0;
 
   // The high-performance GPU, where a real game would run.
   winrt::com_ptr<IDXGIFactory6> factory;
@@ -136,21 +151,16 @@ int wmain(int argc, wchar_t** argv) {
   wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
   wc.lpszClassName = L"NexoGpuBurn";
   RegisterClassW(&wc);
+  // --borderless 1: a popup exactly width x height, like a game in borderless full screen (what WGC then
+  // captures is exactly the game's picture, no title bar or frame).
+  const DWORD style = borderless ? WS_POPUP : WS_OVERLAPPEDWINDOW;
   RECT r{0, 0, width, height};
-  AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
-  HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"nexo gpu-burn", WS_OVERLAPPEDWINDOW, x, y, r.right - r.left,
-                              r.bottom - r.top, nullptr, nullptr, wc.hInstance, nullptr);
+  AdjustWindowRect(&r, style, FALSE);
+  HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"nexo gpu-burn", style, x, y, r.right - r.left, r.bottom - r.top, nullptr,
+                              nullptr, wc.hInstance, nullptr);
   if (!hwnd) check(HRESULT_FROM_WIN32(GetLastError()), "CreateWindowEx");
   if (wantForeground) {
-    // The foreground lock refuses SetForegroundWindow to a process that didn't receive the last input.
-    // Attaching to the current foreground thread's input queue is the usual way around it for a test tool.
-    const DWORD fgThread = GetWindowThreadProcessId(GetForegroundWindow(), nullptr);
-    const DWORD self = GetCurrentThreadId();
-    const bool attached = fgThread != 0 && fgThread != self && AttachThreadInput(self, fgThread, TRUE);
-    ShowWindow(hwnd, SW_SHOW);
-    BringWindowToTop(hwnd);
-    SetForegroundWindow(hwnd);
-    if (attached) AttachThreadInput(self, fgThread, FALSE);
+    forceForeground(hwnd);
   } else {
     // Visible but not activated: a game left in the background (alt-tabbed away).
     ShowWindow(hwnd, SW_SHOWNOACTIVATE);
@@ -239,9 +249,25 @@ int wmain(int argc, wchar_t** argv) {
 
     const double windowSeconds = std::chrono::duration<double>(now - windowStart).count();
     if (windowSeconds >= 1.0) {
-      std::printf("{\"type\":\"fps\",\"fps\":%.1f,\"frames\":%llu,\"foreground\":%s}\n",
+      const HWND fg = GetForegroundWindow();
+      const bool isForeground = fg == hwnd;
+      // Who has the focus instead (benchmark hygiene: something else taking it skews the results).
+      wchar_t fgExe[MAX_PATH] = L"";
+      if (!isForeground && fg) {
+        DWORD pid = 0;
+        GetWindowThreadProcessId(fg, &pid);
+        if (HANDLE p = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid)) {
+          DWORD len = MAX_PATH;
+          if (QueryFullProcessImageNameW(p, 0, fgExe, &len)) {
+            if (const wchar_t* slash = std::wcsrchr(fgExe, L'\\')) std::wmemmove(fgExe, slash + 1, std::wcslen(slash + 1) + 1);
+          }
+          CloseHandle(p);
+        }
+      }
+      std::printf("{\"type\":\"fps\",\"fps\":%.1f,\"frames\":%llu,\"foreground\":%s,\"foregroundExe\":\"%ls\"}\n",
                   static_cast<double>(windowFrames) / windowSeconds, static_cast<unsigned long long>(frames),
-                  GetForegroundWindow() == hwnd ? "true" : "false");
+                  isForeground ? "true" : "false", fgExe);
+      if (keepForeground && !isForeground) forceForeground(hwnd);
       std::fflush(stdout);
       windowStart = now;
       windowFrames = 0;

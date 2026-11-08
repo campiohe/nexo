@@ -24,6 +24,12 @@
 //   d3d/device.hpp), NEXO_MEDIA_D3D_DEBUG=1, NEXO_MEDIA_SCALER=vp|bicubic|lanczos (detail scaler, default vp),
 //   NEXO_MEDIA_DUMP_AUDIO=<file.wav>, NEXO_MEDIA_TEST_DEVICE_LOST_AFTER_MS=<n> and
 //   NEXO_MEDIA_TEST_DEVICE_REBUILD_FAILS=<n> (simulated GPU loss and failed rebuilds, M3 tests)
+// Pipeline levers (docs/benchmarks/beta-m3-fps-gap.md): NEXO_MEDIA_ZERO_COPY=0|1 (default 1: encode from WGC's
+//   own buffers, no ring copy), NEXO_MEDIA_PIPELINE=0|1 (default 1: hand a frame to the encoder once its
+//   conversion is done on the GPU, several in flight), NEXO_MEDIA_RGB_INPUT=0|1 (default 0: BGRA straight into
+//   the MFT for 1:1 shares), NEXO_MEDIA_WGC_BUFFERS=<n> (frame pool size), NEXO_MEDIA_WGC_MIN_INTERVAL_MS=<ms>
+//   (0 = unset; default 1/fps), NEXO_MEDIA_PROFILE=1 (a per-second "profile:" log line: per-stage CPU/GPU
+//   timings) and NEXO_MEDIA_PROFILE_RAW=1 (with PROFILE: count WGC frames and process nothing)
 #include <windows.h>
 
 #include <mfapi.h>

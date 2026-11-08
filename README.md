@@ -190,7 +190,16 @@ node --env-file=.env scripts/stream-token.mjs voice-<channelId> <userId> |
   native/out/nexo-media.exe --test-pattern --url ws://<WSL IP>:7880 --token-stdin --duration 120
 ```
 
-Benchmarks and their tools: [docs/benchmarks](docs/benchmarks) (`native/tools/gpu-burn`).
+Tuning and profiling flags (env, read by the helper; `scripts/win-run.sh` passes `NEXO_MEDIA_*` through):
+`NEXO_MEDIA_PROFILE=1` logs a per-second `profile:` line (add `NEXO_MEDIA_PROFILE_RAW=1` to count WGC frames
+with no processing), `NEXO_MEDIA_PIPELINE=0` / `NEXO_MEDIA_ZERO_COPY=0` turn off the pipelined conversion and
+zero-copy capture, `NEXO_MEDIA_RGB_INPUT=1` feeds BGRA straight to the encoder when no scaling is needed
+(experimental), `NEXO_MEDIA_WGC_BUFFERS` / `NEXO_MEDIA_WGC_MIN_INTERVAL_MS` override the frame pool,
+`NEXO_MEDIA_H264_PROFILE=baseline` switches the H.264 profile.
+
+Benchmarks and their tools: [docs/benchmarks](docs/benchmarks) (`native/tools/gpu-burn`, `queue-probe`,
+`alpha-bench`). The tools run from the local-disk copy (`%LOCALAPPDATA%\nexo-dev\native\src\out`); don't run
+`scripts/native-build.sh` during a benchmark, it replaces that folder.
 
 ### Installers for friends
 
@@ -437,11 +446,15 @@ npm run typecheck -w server
 **A game stream drops to ~5–15 fps while the game has focus (fine after alt-tab)**: the GPU is maxed out.
 Windows captures the screen on the GPU too, and a game that keeps the GPU at ~100% starves it. The game
 itself still runs smoothly. Check these in order:
-1. **Settings → App → "Fast game capture"** is on (the default since v0.2.0-alpha.3). On Windows older
-   than 11 24H2, share the game's **window** rather than the entire screen.
-2. The game isn't **uncapped**. An uncapped game on a fast GPU starves capture completely. Any cap
+1. **Settings → App → Capture engine** is **Native** (Windows, the default when your GPU has a hardware
+   encoder). It keeps its GPU work out of the game's way and held 55–60 fps in testing with a GPU-bound
+   game in focus.
+2. If Nexo uses the Chromium engine (your choice, or its fallback): **Settings → App → "Fast game
+   capture"** is on (the default since v0.2.0-alpha.3). On Windows older than 11 24H2, share the game's
+   **window** rather than the entire screen.
+3. The game isn't **uncapped**. An uncapped game on a fast GPU can starve capture. Any cap
    fixes it: V-Sync, the game's max FPS, or the NVIDIA/AMD control panel.
-3. On a **mid-range GPU in a heavy game** (GPU at ~96%, already below its cap): lower the graphics
+4. On a **mid-range GPU in a heavy game** (GPU at ~96%, already below its cap): lower the graphics
    settings or the upscaler preset, then cap the FPS a bit below what it reaches. A cap above what the
    game reaches does nothing.
 

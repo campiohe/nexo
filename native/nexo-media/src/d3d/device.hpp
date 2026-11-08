@@ -13,6 +13,8 @@
 #include <string>
 #include <vector>
 
+#include "common/profile.hpp"
+
 namespace nexo {
 
 struct AdapterDesc {
@@ -50,6 +52,8 @@ class D3DDevice {
   IMFDXGIDeviceManager* dxgiManager() const { return manager_.get(); }
   const winrt::Windows::Graphics::DirectX::Direct3D11::IDirect3DDevice& winrtDevice() const { return winrtDevice_; }
   const AdapterDesc& adapter() const { return adapter_; }
+  /// GPU job timing for NEXO_MEDIA_PROFILE=1 (inactive otherwise).
+  profile::GpuProbe& probe() const { return *probe_; }
 
   /// S_OK while the device is usable; DXGI_ERROR_DEVICE_REMOVED/RESET/HUNG… after a TDR or driver update.
   HRESULT removedReason() const {
@@ -70,6 +74,7 @@ class D3DDevice {
   UINT managerToken_ = 0;
   winrt::Windows::Graphics::DirectX::Direct3D11::IDirect3DDevice winrtDevice_{nullptr};
   std::atomic<bool> simulatedRemoval_{false};
+  std::unique_ptr<profile::GpuProbe> probe_; ///< last: goes first, while the device is still whole
 };
 
 /// SPEC-BETA §4.3 priority levers, each with an env override: NEXO_MEDIA_GPU_PRIORITY, NEXO_MEDIA_GPU_SCHED_HIGH,

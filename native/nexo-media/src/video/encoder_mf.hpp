@@ -43,7 +43,16 @@ struct EncoderConfig {
   double fps = 60;
   EncoderRates rates;
   H264Profile profile = H264Profile::High;
+  /// Ask for ARGB32 (BGRA texture) input instead of NV12, so a capture frame at the output size can go in as
+  /// is, with no conversion job of ours (docs/benchmarks/beta-m3-fps-gap.md). Falls back to NV12 when the MFT
+  /// doesn't offer it; MfEncoder::rgbInput() says what was set.
+  bool rgbInput = false;
 };
+
+/// NEXO_MEDIA_RGB_INPUT=0|1 overrides the default. Off: on an RTX 3060 Ti the MFT's own RGB conversion holds it
+/// at ~49 fps under a GPU-bound game where NV12 with pipelined conversion reaches 55 (beta-m3-fps-gap.md).
+inline constexpr bool kRgbInputDefault = false;
+bool rgbInputEnabled();
 
 struct EncodedFrame {
   std::vector<uint8_t> data; ///< Annex B access unit
@@ -69,8 +78,15 @@ class MfEncoder {
     winrt::com_ptr<ID3D11Texture2D> texture;
     UINT slice = 0;
   };
-  /// A free NV12 input surface, or nullopt when all are still inside the encoder.
+  /// A free input surface from the encoder's pool (NV12, or BGRA with rgbInput()), or nullopt when all are
+  /// still inside the encoder.
   std::optional<Input> allocateInput();
+  /// RGB input only: wraps a BGRA texture of exactly the output size as an input, without copying it.
+  /// `onReleased` runs (on any thread) once the encoder no longer references it, or when the input is dropped
+  /// without being accepted.
+  Input wrapInput(ID3D11Texture2D* texture, std::function<void()> onReleased);
+  /// True when the MFT takes ARGB32 input (EncoderConfig::rgbInput and the MFT offered it).
+  bool rgbInput() const;
 
   enum class Submit { Accepted, Busy, Failed };
   /// Busy: the MFT hasn't asked for input yet (the frame is dropped; latest frame wins).

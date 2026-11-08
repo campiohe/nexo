@@ -21,8 +21,8 @@ void VideoConverter::setDetail(bool detail) {
   log::info("convert: {} scaling ({})", detail ? "quality (detail)" : "normal (motion)", toString(activeScaler()));
 }
 
-void VideoConverter::ensureProcessor(Size input, DXGI_FORMAT format) {
-  if (processor_ && processorInput_ == input && processorFormat_ == format) return;
+void VideoConverter::ensureProcessor(Size input, DXGI_FORMAT format, DXGI_FORMAT outputFormat) {
+  if (processor_ && processorInput_ == input && processorFormat_ == format && processorOutputFormat_ == outputFormat) return;
   processor_ = nullptr;
   enumerator_ = nullptr;
   inputViews_.clear();
@@ -44,12 +44,16 @@ void VideoConverter::ensureProcessor(Size input, DXGI_FORMAT format) {
   if (!(flags & D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_INPUT)) {
     throw HrError(E_NOTIMPL, std::format("video processor: input format {} unsupported", static_cast<int>(format)));
   }
-  check(enumerator_->CheckVideoProcessorFormat(DXGI_FORMAT_NV12, &flags), "CheckVideoProcessorFormat(NV12)");
-  if (!(flags & D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_OUTPUT)) throw HrError(E_NOTIMPL, "video processor: NV12 output unsupported");
+  check(enumerator_->CheckVideoProcessorFormat(outputFormat, &flags), "CheckVideoProcessorFormat(output)");
+  if (!(flags & D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_OUTPUT)) {
+    throw HrError(E_NOTIMPL, std::format("video processor: output format {} unsupported", static_cast<int>(outputFormat)));
+  }
+  const bool rgbOut = outputFormat != DXGI_FORMAT_NV12;
 
   check(videoDevice_->CreateVideoProcessor(enumerator_.get(), 0, processor_.put()), "CreateVideoProcessor");
   processorInput_ = input;
   processorFormat_ = format;
+  processorOutputFormat_ = outputFormat;
 
   auto* ctx = videoContext_.get();
   auto* vp = processor_.get();
@@ -59,26 +63,34 @@ void VideoConverter::ensureProcessor(Size input, DXGI_FORMAT format) {
   ctx->VideoProcessorSetStreamAutoProcessingMode(vp, 0, FALSE);
 
   // Capture is full-range sRGB; the encoder input is BT.709 limited range, which is also what the SPS VUI says.
+  // RGB output (an encoder taking RGB) stays full-range sRGB: the encoder does the YUV conversion.
   if (videoContext1_) {
     videoContext1_->VideoProcessorSetStreamColorSpace1(vp, 0, DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
-    videoContext1_->VideoProcessorSetOutputColorSpace1(vp, DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709);
+    videoContext1_->VideoProcessorSetOutputColorSpace1(
+        vp, rgbOut ? DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709 : DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709);
   } else {
     D3D11_VIDEO_PROCESSOR_COLOR_SPACE in{};
     in.RGB_Range = 0; // full
     in.YCbCr_Matrix = 1;
     ctx->VideoProcessorSetStreamColorSpace(vp, 0, &in);
     D3D11_VIDEO_PROCESSOR_COLOR_SPACE out{};
+    out.RGB_Range = 0;
     out.YCbCr_Matrix = 1; // BT.709
     out.Nominal_Range = D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235;
     ctx->VideoProcessorSetOutputColorSpace(vp, &out);
   }
-  // Letterbox bars: black in limited-range YCbCr (Y 16, Cb/Cr 128).
+  // Letterbox bars: black (limited-range YCbCr: Y 16, Cb/Cr 128).
   D3D11_VIDEO_COLOR black{};
-  black.YCbCr = {16.0f / 255.0f, 0.5f, 0.5f, 1.0f};
-  ctx->VideoProcessorSetOutputBackgroundColor(vp, TRUE, &black);
+  if (rgbOut) {
+    black.RGBA = {0.0f, 0.0f, 0.0f, 1.0f};
+  } else {
+    black.YCbCr = {16.0f / 255.0f, 0.5f, 0.5f, 1.0f};
+  }
+  ctx->VideoProcessorSetOutputBackgroundColor(vp, rgbOut ? FALSE : TRUE, &black);
   const RECT target{0, 0, static_cast<LONG>(output_.width), static_cast<LONG>(output_.height)};
   ctx->VideoProcessorSetOutputTargetRect(vp, TRUE, &target);
-  log::debug("convert: video processor {}x{} -> {}x{} NV12", input.width, input.height, output_.width, output_.height);
+  log::debug("convert: video processor {}x{} -> {}x{} {}", input.width, input.height, output_.width, output_.height,
+             rgbOut ? "BGRA" : "NV12");
 }
 
 ID3D11VideoProcessorInputView* VideoConverter::inputView(ID3D11Texture2D* src) {
@@ -114,6 +126,9 @@ ID3D11VideoProcessorOutputView* VideoConverter::outputView(ID3D11Texture2D* dst,
 }
 
 void VideoConverter::convert(ID3D11Texture2D* src, Size content, ID3D11Texture2D* dst, UINT dstSlice) {
+  D3D11_TEXTURE2D_DESC dd{};
+  dst->GetDesc(&dd);
+  const DXGI_FORMAT outFormat = dd.Format;
   const auto box = letterboxRect(content, output_);
   const bool scaling = static_cast<uint32_t>(box.width()) != content.width || static_cast<uint32_t>(box.height()) != content.height;
   if (scaling && quality_ && detailScaler_ != ScalerKind::VideoProcessor) {
@@ -121,7 +136,7 @@ void VideoConverter::convert(ID3D11Texture2D* src, Size content, ID3D11Texture2D
       if (!compute_) compute_ = std::make_unique<ComputeScaler>(device_, detailScaler_);
       compute_->scale(src, content, output_, box);
       // The frame is now letterboxed at the output size: the video processor only converts, 1:1.
-      ensureProcessor(output_, DXGI_FORMAT_R8G8B8A8_UNORM);
+      ensureProcessor(output_, DXGI_FORMAT_R8G8B8A8_UNORM, outFormat);
       src = compute_->target();
       content = output_;
     } catch (const std::exception& e) {
@@ -135,7 +150,7 @@ void VideoConverter::convert(ID3D11Texture2D* src, Size content, ID3D11Texture2D
   } else {
     D3D11_TEXTURE2D_DESC sd{};
     src->GetDesc(&sd);
-    ensureProcessor({sd.Width, sd.Height}, sd.Format);
+    ensureProcessor({sd.Width, sd.Height}, sd.Format, outFormat);
   }
 
   auto* ctx = videoContext_.get();
