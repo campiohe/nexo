@@ -7,7 +7,7 @@
 import { existsSync, mkdirSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { LIMITS, normalizeUserName } from '../../../server/src/server.ts'
+import { isValidUserName, LIMITS, normalizeUserName } from '../../../server/src/server.ts'
 import { runningInstance } from './instance.ts'
 import { dataLayout } from './paths.ts'
 
@@ -18,13 +18,11 @@ export class AdminError extends Error {
   }
 }
 
-// Same pattern as NAME_RE in server/src/server.ts (not exported there; keep in sync).
-const NAME_RE = new RegExp(`^[\\p{L}\\p{M}\\p{N}_.\\- ]{${LIMITS.nameMin},${LIMITS.nameMax}}$`, 'u')
 
 /** Normalizes a user name like the server does; returns it, or an error message when the server would reject it. */
 export function checkUserName(name: string): { ok: true; value: string } | { ok: false; error: string } {
   const value = normalizeUserName(name)
-  if (!NAME_RE.test(value)) {
+  if (!isValidUserName(value)) {
     return { ok: false, error: `Names must be ${LIMITS.nameMin}-${LIMITS.nameMax} letters, numbers, spaces, . _ or - (got "${value}")` }
   }
   return { ok: true, value }

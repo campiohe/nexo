@@ -49,6 +49,17 @@ export interface NexoInstance {
   io: NexoServer
   /** Disconnects all clients, stops listening and closes the database. */
   close(): Promise<void>
+  /** Live counts for hosts (the server CLI's status line). Cheap: no I/O. */
+  stats(): ServerStats
+}
+
+export interface ServerStats {
+  /** Users with at least one connected socket. */
+  online: number
+  inVoice: number
+  streaming: number
+  /** Remote addresses of connected sockets (IPv4-mapped IPv6 unwrapped), deduplicated. */
+  clientAddresses: string[]
 }
 
 // ---------- limits & validation ----------
@@ -90,6 +101,11 @@ const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object
 /** Constant-time string comparison (hash first so lengths don't leak). */
 function safeEqual(a: string, b: string): boolean {
   return timingSafeEqual(createHash('sha256').update(a).digest(), createHash('sha256').update(b).digest())
+}
+
+/** Whether an already-normalized name (normalizeUserName) is allowed. Shared with the server CLI's rename-user. */
+export function isValidUserName(name: string): boolean {
+  return NAME_RE.test(name)
 }
 
 export function normalizeUserName(name: unknown): string {
@@ -524,5 +540,16 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
   log(`[nexo] LiveKit URL for clients: ${config.livekit.publicUrl || `ws://<host clients use>:${config.livekit.port}`}`)
   if (config.serverPassword) log('[nexo] Server password is enabled for new users')
 
-  return { port, url: `http://${displayHost}:${port}`, config, io, close }
+  const stats = (): ServerStats => {
+    const addresses = new Set<string>()
+    for (const socket of io.sockets.sockets.values()) {
+      const a = socket.handshake.address
+      if (a) addresses.add(a.startsWith('::ffff:') ? a.slice(7) : a)
+    }
+    let streaming = 0
+    for (const v of voiceStates.values()) if (v.streaming) streaming++
+    return { online: connections.size, inVoice: voiceStates.size, streaming, clientAddresses: [...addresses] }
+  }
+
+  return { port, url: `http://${displayHost}:${port}`, config, io, close, stats }
 }
