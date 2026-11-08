@@ -1,11 +1,14 @@
 # Hosting a Nexo server
 
-Everyone in a friend group connects to one Nexo server. This guide is for whoever runs it: on a Linux PC,
-a small VPS, or a Windows PC through WSL.
+Everyone in a friend group connects to one Nexo server. This guide is for whoever runs it.
 
+**On Windows, use the Nexo Server download**: one zip, no Node, Docker or WSL, and you can play on the
+same PC. The manual setups below (Linux, VPS, WSL with Docker) are the advanced option.
+
+- [Nexo Server for Windows (recommended)](#nexo-server-for-windows-recommended)
 - [How it fits together](#how-it-fits-together)
-- [Linux host or VPS](#linux-host-or-vps)
-- [Windows host (WSL)](#windows-host-wsl)
+- [Advanced: Linux host or VPS](#advanced-linux-host-or-vps)
+- [Advanced: Windows host (WSL)](#advanced-windows-host-wsl)
 - [Letting your friends in](#letting-your-friends-in)
 - [Configuration (`.env`)](#configuration-env)
 - [Ports](#ports)
@@ -14,6 +17,82 @@ a small VPS, or a Windows PC through WSL.
 - [Updating the server](#updating-the-server)
 - [Troubleshooting](#troubleshooting)
 - [Limitations](#limitations)
+
+---
+
+## Nexo Server for Windows (recommended)
+
+1. Download `Nexo-Server-<version>-win-x64.zip` from **[Releases](https://github.com/campiohe/nexo/releases)**
+   (the same release as the app) and extract it anywhere, for example `Documents\Nexo Server`.
+2. Double-click **`nexo-server.exe`**. If Windows says "Windows protected your PC", click **More info →
+   Run anyway** (the program isn't code-signed).
+3. The first time, it asks two things: a **server name** and a **password** for new friends (press Enter
+   to keep the suggestions; the password is generated, like `moss-tiger-41`).
+4. Windows Firewall asks to allow `nexo-server.exe` and `livekit-server.exe`: click **Allow** on both.
+5. Send your friends what's in the **Invite your friends** box: the server address and the password.
+   You play on the same PC: join with `http://localhost:3001`.
+
+Keep the window open while you play (Ctrl+C stops the server). It shows who's online, who's in voice and
+your upload, and it tells you when the first friend connects from outside your network.
+
+### How friends reach you
+
+The server checks your network when it starts and tells you in plain words:
+
+- **Tailscale** (if it's running on this PC): it invites friends with your Tailscale address, and opens
+  nothing on your router. This works on every internet connection. See
+  [Tailscale on a Windows host](#on-a-windows-host-nexo-server).
+- **Automatic port forwarding (UPnP)**: without Tailscale, it asks your router to forward the ports
+  ([Ports](#ports)) while it runs, and invites friends with your public address.
+- **"Your internet provider doesn't let friends connect to you directly (CGNAT)"**: many providers share one
+  public address among customers, and no port forwarding can work. Use Tailscale.
+- **"Automatic port forwarding is not available"**: UPnP is off in your router. Turn it on in the router's
+  settings, forward the [ports](#ports) by hand, or use Tailscale.
+- People in the same house can always use the **Same network** address.
+
+`nexo-server setup` → **Advanced** lets you force a mode: `auto` (the default: Tailscale if it's running,
+else UPnP, else local network), `tailscale`, `public` or `lan`.
+
+### Commands
+
+Run these in a terminal in the folder (or add `--data <folder>` to use another data folder):
+
+| Command | Does |
+|---|---|
+| `nexo-server` | Start (asks the setup questions the first time) |
+| `nexo-server invite` | Show the invite again |
+| `nexo-server status` | Is it running, who's online, ports, version |
+| `nexo-server setup` | Change the name, password, ports or network mode |
+| `nexo-server backup` | Save a copy of the database (safe while it runs) |
+| `nexo-server rename-user <old> <new>` | Free a name (see [Lost identity](#troubleshooting)) |
+| `nexo-server autostart on` / `off` | Start the server when you log in to Windows |
+| `nexo-server update` | Download and install the newest server (stop the server first) |
+
+Double-clicking the exe while the server already runs just shows the invite again.
+
+### Where your data is
+
+`%LOCALAPPDATA%\Nexo Server`: the database (`nexo.db`), pictures (`attachments`, `avatars`), settings
+(`config.json`, including the password), the generated LiveKit config and logs (`logs\nexo-server.log`).
+Back up this folder (or use `nexo-server backup` plus the two picture folders).
+
+### Updating
+
+When a newer server exists, the window says so when it starts. Stop the server, run
+`nexo-server update`, and start it again. Or download the new zip and replace the two exe files; your data
+folder stays where it is. Keep the server on the same version as your friends' apps (both update from the
+same releases).
+
+### Moving from a manual setup
+
+The server uses the same database and data layout. Point it at your existing data folder and keep your
+`.env` values as environment variables if you want (they take priority over `config.json`):
+
+```
+nexo-server --data C:\path\to\nexo\server\data
+```
+
+Stop the old server and LiveKit (Docker) first: they use the same ports.
 
 ---
 
@@ -34,7 +113,7 @@ Both run on the same machine. Friends only need the Nexo app and the server URL,
 
 ---
 
-## Linux host or VPS
+## Advanced: Linux host or VPS
 
 ### What you need
 
@@ -148,7 +227,7 @@ On a VPS, also check the provider's own firewall or security group.
 
 ---
 
-## Windows host (WSL)
+## Advanced: Windows host (WSL)
 
 On Windows, the server and LiveKit run inside WSL2. This is how the original Nexo host runs.
 
@@ -203,8 +282,31 @@ There are two ways to make the server reachable from outside your home:
 ### Tailscale (recommended)
 
 Tailscale gives the host a private `100.x.y.z` address that your friends can reach from anywhere, with no
-port forwarding or TLS needed, and traffic encrypted by WireGuard. On a Windows host, Tailscale runs
-**inside WSL** (not only on Windows), so WSL gets its own tailnet IP.
+port forwarding or TLS needed, and traffic encrypted by WireGuard. It works on every internet connection,
+including CGNAT and routers with UPnP off. Set up the host first, then let your friends in.
+
+#### On a Windows host (Nexo Server)
+
+1. **Install Tailscale for Windows** from <https://tailscale.com/download> and sign in. The Windows app is
+   all you need (no WSL).
+2. **Start (or restart) `nexo-server`.** In the default `auto` mode it finds Tailscale by itself: it opens
+   nothing on your router, tells LiveKit to use the Tailscale address, and the **Invite your friends** box
+   shows `http://100.x.y.z:3001` labeled **Tailscale**. There is nothing to configure.
+3. You still join from the same PC with `http://localhost:3001`.
+
+To always use Tailscale, run `nexo-server setup` → **Advanced** and set the network mode to `tailscale`.
+In that mode, if Tailscale isn't running when the server starts, the invite says so instead of quietly
+falling back to your router or local network.
+
+If friends can open the server but voice or streams don't connect, check that the Windows Firewall rules
+for `nexo-server.exe` and `livekit-server.exe` (from the two **Allow** prompts) allow the network type
+Windows gives the Tailscale adapter (usually **Private**): **Windows Security → Firewall & network
+protection → Allow an app through firewall**.
+
+#### On a Linux or WSL host (manual setup)
+
+On a Windows host with WSL, Tailscale runs **inside WSL** (not only on Windows), so WSL gets its own
+tailnet IP.
 
 1. **Install** (official script, needs sudo):
 
@@ -218,9 +320,6 @@ port forwarding or TLS needed, and traffic encrypted by WireGuard. On a Windows 
    sudo tailscale up
    tailscale ip -4          # → 100.x.y.z  (the host's tailnet IP)
    ```
-
-   Optional: in the Tailscale admin console, rename the machine (e.g. `nexo`) and turn off
-   **key expiry** for it, so it doesn't drop off the tailnet after a few months.
 
 3. **Tell LiveKit to advertise that IP** for media. Edit `.env`:
 
@@ -242,25 +341,31 @@ port forwarding or TLS needed, and traffic encrypted by WireGuard. On a Windows 
    The server gives clients the LiveKit address automatically (`ws://<same host>:7880`). Only set
    `LIVEKIT_PUBLIC_URL` if LiveKit lives somewhere else.
 
-5. **Let your friends in.** Pick one way in the [admin console](https://login.tailscale.com/admin/machines):
+#### Let your friends in
+
+Optional first: in the [admin console](https://login.tailscale.com/admin/machines), rename the host machine
+(e.g. `nexo`) and turn off **key expiry** for it, so it doesn't drop off the tailnet after a few months.
+
+1. **Give them access.** Pick one way in the [admin console](https://login.tailscale.com/admin/machines):
    - **Share the machine** (recommended): on the host machine, choose **⋯ → Share…** and send each friend
      the invite link. They only see this one machine, not your other devices.
    - **Invite them to your tailnet**: go to **Users → Invite users**. This gives them full tailnet
      membership, so check your access rules.
 
-6. **Each friend:**
+2. **Each friend:**
    1. Installs Tailscale from <https://tailscale.com/download>, signs in, and accepts your share or
       invite. Your machine then appears in their Tailscale list.
    2. Installs Nexo from [Releases](https://github.com/campiohe/nexo/releases) (see the
       [User guide](USER-GUIDE.md#install)).
    3. Opens Nexo and enters the server URL `http://100.x.y.z:3001`, a name, a color, and the server
-      password if you set one.
+      password if there is one.
 
    Quick check from a friend's PC: opening `http://100.x.y.z:3001/health` in a browser should show
    `{"ok":true,…}`.
 
-> Tip: set `SERVER_PASSWORD` in `.env` if you share the machine widely. It is asked only once, when a
-> new person picks a name. Returning devices log in with their stored token.
+> Tip: keep a server password if you share the machine widely (Nexo Server sets one by default; change it
+> with `nexo-server setup`; on a manual setup it's `SERVER_PASSWORD` in `.env`). It is asked only once,
+> when a new person picks a name. Returning devices log in with their stored token.
 
 ### Port forwarding or a public host
 

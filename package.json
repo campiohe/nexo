@@ -1,19 +1,20 @@
 {
   "name": "nexo",
   "private": true,
-  "version": "0.4.0-beta.2",
+  "version": "0.4.0-test.4",
   "license": "MIT",
   "description": "Chat, voice and game/screen sharing for friend groups",
   "workspaces": [
     "server",
-    "desktop"
+    "desktop",
+    "server-cli"
   ],
   "scripts": {
     "media": "docker compose up -d livekit",
     "media:down": "docker compose down",
     "server": "npm run dev -w server",
     "desktop": "scripts/win-run.sh",
-    "typecheck": "npm run typecheck -w server && npm run typecheck -w desktop",
-    "test": "npm test -w server"
+    "typecheck": "npm run typecheck -w server && npm run typecheck -w desktop && npm run typecheck -w server-cli",
+    "test": "npm test -w server && npm test -w server-cli"
   }
 }

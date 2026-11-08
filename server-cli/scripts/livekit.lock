@@ -1,0 +1,22 @@
+{
+  "_comment": [
+    "LiveKit SFU native binary shipped next to nexo-server(.exe) and run as a supervised child.",
+    "Same version as the Docker image pinned in docker-compose.yml (livekit/livekit-server:v1.13.11):",
+    "bump both together so Docker and CLI hosts behave the same.",
+    "SHA-256 values copied from the release's checksums.txt:",
+    "https://github.com/livekit/livekit/releases/download/v1.13.11/checksums.txt"
+  ],
+  "version": "1.13.11",
+  "files": {
+    "win-x64": {
+      "url": "https://github.com/livekit/livekit/releases/download/v1.13.11/livekit_1.13.11_windows_amd64.zip",
+      "sha256": "5d071ea43339f0140d24a66f0b2ff8a7bf6c4d0dceb19b30abca835670213667",
+      "binary": "livekit-server.exe"
+    },
+    "linux-x64": {
+      "url": "https://github.com/livekit/livekit/releases/download/v1.13.11/livekit_1.13.11_linux_amd64.tar.gz",
+      "sha256": "1e9ee90ca301e1842b2887fc77cb122759756a9c8aeb4334ee91de3325ec43fb",
+      "binary": "livekit-server"
+    }
+  }
+}
