@@ -1,6 +1,6 @@
 # Nexo Beta — Native Media Spec
 
-**Status:** Implemented through M3 (branch `beta/native-media`) · **Date:** 2026-11-08 · **Scope:** Windows streamer side (game and screen sharing)
+**Status:** Released as v0.4.0-beta.1 · **Date:** 2026-11-08 · **Scope:** Windows streamer side (game and screen sharing)
 
 The alpha (v0.1–v0.3) does everything inside Electron: Chromium captures the game, Chromium's WebRTC encodes it,
 and livekit-client publishes it. The beta keeps Electron as the **interface shell** and moves the **heavy media
