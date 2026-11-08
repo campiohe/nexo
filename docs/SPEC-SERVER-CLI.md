@@ -1,7 +1,7 @@
 # Nexo Server CLI: one download to host a server
 
-**Status:** Draft · **Date:** 2026-11-08 · **Scope:** a standalone `nexo-server` program, Windows first, Linux and
-macOS from the same code · **Related:** [SERVER.md](SERVER.md) (today's manual setup), [SPEC.md](SPEC.md)
+**Status:** Approved, in progress · **Date:** 2026-11-08 · **Scope:** a standalone `nexo-server` program, Windows first, then Linux
+(macOS out of scope) · **Related:** [SERVER.md](SERVER.md) (today's manual setup), [SPEC.md](SPEC.md)
 
 ## 1. Why
 
@@ -17,7 +17,7 @@ artifact and lifecycle.
 
 ### Goals
 
-- One download per OS: `Nexo-Server-<version>-win-x64.zip` (Windows first), then Linux x64 and macOS.
+- One download per OS: `Nexo-Server-<version>-win-x64.zip` (Windows first), then Linux x64.
 - No prerequisites: no Node, no Docker, no WSL, no hand-written config.
 - First run is a short interactive setup. After that, double-click (or `nexo-server`) just starts it.
 - It tells the host, in plain words, how friends can reach it, and what to do when they can't.
@@ -107,7 +107,7 @@ nexo-server.exe  (Node SEA: CLI + bundled Nexo server)
   `node_ip` / `use_external_ip` per §6). The repo's `livekit.yaml` stays the template, so Docker and CLI
   setups behave the same.
 - **Data folder**: Windows `%LOCALAPPDATA%\Nexo Server`, Linux `~/.local/share/nexo-server` (or
-  `/var/lib/nexo-server` as a service), macOS `~/Library/Application Support/Nexo Server`. Holds the DB,
+  `/var/lib/nexo-server` as a service). Holds the DB,
   attachments and avatars (as today under `DATA_DIR`), config, generated LiveKit config, logs.
 - **Supervision**: LiveKit restarts with backoff if it exits; repeated crashes are reported in the console.
   Ctrl+C / SIGTERM stops the Nexo server gracefully (existing `server.close()`), then LiveKit.
@@ -147,7 +147,7 @@ Friends must reach the host's PC. The CLI tries, in order, and **tells the host 
 4. Whatever mode is chosen is saved (`network.mode: auto | tailscale | public | lan`) and can be forced in setup.
 
 **Verifying from outside** needs a second machine on another network. The CLI can't fully prove it alone
-(open question Q3); it gives its best judgment (UPnP ok + no CGNAT → "should work") and the final test is a
+(decision 3 in §11); it gives its best judgment (UPnP ok + no CGNAT → "should work") and the final test is a
 friend joining. The status line shows when the first remote friend connects ("✓ a friend connected from
 outside").
 
@@ -166,7 +166,7 @@ might not work from inside the host's own network (routers without NAT loopback)
 ## 8. Releases and updates
 
 - The release workflow builds `nexo-server` per OS with the app (same tag, same version) and attaches
-  `Nexo-Server-<version>-win-x64.zip` (+ `-linux-x64.tar.gz`, `-mac-*.tar.gz` later): `nexo-server(.exe)`,
+  `Nexo-Server-<version>-win-x64.zip` (+ `-linux-x64.tar.gz` later): `nexo-server(.exe)`,
   `livekit-server(.exe)`, `LICENSE` + LiveKit's license, a short `README.txt`.
 - **Version compatibility**: the protocol is additive so far (beta.2 server works with beta.1 apps). The
   server announces its version; a much newer app can tell the user "ask your host to update the server".
@@ -196,15 +196,13 @@ might not work from inside the host's own network (routers without NAT loopback)
 | R5 | Windows firewall prompts confuse users | Explain before; detect blocked ports on a local self-test |
 | R6 | Host upload saturation hurts their own game | Live upload in status, warning, quality suggestion (§7) |
 
-## 11. Open questions
+## 11. Decisions on the open questions (2026-11-08)
 
-1. **Name/branding** of the download: "Nexo Server" zip vs. an installer. Proposal: zip for v1.
-2. **Invite links**: a `nexo://join?server=…` link that opens the app with the server pre-filled (needs a URL
-   protocol handler in the desktop app). Proposal: later, separate small change.
-3. **Outside reachability check**: use a public port-check service (third party, privacy) or not? Proposal: no;
-   rely on UPnP + CGNAT detection + "first remote friend connected".
-4. **macOS** builds need LiveKit's macOS binary and Gatekeeper handling; proposal: after Windows and Linux.
-5. Should the existing Docker path stay documented? Proposal: yes, as the "advanced / VPS" option in SERVER.md.
+1. **Zip** for v1 (no installer).
+2. **Invite links** (`nexo://join?server=…`): later, as a separate small change.
+3. **No third-party port-check service**: UPnP + CGNAT detection + "first remote friend connected".
+4. **macOS is out** of scope: Windows first, then Linux.
+5. **Docker stays documented** as the advanced / VPS option in SERVER.md.
 
 ## 12. Milestones
 
