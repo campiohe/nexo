@@ -62,6 +62,23 @@ export const useParticipants = create<ParticipantsState>()(() => ({
   streamVolumes: {},
 }))
 
+/**
+ * The speaking highlight rule shared by the stage and the sidebar: LiveKit hears voice and the mic
+ * isn't muted (explicit mute, or push-to-talk key not held).
+ */
+export function isAudiblySpeaking(v: ParticipantView): boolean {
+  return v.isSpeaking && !v.micMuted
+}
+
+/**
+ * Identities (= userIds) currently speaking, in list order. `#stream` participants are never in the
+ * list (see build), so a streamer's game audio never counts. Use with `useShallow` so subscribers only
+ * re-render when the set of speakers changes.
+ */
+export function speakingIdentities(s: ParticipantsState): string[] {
+  return s.list.filter(isAudiblySpeaking).map((v) => v.identity)
+}
+
 function parseColor(metadata: string | undefined): string | null {
   if (!metadata) return null
   try {

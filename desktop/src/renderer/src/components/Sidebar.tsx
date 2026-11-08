@@ -2,7 +2,9 @@ import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 
 import type { Channel, ChannelType, VoiceState } from '@shared/protocol'
 import { useApp } from '../store/app'
 import { useUi } from '../store/ui'
+import { useShallow } from 'zustand/react/shallow'
 import { useVoice } from '../voice/session'
+import { speakingIdentities, useParticipants } from '../voice/participants'
 import { VoiceControls } from './voice/VoiceControls'
 import { toast } from '../lib/toast'
 import { Avatar } from './Avatar'
@@ -226,10 +228,18 @@ function InlineNameForm(props: {
   )
 }
 
+const NO_SPEAKERS: string[] = []
+
 function VoiceMembers({ channelId }: { channelId: string }) {
   const voice = useApp((s) => s.voice)
   const users = useApp((s) => s.users)
   const meId = useApp((s) => s.me?.id)
+  // Speaking info only exists for the LiveKit room we're in, so only this channel can light up.
+  const connectedHere = useVoice(
+    (s) => s.channelId === channelId && (s.status === 'connecting' || s.status === 'connected' || s.status === 'reconnecting'),
+  )
+  // Shallow-compared array: re-renders only when who is speaking changes, not on every LiveKit event.
+  const speaking = useParticipants(useShallow((s) => (connectedHere ? speakingIdentities(s) : NO_SPEAKERS)))
   const members = voice.filter((v) => v.channelId === channelId)
   if (members.length === 0) return null
   return (
@@ -240,7 +250,7 @@ function VoiceMembers({ channelId }: { channelId: string }) {
         .map(({ v, user }) => (
           <li
             key={v.userId}
-            className={`voice-member ${v.userId !== meId ? 'has-menu' : ''}`}
+            className={`voice-member ${v.userId !== meId ? 'has-menu' : ''} ${speaking.includes(v.userId) ? 'is-speaking' : ''}`}
             onContextMenu={(e) => {
               // Right-click someone else: their volume (your own mic level lives in Audio & video settings).
               if (v.userId === meId) return
@@ -251,6 +261,7 @@ function VoiceMembers({ channelId }: { channelId: string }) {
           >
             <Avatar user={user} size={20} />
             <span className="voice-member-name">{user?.name ?? 'Unknown'}</span>
+            {speaking.includes(v.userId) && <span className="voice-member-sr">, speaking</span>}
             <VoiceBadges state={v} />
           </li>
         ))}

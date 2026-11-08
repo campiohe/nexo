@@ -363,7 +363,13 @@ input, textarea { user-select: text; }
   font-size: 13px;
 }
 .voice-member:hover { background: var(--hover); }
-.voice-member-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.voice-member-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: color 0.15s var(--ease); }
+/* Speaking (only the channel you're connected to): green ring like the stage's .vx-user.is-speaking. */
+.voice-member .avatar { box-shadow: 0 0 0 2px transparent; transition: box-shadow 0.15s var(--ease); }
+.voice-member.is-speaking .avatar { box-shadow: 0 0 0 2px var(--speaking), 0 0 8px color-mix(in srgb, var(--speaking) 45%, transparent); }
+.voice-member.is-speaking .voice-member-name { color: var(--text-0); }
+/* Screen-reader-only "speaking" hint so the highlight isn't color-only. */
+.voice-member-sr { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .voice-badges { display: inline-flex; align-items: center; gap: 4px; flex: none; color: var(--text-2); }
 .voice-badge { display: inline-grid; place-items: center; }
 .voice-badge.is-off { color: var(--danger); }
