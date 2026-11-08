@@ -134,6 +134,26 @@ TEST_CASE("protocol", "encodes results and events with the contract's field name
   CHECK_EQ(l["level"], "warn");
 }
 
+TEST_CASE("protocol", "windows: decodes the command and encodes the list") {
+  auto c = as<WindowsCommand>(decodeCommand(R"({"id":7,"type":"windows"})"));
+  CHECK(c.has_value());
+  CHECK_EQ(c->id, int64_t{7});
+
+  std::vector<WindowInfo> list{{"4983866", "Counter-Strike 2", 3124, "C:\\Games\\cs2.exe", true}};
+  auto j = json::parse(encodeResultWindows(7, list));
+  CHECK_EQ(j["type"], "result");
+  CHECK_EQ(j["id"], 7);
+  CHECK_EQ(j["ok"], true);
+  CHECK_EQ(j["windows"].size(), size_t{1});
+  const auto& w = j["windows"][0];
+  CHECK_EQ(w["hwnd"], "4983866");
+  CHECK_EQ(w["title"], "Counter-Strike 2");
+  CHECK_EQ(w["pid"], 3124);
+  CHECK_EQ(w["exe"], "C:\\Games\\cs2.exe");
+  CHECK_EQ(w["minimized"], true);
+  CHECK(json::parse(encodeResultWindows(8, {}))["windows"].is_array());
+}
+
 TEST_CASE("protocol", "every error code matches NativeShareErrorCode") {
   const char* expected[] = {"helper-unavailable", "helper-crashed", "encoder-unavailable", "capture-failed",
                             "livekit-connect",    "audio-failed",   "busy",                "protocol",

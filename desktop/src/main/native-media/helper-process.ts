@@ -49,6 +49,7 @@ export const COMMAND_TIMEOUTS_MS: Record<HelperCommandType, number> = {
   update: 5_000,
   stop: 5_000,
   shutdown: 5_000,
+  windows: 1_500, // the share picker waits for it; EnumWindows takes a few ms
 }
 
 /** Command ids are unique for the app's lifetime, across helper restarts. */

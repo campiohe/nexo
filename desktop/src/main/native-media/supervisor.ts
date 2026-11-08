@@ -37,6 +37,7 @@ import {
   type HelperCapabilities,
   type HelperPreset,
   type HelperSource,
+  type HelperWindow,
 } from './protocol'
 
 export interface StartRequest {
@@ -223,6 +224,22 @@ export class NativeShareSupervisor {
       this.clearShare(share)
     }
     this.proc?.kill()
+  }
+
+  /**
+   * Capturable windows from the helper, minimized ones included (Chromium's list skips those). Never rejects:
+   * [] when native capture is unavailable, or the helper is too old to know the command or doesn't answer in time.
+   */
+  async listWindows(): Promise<HelperWindow[]> {
+    if (!this.deps.osSupported || this.disabledReason) return []
+    try {
+      const proc = await this.ensureHelper()
+      const result = await proc.send({ type: 'windows' })
+      return result.windows ?? []
+    } catch (err) {
+      this.log.warn(`[nexo-media] window list failed: ${err instanceof Error ? err.message : String(err)}`)
+      return []
+    }
   }
 
   get running(): boolean {

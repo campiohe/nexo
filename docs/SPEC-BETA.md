@@ -286,6 +286,15 @@ helper:
 | `window:<id>:0` | `{ kind: "window", hwnd: <id> }`. On Windows Chromium's window id is the HWND (confirm in M0). The helper checks `IsWindow` |
 | `screen:<id>:0` | `{ kind: "monitor", rect }`: main finds the `Display` with the source's `display_id` and passes its **physical** bounds (`screen.dipToScreenRect`). The helper resolves it with `MonitorFromRect` |
 
+**Minimized windows.** `desktopCapturer` skips minimized windows, and a full-screen game minimizes itself as soon
+as you alt-tab to Nexo to open the picker, so the game you want to share was missing (found in the first test
+build, with CS2). With the native engine, main asks the helper for its `windows` list and adds the minimized ones
+Chromium left out, as `window:<hwnd>:0` sources with `minimized: true`, the exe's icon and no thumbnail. The
+helper sizes such a share from the window's **restored** size (`GetWindowPlacement`, or the monitor's work area
+when it was maximized) instead of the ~160×28 stub WGC reports while minimized, which the encoder rejected. The
+stream shows the share as stalled until you switch back to the game, then starts. The Chromium engine can't
+capture these, so they're only listed when the capture engine is Native.
+
 ---
 
 ## 6. Main ↔ helper protocol
@@ -303,6 +312,7 @@ has an `id`, and the matching `result` echoes it.
 | `update` | `{ preset? , cursor? }` | Bitrate/fps live. A size change needs a restart (fixed source size) |
 | `stop` | `{}` | Unpublish, disconnect the stream participant |
 | `shutdown` | `{}` | Clean exit |
+| `windows` | `{}` | Answered with `windows: [{ hwnd, title, pid, exe, minimized }]`: visible, titled, unowned, uncloaked top-level windows that aren't tool windows, the helper's own excluded (§5). An older helper answers `protocol` (unknown command), and main lists nothing extra |
 
 **Events (helper → main)**
 

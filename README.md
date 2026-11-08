@@ -384,7 +384,8 @@ a screen, so viewers never hear the voice chat echoed in your stream. The row sh
 encoder it found, or why native capture isn't available. Then streams use Chromium automatically, as they
 do whenever the helper fails. A share with audio uses Chromium on Windows older than 10 version 2004.
 When you share a screen, **"Hide Nexo from the stream"** in the share dialog (on by default) keeps Nexo's
-own window out of it.
+own window out of it. A full-screen game minimizes itself when you alt-tab to Nexo: the share dialog still
+lists it, marked **Minimized**, and the stream starts when you switch back to the game.
 
 **Settings → App → "Fast game capture"** (Windows, on by default, Chromium engine only). Captured frames stay on the GPU
 instead of being copied back to the CPU for every frame. That keeps streams smooth while a game keeps

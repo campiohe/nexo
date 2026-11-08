@@ -240,10 +240,19 @@ export function SharePicker({ onClose }: { onClose(): void }) {
                       setSelectedId(s.id)
                       void useVoice.getState().startShare({ sourceId: s.id, presetId, withAudio: audio, hideNexo })
                     }}
-                    title={s.name}
+                    title={s.minimized ? `${s.name} (minimized: the stream starts when you switch back to it)` : s.name}
                   >
-                    <span className="vx-source-thumb">
-                      {s.thumbnail ? <img src={s.thumbnail} alt="" draggable={false} /> : <ScreenIcon size={28} />}
+                    <span className={`vx-source-thumb ${s.minimized ? 'is-minimized' : ''}`}>
+                      {s.thumbnail ? (
+                        <img src={s.thumbnail} alt="" draggable={false} />
+                      ) : s.minimized ? (
+                        <>
+                          {s.icon ? <img src={s.icon} alt="" className="vx-source-bigicon" draggable={false} /> : <ScreenIcon size={28} />}
+                          <span className="vx-source-badge">Minimized</span>
+                        </>
+                      ) : (
+                        <ScreenIcon size={28} />
+                      )}
                     </span>
                     <span className="vx-source-name">
                       {s.icon && <img src={s.icon} alt="" className="vx-source-icon" draggable={false} />}

@@ -13,6 +13,7 @@
 #include "common/log.hpp"
 #include "common/profile.hpp"
 #include "common/win_error.hpp"
+#include "sys/windows.hpp"
 
 namespace nexo {
 
@@ -112,6 +113,11 @@ WgcCapture::~WgcCapture() {
 }
 
 Size WgcCapture::initialSize() const {
+  // A minimized window reports its title-bar stub (~160x28): size the share for the window it comes back as.
+  // (Picking a full-screen game minimizes it: you alt-tab to Nexo to open the picker.)
+  if (target_.hwnd) {
+    if (const auto restored = restoredWindowSize(target_.hwnd)) return *restored;
+  }
   const auto s = item_.Size();
   return {static_cast<uint32_t>(std::max(0, s.Width)), static_cast<uint32_t>(std::max(0, s.Height))};
 }

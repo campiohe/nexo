@@ -80,12 +80,13 @@ add_library(nexo_win STATIC
   src/video/encoder_mf.cpp
   src/video/scaler_cs.cpp
   src/sys/system_info.cpp
+  src/sys/windows.cpp
   src/publish/null_publisher.cpp
   src/share/share.cpp
   src/ipc/server.cpp
   src/tools/scaler_compare.cpp)
 target_link_libraries(nexo_win PUBLIC nexo_core
-  d3d11 dxgi mfplat mf mfuuid strmiids windowsapp mmdevapi avrt d3dcompiler windowscodecs)
+  d3d11 dxgi mfplat mf mfuuid strmiids windowsapp mmdevapi avrt d3dcompiler windowscodecs dwmapi)
 
 if(NEXO_WITH_LIVEKIT)
   # publish/: the only code that sees the SDK, so SDK upgrades stay contained (SPEC-BETA §4.8).

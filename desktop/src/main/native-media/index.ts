@@ -18,7 +18,7 @@ import {
   type NativeShareEvent,
   type NativeSharePreset,
 } from '../../preload/api'
-import { helperAudioMode, SOURCE_ID_RE, sourceKind, toHelperSource } from '../capture'
+import { helperAudioMode, setMinimizedWindowsProvider, SOURCE_ID_RE, sourceKind, toHelperSource } from '../capture'
 import { platform } from '../platform'
 import { isAppUrl } from '../security'
 import type { NativeShareInvokeResult } from './ipc-result'
@@ -200,6 +200,7 @@ export function installNativeShare(deps: NativeShareDeps): void {
     debug: process.env.NEXO_MEDIA_DEBUG === '1',
   })
   supervisor = sup
+  setMinimizedWindowsProvider(async () => (await sup.listWindows()).filter((w) => w.minimized))
 
   const fromApp = (event: IpcMainInvokeEvent): boolean => isAppUrl(event.senderFrame?.url)
 

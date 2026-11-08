@@ -10,6 +10,7 @@
 #include <string>
 #include <string_view>
 #include <variant>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -92,7 +93,11 @@ struct StopCommand {
 struct ShutdownCommand {
   int64_t id = 0;
 };
-using Command = std::variant<HelloCommand, StartCommand, UpdateCommand, StopCommand, ShutdownCommand>;
+/// Lists the windows a share can capture, minimized ones included (Chromium's picker list skips those).
+struct WindowsCommand {
+  int64_t id = 0;
+};
+using Command = std::variant<HelloCommand, StartCommand, UpdateCommand, StopCommand, ShutdownCommand, WindowsCommand>;
 
 int64_t commandId(const Command& command);
 
@@ -175,12 +180,22 @@ std::string_view toString(LogLevel level);
 std::string_view toString(ContentHint hint);
 std::string_view toString(AudioMode mode);
 
+/// HelperWindow: a top-level window a share can capture.
+struct WindowInfo {
+  std::string hwnd; ///< decimal, like WindowSource and Chromium's "window:<hwnd>:0" ids
+  std::string title;
+  uint32_t pid = 0;
+  std::string exe; ///< full path of the owning process's image, empty when it can't be read
+  bool minimized = false;
+};
+
 nlohmann::json toJson(const Capabilities& caps);
 nlohmann::json toJson(const Stats& stats);
 
 // Each encoder returns one JSON line without the trailing newline.
 std::string encodeResultOk(int64_t id, const Capabilities* capabilities = nullptr);
 std::string encodeResultError(int64_t id, ErrorCode code, std::string_view message);
+std::string encodeResultWindows(int64_t id, const std::vector<WindowInfo>& windows);
 std::string encodeState(State state);
 std::string encodeStats(const Stats& stats);
 std::string encodeEnded(EndReason reason);

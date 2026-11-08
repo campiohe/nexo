@@ -1,9 +1,10 @@
 // Screen / window capture: custom picker sources + the getDisplayMedia handler (SPEC §4.2).
-import { BrowserWindow, desktopCapturer, ipcMain, screen, session, type IpcMainInvokeEvent } from 'electron'
+import { app, BrowserWindow, desktopCapturer, ipcMain, screen, session, type IpcMainInvokeEvent } from 'electron'
 import { IPC, type CaptureSource } from '../preload/api'
 import { NativeShareFailure } from './native-media/mapping'
-import type { HelperAudioMode, HelperRect, HelperSource } from './native-media/protocol'
-import { supportsSystemAudio, usesSystemPicker } from './platform'
+import type { HelperAudioMode, HelperRect, HelperSource, HelperWindow } from './native-media/protocol'
+import { platform, supportsSystemAudio, usesSystemPicker } from './platform'
+import { getPrefs } from './prefs'
 import { isAppUrl } from './security'
 
 interface PendingChoice {
@@ -17,6 +18,41 @@ const PENDING_TTL_MS = 60_000
 export const SOURCE_ID_RE = /^(screen|window):[\w:.-]{1,128}$/
 
 let pending: PendingChoice | null = null
+
+/** Minimized windows from the native helper (installed by native-media). */
+let minimizedWindows: (() => Promise<HelperWindow[]>) | null = null
+export function setMinimizedWindowsProvider(fn: () => Promise<HelperWindow[]>): void {
+  minimizedWindows = fn
+}
+
+/** App icons by exe path, as data URLs (null: no icon). */
+const exeIcons = new Map<string, string | null>()
+async function exeIcon(exe: string): Promise<string | null> {
+  if (!exe) return null
+  if (!exeIcons.has(exe)) {
+    try {
+      const icon = await app.getFileIcon(exe, { size: 'normal' })
+      exeIcons.set(exe, icon.isEmpty() ? null : icon.toDataURL())
+    } catch {
+      exeIcons.set(exe, null)
+    }
+  }
+  return exeIcons.get(exe) ?? null
+}
+
+/**
+ * Chromium's list skips minimized windows, and a full-screen game minimizes itself as soon as you alt-tab to Nexo
+ * to open the picker. The native helper lists them; only the native engine can share them (it sizes the stream from
+ * the window's restored size and starts sending when the window comes back), so Chromium-only setups don't get them.
+ */
+async function listMinimizedWindows(): Promise<HelperWindow[]> {
+  if (platform !== 'win32' || !minimizedWindows || getPrefs().captureEngine !== 'native') return []
+  return (await minimizedWindows()).filter((w) => w.pid !== process.pid)
+}
+
+async function minimizedSource(w: HelperWindow): Promise<CaptureSource> {
+  return { id: `window:${w.hwnd}:0`, name: w.title, kind: 'window', thumbnail: '', icon: await exeIcon(w.exe), minimized: true }
+}
 
 function fromApp(event: IpcMainInvokeEvent): boolean {
   return isAppUrl(event.senderFrame?.url)
@@ -37,23 +73,32 @@ async function listSources(): Promise<CaptureSource[]> {
       .map((w) => nativeWindowId(w.getMediaSourceId()))
       .filter((id): id is string => !!id),
   )
-  const sources = await desktopCapturer.getSources({
-    types: ['screen', 'window'],
-    thumbnailSize: { width: 320, height: 180 },
-    fetchWindowIcons: true,
-  })
-  return sources
-    .filter((s) => {
-      const nid = nativeWindowId(s.id)
-      return !(nid && own.has(nid))
-    })
-    .map((s) => ({
-      id: s.id,
-      name: s.name,
-      kind: s.id.startsWith('screen:') ? ('screen' as const) : ('window' as const),
-      thumbnail: s.thumbnail && !s.thumbnail.isEmpty() ? s.thumbnail.toDataURL() : '',
-      icon: s.appIcon && !s.appIcon.isEmpty() ? s.appIcon.toDataURL() : null,
-    }))
+  const [sources, minimized] = await Promise.all([
+    desktopCapturer.getSources({
+      types: ['screen', 'window'],
+      thumbnailSize: { width: 320, height: 180 },
+      fetchWindowIcons: true,
+    }),
+    listMinimizedWindows().catch(() => []),
+  ])
+  // A window Chromium already lists (it was restored meanwhile) keeps Chromium's entry, with its thumbnail.
+  const listed = new Set([...own, ...sources.map((s) => nativeWindowId(s.id)).filter((id): id is string => !!id)])
+  const extra = await Promise.all(minimized.filter((w) => !listed.has(w.hwnd)).map(minimizedSource))
+  return [
+    ...sources
+      .filter((s) => {
+        const nid = nativeWindowId(s.id)
+        return !(nid && own.has(nid))
+      })
+      .map((s) => ({
+        id: s.id,
+        name: s.name,
+        kind: s.id.startsWith('screen:') ? ('screen' as const) : ('window' as const),
+        thumbnail: s.thumbnail && !s.thumbnail.isEmpty() ? s.thumbnail.toDataURL() : '',
+        icon: s.appIcon && !s.appIcon.isEmpty() ? s.appIcon.toDataURL() : null,
+      })),
+    ...extra,
+  ]
 }
 
 async function resolveSource(choice: PendingChoice): Promise<Electron.DesktopCapturerSource | undefined> {

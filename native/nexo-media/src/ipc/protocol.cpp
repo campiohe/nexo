@@ -155,6 +155,7 @@ Command command(const json& msg, int64_t id) {
   }
   if (type == "stop") return StopCommand{id};
   if (type == "shutdown") return ShutdownCommand{id};
+  if (type == "windows") return WindowsCommand{id};
   throw FieldError{"unknown command type"};
 }
 
@@ -296,6 +297,14 @@ std::string encodeResultOk(int64_t id, const Capabilities* capabilities) {
   json j = {{"type", "result"}, {"id", id}, {"ok", true}};
   if (capabilities) j["capabilities"] = toJson(*capabilities);
   return dump(j);
+}
+
+std::string encodeResultWindows(int64_t id, const std::vector<WindowInfo>& windows) {
+  json list = json::array();
+  for (const auto& w : windows) {
+    list.push_back({{"hwnd", w.hwnd}, {"title", w.title}, {"pid", w.pid}, {"exe", w.exe}, {"minimized", w.minimized}});
+  }
+  return dump({{"type", "result"}, {"id", id}, {"ok", true}, {"windows", std::move(list)}});
 }
 
 std::string encodeResultError(int64_t id, ErrorCode code, std::string_view message) {

@@ -407,6 +407,14 @@
   border-radius: 6px; background: var(--bg-0); color: var(--text-2);
 }
 .vx-source-thumb img { width: 100%; height: 100%; object-fit: contain; }
+/* Minimized window (no thumbnail): the app icon, and a badge saying why there's no picture. */
+.vx-source-thumb.is-minimized { position: relative; }
+.vx-source-thumb .vx-source-bigicon { width: 40px; height: 40px; image-rendering: auto; }
+.vx-source-badge {
+  position: absolute; left: 6px; bottom: 6px;
+  padding: 1px 6px; border-radius: 4px;
+  background: var(--bg-3); color: var(--text-1); font-size: 11px;
+}
 .vx-source-name { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 0 2px; }
 .vx-source-name > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .vx-source-icon { width: 16px; height: 16px; flex: none; }

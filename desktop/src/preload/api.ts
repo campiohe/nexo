@@ -11,6 +11,11 @@ export interface CaptureSource {
   thumbnail: string
   /** App icon data URL (windows only, may be null) */
   icon: string | null
+  /**
+   * A minimized window (Windows, native engine): no thumbnail, and the stream starts once the window is restored.
+   * Chromium's list skips these; a full-screen game is minimized while you use the picker.
+   */
+  minimized?: boolean
 }
 
 /** Modifiers that must be held with a keybind's main key/button. Left and right variants are equivalent. */

@@ -14,6 +14,7 @@
 #include "ipc/protocol.hpp"
 #include "share/share.hpp"
 #include "sys/system_info.hpp"
+#include "sys/windows.hpp"
 
 namespace nexo {
 namespace {
@@ -138,6 +139,11 @@ class Controller {
       }
     }
     emit(ipc::encodeResultOk(c.id));
+    return true;
+  }
+
+  bool on(const ipc::WindowsCommand& c) {
+    emit(ipc::encodeResultWindows(c.id, listCaptureWindows()));
     return true;
   }
 

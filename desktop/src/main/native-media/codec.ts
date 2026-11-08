@@ -8,6 +8,7 @@ import type {
   HelperLogLevel,
   HelperState,
   HelperStats,
+  HelperWindow,
 } from './protocol'
 
 /** A line longer than this is dropped (the helper never sends anything close to it). */
@@ -82,6 +83,20 @@ export function normalizeErrorCode(code: unknown): NativeShareErrorCode {
   return ERROR_CODES.includes(code as NativeShareErrorCode) ? (code as NativeShareErrorCode) : 'internal'
 }
 
+const MAX_WINDOWS = 1000
+
+export function isHelperWindow(v: unknown): v is HelperWindow {
+  return (
+    isObj(v) &&
+    isStr(v.hwnd, 20) &&
+    /^\d+$/.test(v.hwnd) &&
+    isStr(v.title, 1024) &&
+    Number.isSafeInteger(v.pid) &&
+    isStr(v.exe, 2048) &&
+    isBool(v.minimized)
+  )
+}
+
 export function isHelperCapabilities(v: unknown): v is HelperCapabilities {
   if (!isObj(v)) return false
   if (!isStr(v.version, 64) || !isNum(v.protocol) || !isNum(v.osBuild)) return false
@@ -124,6 +139,10 @@ export function parseHelperEvent(line: string): ParseResult {
       if (!Number.isSafeInteger(v.id) || (v.id as number) < 0) return bad('id')
       const id = v.id as number
       if (v.ok === true) {
+        if (v.windows !== undefined) {
+          if (!Array.isArray(v.windows) || v.windows.length > MAX_WINDOWS || !v.windows.every(isHelperWindow)) return bad('windows')
+          return { ok: true, event: { type: 'result', id, ok: true, windows: v.windows } }
+        }
         if (v.capabilities === undefined) return { ok: true, event: { type: 'result', id, ok: true } }
         if (!isHelperCapabilities(v.capabilities)) return bad('capabilities')
         return { ok: true, event: { type: 'result', id, ok: true, capabilities: v.capabilities } }

@@ -89,6 +89,18 @@ export type HelperState = 'connecting' | 'live' | 'reconnecting' | 'stopped'
 
 export type HelperLogLevel = 'debug' | 'info' | 'warn' | 'error'
 
+/** A top-level window a share can capture (`windows` command). */
+export interface HelperWindow {
+  /** HWND, decimal: the same number as in Chromium's "window:<hwnd>:0" source ids. */
+  hwnd: string
+  title: string
+  pid: number
+  /** Full path of the process image ('' when the helper can't read it). */
+  exe: string
+  /** Chromium's source list skips minimized windows; main adds these to the picker. */
+  minimized: boolean
+}
+
 // ── Commands (main → helper) ───────────────────────────────────────────────────────────────────────────
 
 export type HelperCommand =
@@ -108,14 +120,16 @@ export type HelperCommand =
   | { id: number; type: 'update'; preset?: Partial<HelperPreset>; cursor?: boolean }
   | { id: number; type: 'stop' }
   | { id: number; type: 'shutdown' }
+  /** Lists capturable windows, minimized ones included. Answered with `windows`. */
+  | { id: number; type: 'windows' }
 
 export type HelperCommandType = HelperCommand['type']
 
 // ── Events (helper → main) ─────────────────────────────────────────────────────────────────────────────
 
 export type HelperEvent =
-  /** Answer to the command with the same id. `hello` answers with `capabilities`. */
-  | { type: 'result'; id: number; ok: true; capabilities?: HelperCapabilities }
+  /** Answer to the command with the same id. `hello` answers with `capabilities`, `windows` with `windows`. */
+  | { type: 'result'; id: number; ok: true; capabilities?: HelperCapabilities; windows?: HelperWindow[] }
   | { type: 'result'; id: number; ok: false; error: { code: NativeShareErrorCode; message: string } }
   | { type: 'state'; state: HelperState }
   /** 1 Hz while a share is active. */

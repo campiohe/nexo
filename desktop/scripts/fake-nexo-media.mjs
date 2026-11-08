@@ -179,6 +179,8 @@ function handle(cmd) {
     case 'stop':
       if (share) endShare('stopped')
       return result(cmd.id, true)
+    case 'windows':
+      return result(cmd.id, true, { windows: [] })
     case 'shutdown':
       clearShare()
       return send({ type: 'result', id: cmd.id, ok: true }, () => process.exit(0))
