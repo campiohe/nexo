@@ -14,7 +14,7 @@ echo "${c_b}Nexo server URLs${c_off}"
 if [[ -n "$ts_ip" ]]; then
   echo "  Friends (Tailscale):   ${c_ok}http://${ts_ip}:${port}${c_off}"
 else
-  echo "  Friends (Tailscale):   ${c_warn}not available${c_off} — Tailscale is not installed/logged in here (see README → Tailscale setup)"
+  echo "  Friends (Tailscale):   ${c_warn}not available${c_off} — Tailscale is not installed/logged in here (see docs/SERVER.md → Tailscale)"
 fi
 for line in "${lans[@]}"; do
   iface="${line%% *}"; addr="${line#* }"

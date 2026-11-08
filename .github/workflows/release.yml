@@ -48,7 +48,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # The app's version decides its update lane (alpha, beta, stable or test: README "Test builds"), so a
+      # The app's version decides its update lane (alpha, beta, stable or test: docs/DEVELOPMENT.md "Test builds"), so a
       # tag must match it. Manual runs (workflow_dispatch) build whatever version the branch has.
       - name: Check tag matches version
         if: startsWith(github.ref, 'refs/tags/')

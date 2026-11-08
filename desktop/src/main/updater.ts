@@ -7,7 +7,7 @@
 //   reported as 'available' with the release page as downloadUrl.
 // - Dev builds and Linux without the AppImage: 'unsupported'.
 //
-// Test builds (README "Test builds"): versions like 0.4.0-test.1, tagged v0.4.0-test.1. electron-updater's GitHub
+// Test builds (docs/DEVELOPMENT.md "Test builds"): versions like 0.4.0-test.1, tagged v0.4.0-test.1. electron-updater's GitHub
 // provider treats `test` as a custom channel: alpha/beta/stable installs never pick those releases, and a test
 // build only follows newer test releases. A test build leaves the lane with leaveTestBuilds() (Settings → App).
 import { app, BrowserWindow, ipcMain, autoUpdater as nativeUpdater, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron'
