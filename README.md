@@ -9,10 +9,10 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/campiohe/nexo/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/campiohe/nexo?include_prereleases&amp;sort=semver&amp;filter=!*-test.*"></a>
-  <a href="https://github.com/campiohe/nexo/actions/workflows/release.yml"><img alt="Release workflow" src="https://img.shields.io/github/actions/workflow/status/campiohe/nexo/release.yml?label=release%20build"></a>
+  <a href="https://github.com/campiohe/nexo/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/campiohe/nexo?include_prereleases&amp;sort=semver&amp;filter=!*-test.*&amp;cacheSeconds=21600"></a>
+  <a href="https://github.com/campiohe/nexo/actions/workflows/release.yml"><img alt="Release build" src="https://github.com/campiohe/nexo/actions/workflows/release.yml/badge.svg"></a>
   <img alt="Platforms: Windows, macOS, Linux" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-informational">
-  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/github/license/campiohe/nexo"></a>
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/github/license/campiohe/nexo?cacheSeconds=86400"></a>
 </p>
 
 ---
