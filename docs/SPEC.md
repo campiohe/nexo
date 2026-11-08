@@ -451,8 +451,9 @@ needed.
   - **Push to talk** (existing)
   - **Toggle mute**
   - **Toggle deafen**
-  - **Toggle screen share**: stops the current share, or brings Nexo to the front with the share picker
-    open
+  - **Toggle screen share**: stops the current share. Otherwise it restarts the last share (same source,
+    with windows matched by title, same preset and audio) without any UI. It brings Nexo to the front with
+    the share picker open only when there's nothing to restart.
   - **Leave voice**
 - *In-app* (only while Nexo is focused, DOM keydown):
   - **Quick switcher** (default Ctrl/Cmd+K)

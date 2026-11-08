@@ -285,8 +285,10 @@ combination can't be used twice.
 
 - **Global** (they work while a game has focus): **Push to talk**, **Toggle mute**, **Toggle deafen**,
   **Toggle screen share** and **Leave voice**. None are set by default, so they can't clash with your
-  games. Toggle screen share stops your stream. If you aren't streaming, it brings Nexo to the front
-  with the share picker open (over windowed apps; a fullscreen game stays in front).
+  games. Toggle screen share stops your stream. If you aren't streaming, it **restarts your last
+  stream** (same screen, or the same window found by its title, with the same quality and audio), so you
+  never leave the game. Only the first time, or if that window is gone, it brings Nexo to the front with
+  the share picker open.
 - **In Nexo** (only while the window is focused): **Quick switcher** (Ctrl+K) and **Open settings**
   (Ctrl+,). Both can be rebound, cleared or reset.
 

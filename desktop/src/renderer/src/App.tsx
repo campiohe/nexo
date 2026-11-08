@@ -13,7 +13,7 @@ import { domKeyMatches, domMouseMatches, isTypingTarget, typesText } from './lib
 import type { Keybind } from '../../preload/api'
 import { useKeybinds } from './voice/prefs'
 import { setHotkeyHandler, type GlobalToggleAction } from './voice/ptt'
-import { useVoice } from './voice/session'
+import { restartLastShare, useVoice } from './voice/session'
 
 let started = false
 
@@ -36,9 +36,13 @@ function runGlobalHotkey(action: GlobalToggleAction): void {
         break
       }
       if ((v.status !== 'connected' && v.status !== 'reconnecting') || v.shareStarting) break
-      v.openSharePicker()
-      // Bring Nexo to the front (even from the tray) so the picker is visible over a game.
-      window.nexo?.hotkeys?.focusWindow()
+      // Restart the last stream without leaving the game; the picker only when there's none to restart.
+      void restartLastShare().then((restarted) => {
+        if (restarted || useVoice.getState().sharing) return
+        useVoice.getState().openSharePicker()
+        // Bring Nexo to the front (even from the tray) so the picker is visible.
+        window.nexo?.hotkeys?.focusWindow()
+      })
       break
   }
 }

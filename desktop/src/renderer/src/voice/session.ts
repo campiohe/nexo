@@ -424,6 +424,7 @@ export const useVoice = create<VoiceSessionState>()((set, get) => ({
     }
 
     set({ sharing: true, shareStarting: false, sharePresetId: preset.id, shareStats: null, shareCaptureLow: false })
+    rememberShare(opts)
     startShareStats(share, preset)
     announce()
   },
@@ -1302,6 +1303,65 @@ async function publishScreenVideo(r: Room, video: LocalVideoTrack, preset: Share
     }
   }
   await r.localParticipant.publishTrack(video, { ...base, videoCodec: 'vp8', backupCodec: false })
+}
+
+// ---- "Restart last stream" (Toggle screen share hotkey) ----
+
+const LAST_SHARE_KEY = 'nexo.lastShare'
+
+interface LastShare {
+  sourceId: string
+  /** Window title / screen name, to find a window again after Nexo restarts (window ids change). */
+  sourceName: string
+  presetId: SharePreset['id']
+  withAudio: boolean
+}
+
+function readLastShare(): LastShare | null {
+  try {
+    const v = JSON.parse(localStorage.getItem(LAST_SHARE_KEY) ?? 'null') as Partial<LastShare> | null
+    if (!v || typeof v.sourceId !== 'string' || typeof v.sourceName !== 'string' || typeof v.withAudio !== 'boolean') return null
+    if (!SHARE_PRESETS.some((p) => p.id === v.presetId)) return null
+    return v as LastShare
+  } catch {
+    return null
+  }
+}
+
+/** Remembers what was shared, with the source's name (looked up after the share started). */
+function rememberShare(opts: StartShareOptions): void {
+  const bridge = getBridge()
+  if (!bridge || !opts.sourceId) return
+  const sourceId = opts.sourceId
+  bridge.capture
+    .listSources()
+    .then((sources) => {
+      const src = sources.find((s) => s.id === sourceId)
+      if (!src) return
+      const last: LastShare = { sourceId, sourceName: src.name, presetId: opts.presetId, withAudio: opts.withAudio }
+      localStorage.setItem(LAST_SHARE_KEY, JSON.stringify(last))
+    })
+    .catch(() => undefined)
+}
+
+/**
+ * Starts streaming whatever was shared last time (same screen or window, preset and audio), without
+ * any UI, so the Toggle screen share hotkey works from inside a fullscreen game. Windows get new ids
+ * every run, so a window is found again by its title. Resolves false when there's nothing to restart
+ * (never shared, OS picker platforms, source gone); the caller then opens the picker instead.
+ */
+export async function restartLastShare(): Promise<boolean> {
+  const bridge = getBridge()
+  const last = readLastShare()
+  if (!bridge || bridge.usesSystemPicker || !last) return false
+  const sources = await bridge.capture.listSources().catch(() => [])
+  const src =
+    sources.find((s) => s.id === last.sourceId && (s.kind === 'screen' || s.name === last.sourceName)) ??
+    sources.find((s) => s.kind === 'window' && s.name === last.sourceName)
+  if (!src) return false
+  await useVoice.getState().startShare({ sourceId: src.id, presetId: last.presetId, withAudio: last.withAudio })
+  if (useVoice.getState().sharing) toast(`Streaming ${src.name}`, 'success')
+  return true
 }
 
 // ---- Sender stats + "capture is starved" detection ----
