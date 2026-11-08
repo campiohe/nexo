@@ -80,7 +80,9 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
-          cmake --preset windows-release
+          # Release builds report the app's version in capabilities (dev builds say <project version>-dev).
+          $version = (Get-Content ../../desktop/package.json -Raw | ConvertFrom-Json).version
+          cmake --preset windows-release "-DNEXO_MEDIA_VERSION=$version"
           cmake --build --preset windows-release
           ctest --preset windows-release
           cmake --install build/windows-release --prefix ../out

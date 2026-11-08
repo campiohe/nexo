@@ -16,7 +16,7 @@ viewing, and macOS/Linux stay as they are.
 | 3 · Integration | ✅ Real supervisor + real helper + LiveKit end to end. ⏳ Your two-PC check and the alpha vs beta game benchmark |
 | 4 · M2 audio | ✅ Done (`83924e6`). Include and exclude verified by measurement. ⏳ By-ear check, Windows 10 builds |
 | 5 · M3 hardening | ✅ Device-loss rebuild, fast stop, LiveKit restart, shareId, motion ⇄ detail. ✅ GPU starvation (SPEC-BETA B2): pipelined conversion + zero-copy capture, 59.4 / 55.3 fps with a GPU-bound game in focus (was 15.6 / 6.7), on par with the alpha's texture path ([fps-gap benchmark](benchmarks/beta-m3-fps-gap.md)). ⏳ AMD/Intel encoders, real games |
-| 6 · M4 release | ⏳ Docs done. Version bump, release notes and tag after the hardware checks |
+| 6 · M4 release | ✅ Docs, version `0.4.0-beta.1`, release notes. ⏳ Tag and push after the hardware checks |
 
 ## Decisions locked for the beta
 
