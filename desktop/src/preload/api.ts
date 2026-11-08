@@ -283,6 +283,10 @@ export interface UpdateState {
   releaseNotesUrl?: string
   /** True when the update downloads and installs in place (Windows NSIS, Linux AppImage). */
   canAutoInstall: boolean
+  /** Running a test build (version X.Y.Z-test.N): it only updates to newer test builds. */
+  testBuild?: boolean
+  /** leaveTestBuilds() was called: the updater now follows regular releases, older versions included. */
+  leavingTestBuilds?: boolean
 }
 
 export const UPDATE_STATUSES: readonly UpdateStatus[] = [
@@ -403,6 +407,8 @@ export interface NexoBridge {
     check(): Promise<UpdateState>
     /** Quit and install a downloaded update (status 'ready'); ignored otherwise. */
     install(): void
+    /** Test build only: switch to regular releases and download the newest one (resolves after the check). */
+    leaveTestBuilds(): Promise<UpdateState>
     /** Called on every state change; the returned function unsubscribes. */
     onState(cb: (state: UpdateState) => void): () => void
   }
@@ -427,6 +433,7 @@ export const IPC = {
   updatesGetState: 'nexo:updates:get-state',
   updatesCheck: 'nexo:updates:check',
   updatesInstall: 'nexo:updates:install',
+  updatesLeaveTest: 'nexo:updates:leave-test',
   updatesState: 'nexo:updates:state', // main → renderer (UpdateState)
   nativeShareCapabilities: 'nexo:native-share:capabilities',
   nativeShareStart: 'nexo:native-share:start',

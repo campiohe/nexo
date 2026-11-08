@@ -211,7 +211,8 @@ To ship a new version:
 
 1. Bump `version` in `package.json`, `desktop/package.json` and `server/package.json`, then run
    `npm install --package-lock-only`.
-2. Optionally write `.github/release-notes/vX.Y.Z.md`.
+2. Optionally write `.github/release-notes/vX.Y.Z.md`. For a test build (`X.Y.Z-test.N`), see
+   [Test builds](#test-builds).
 3. Commit, then `git tag -a vX.Y.Z -m "Nexo vX.Y.Z" && git push origin main vX.Y.Z`.
 
 The **Release** workflow (`.github/workflows/release.yml`) builds all three installers and publishes
@@ -410,8 +411,28 @@ then every 4 hours. **Settings → App → Updates** shows the version and the s
   update. The settings page says so.
 
 Alpha builds update to the newest release, whether it's an alpha, a beta or stable; stable builds only
-get stable releases. (electron-updater skips `-rc` tags for alpha builds, so prefer `-beta` for
-prereleases.) Checks that fail, for example when you're offline, only show up as a status line in Settings.
+get stable releases. Beta builds take betas and stable releases but **never alphas**, so once a beta is
+out, keep tagging `-beta` (or stable). (electron-updater skips `-rc` tags for alpha builds, so prefer
+`-beta` for prereleases.) Checks that fail, for example when you're offline, only show up as a status line
+in Settings.
+
+### Test builds
+
+To try a change with a few friends before everyone gets it, publish a **test build**: a version like
+`0.4.0-test.1`, tagged `v0.4.0-test.1`, released the same way as any version (see
+[Installers for friends](#installers-for-friends)). The release is marked as a prerelease.
+
+- **Everyone else never gets it.** Alpha, beta and stable installs skip `-test` releases.
+- **Testers install it once by hand** from the release page, over their current Nexo (settings and login
+  are kept). From then on they update to newer test builds (`-test.2`, `-test.3`…) automatically, and only
+  to those. **Settings → App → Updates** says "test build".
+- **Back to regular releases:** **Settings → App → Updates → Leave test builds** downloads the newest
+  regular release, even if its version number is lower (`0.4.0-beta.1` sorts below `0.4.0-test.3`), and
+  installs it on the next restart. Testers who skip this stay on the last test build.
+- Test builds talk to the same server as everyone else. If one needs server changes, those must keep
+  working for the regular version too.
+- The release workflow refuses a tag that doesn't match `desktop/package.json`, since the version decides
+  which updates an install gets.
 
 **Coming from v0.1.0-alpha.1?** That version has no updater. Download and install v0.2 by hand once;
 it updates itself after that.

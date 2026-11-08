@@ -62,6 +62,8 @@ function isUpdateState(v: unknown): v is UpdateState {
   if (!UPDATE_STATUSES.includes(s.status as UpdateState['status'])) return false
   if (typeof s.currentVersion !== 'string' || typeof s.canAutoInstall !== 'boolean') return false
   if (s.percent !== undefined && (typeof s.percent !== 'number' || !Number.isFinite(s.percent))) return false
+  if (s.testBuild !== undefined && typeof s.testBuild !== 'boolean') return false
+  if (s.leavingTestBuilds !== undefined && typeof s.leavingTestBuilds !== 'boolean') return false
   return OPTIONAL_STRINGS.every((k) => s[k] === undefined || typeof s[k] === 'string')
 }
 
@@ -195,6 +197,7 @@ const bridge: NexoBridge = {
     getState: (): Promise<UpdateState> => invokeUpdateState(IPC.updatesGetState),
     check: (): Promise<UpdateState> => invokeUpdateState(IPC.updatesCheck),
     install: (): void => ipcRenderer.send(IPC.updatesInstall),
+    leaveTestBuilds: (): Promise<UpdateState> => invokeUpdateState(IPC.updatesLeaveTest),
     onState: (cb: (state: UpdateState) => void): (() => void) => subscribe(IPC.updatesState, isUpdateState, cb),
   },
 }

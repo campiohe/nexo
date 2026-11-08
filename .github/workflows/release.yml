@@ -48,6 +48,19 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # The app's version decides its update lane (alpha, beta, stable or test: README "Test builds"), so a
+      # tag must match it. Manual runs (workflow_dispatch) build whatever version the branch has.
+      - name: Check tag matches version
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(node -p "require('./desktop/package.json').version")
+          if [[ "$TAG" != "v$version" ]]; then
+            echo "::error::tag $TAG doesn't match desktop/package.json version $version"
+            exit 1
+          fi
+
       - uses: actions/setup-node@v7
         with:
           node-version: 26
@@ -176,7 +189,7 @@ jobs:
             test -f "dist/$f" || { echo "::error::missing dist/$f"; exit 1; }
           done
           flags=()
-          if [[ "$TAG" =~ -(alpha|beta|rc) ]]; then
+          if [[ "$TAG" =~ -(alpha|beta|rc|test) ]]; then
             flags+=(--prerelease)
           fi
           notes=".github/release-notes/$TAG.md"

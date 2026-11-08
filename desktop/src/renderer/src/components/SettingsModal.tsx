@@ -554,6 +554,11 @@ function UpdatesPanel() {
         <dt>Version</dt>
         <dd>
           <code>{state.currentVersion}</code>
+          {state.testBuild && (
+            <span className="muted small">
+              {state.leavingTestBuilds ? ' · test build, switching to regular releases' : ' · test build: updates only to newer test builds'}
+            </span>
+          )}
         </dd>
         <dt>Status</dt>
         <dd className={line.tone ?? ''}>
@@ -575,6 +580,16 @@ function UpdatesPanel() {
         {state.status !== 'unsupported' && (
           <button className="btn btn-ghost btn-sm" disabled={!canCheck} onClick={() => void useUpdates.getState().check()}>
             {busy && state.status !== 'downloading' ? 'Checking…' : 'Check for updates'}
+          </button>
+        )}
+        {state.testBuild && !state.leavingTestBuilds && state.status !== 'unsupported' && (
+          <button
+            className="btn btn-ghost btn-sm"
+            disabled={busy}
+            title="Installs the newest regular release on the next restart, even if its version number is lower"
+            onClick={() => void useUpdates.getState().leaveTestBuilds()}
+          >
+            Leave test builds
           </button>
         )}
         {releaseNotesUrl && (

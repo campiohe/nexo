@@ -13,6 +13,8 @@ interface UpdatesStore {
   bannerDismissed: boolean
   check(): Promise<void>
   install(): void
+  /** Test build: switch to regular releases (Settings → App). */
+  leaveTestBuilds(): Promise<void>
   dismissBanner(): void
 }
 
@@ -38,6 +40,18 @@ export const useUpdates = create<UpdatesStore>()((set, get) => ({
   },
   install() {
     bridge()?.install()
+  },
+  async leaveTestBuilds() {
+    const updates = bridge()
+    if (!updates || get().checking) return
+    set({ checking: true })
+    try {
+      set({ state: await updates.leaveTestBuilds() })
+    } catch (err) {
+      console.warn('[updates] leaving test builds failed', err)
+    } finally {
+      set({ checking: false })
+    }
   },
   dismissBanner: () => set({ bannerDismissed: true }),
 }))

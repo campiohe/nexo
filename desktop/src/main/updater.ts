@@ -6,6 +6,10 @@
 // - macOS: check only. Squirrel.Mac can't update ad-hoc signed / unsigned apps, so a newer release is
 //   reported as 'available' with the release page as downloadUrl.
 // - Dev builds and Linux without the AppImage: 'unsupported'.
+//
+// Test builds (README "Test builds"): versions like 0.4.0-test.1, tagged v0.4.0-test.1. electron-updater's GitHub
+// provider treats `test` as a custom channel: alpha/beta/stable installs never pick those releases, and a test
+// build only follows newer test releases. A test build leaves the lane with leaveTestBuilds() (Settings → App).
 import { app, BrowserWindow, ipcMain, autoUpdater as nativeUpdater, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron'
 import { autoUpdater, type ProgressInfo, type UpdateInfo } from 'electron-updater'
 import { IPC, type UpdateState } from '../preload/api'
@@ -16,6 +20,8 @@ const RELEASES_URL = 'https://github.com/campiohe/nexo/releases'
 const FIRST_CHECK_DELAY_MS = 10_000
 const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000
 const VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/
+/** First prerelease identifier of a test build (0.4.0-test.1). */
+const TEST_CHANNEL = 'test'
 
 interface UpdaterDeps {
   /** Called on every state change (the tray uses it for its "Restart to update" item). */
@@ -31,7 +37,8 @@ const log = {
 }
 
 let deps: UpdaterDeps | null = null
-let state: UpdateState = { status: 'idle', currentVersion: app.getVersion(), canAutoInstall: false }
+const testBuild = new RegExp(`^\\d+\\.\\d+\\.\\d+-${TEST_CHANNEL}(?:[.+]|$)`).test(app.getVersion())
+let state: UpdateState = { status: 'idle', currentVersion: app.getVersion(), canAutoInstall: false, ...(testBuild ? { testBuild } : {}) }
 
 function unsupportedReason(): string | null {
   if (!app.isPackaged) return 'Updates are disabled in development builds.'
@@ -53,8 +60,9 @@ function setState(next: UpdateState): void {
   }
 }
 
-function base(): Pick<UpdateState, 'currentVersion' | 'canAutoInstall'> {
-  return { currentVersion: state.currentVersion, canAutoInstall: state.canAutoInstall }
+function base(): Pick<UpdateState, 'currentVersion' | 'canAutoInstall' | 'testBuild' | 'leavingTestBuilds'> {
+  const { currentVersion, canAutoInstall, testBuild, leavingTestBuilds } = state
+  return { currentVersion, canAutoInstall, ...(testBuild ? { testBuild } : {}), ...(leavingTestBuilds ? { leavingTestBuilds } : {}) }
 }
 
 function withVersion(info: UpdateInfo): Pick<UpdateState, 'version' | 'releaseNotesUrl'> {
@@ -109,6 +117,25 @@ async function check(): Promise<UpdateState> {
     // Already reported through the 'error' event.
   }
   return state
+}
+
+/**
+ * Test build → regular releases: from now on the updater takes the newest alpha, beta or stable release, and
+ * installs it even though its version is lower (0.4.0-beta.1 < 0.4.0-test.3 in semver). It downloads in the
+ * background and installs on restart, like any update.
+ */
+async function leaveTestBuilds(): Promise<UpdateState> {
+  if (!state.testBuild || state.leavingTestBuilds || state.status === 'unsupported') return state
+  if (state.status === 'checking' || state.status === 'downloading') return state
+  log.info('leaving test builds: following regular releases')
+  // The GitHub provider reads the channel on every check. As "alpha" it takes the first alpha, beta or stable
+  // release in the feed and skips custom channels like "test". Setting a channel also allows downgrades.
+  autoUpdater.channel = 'alpha'
+  autoUpdater.allowDowngrade = true
+  // Back to idle so a downloaded test update ('ready') doesn't block the check. The regular release's download
+  // then replaces it as the update that installs on restart or quit.
+  setState({ ...base(), leavingTestBuilds: true, status: 'idle' })
+  return check()
 }
 
 /** Quits and installs a downloaded update (status 'ready'); ignored otherwise. */
@@ -174,6 +201,10 @@ export function installUpdater(d: UpdaterDeps): void {
     if (!fromApp(event)) throw new Error('forbidden')
     return check()
   })
+  ipcMain.handle(IPC.updatesLeaveTest, (event) => {
+    if (!fromApp(event)) throw new Error('forbidden')
+    return leaveTestBuilds()
+  })
   ipcMain.on(IPC.updatesInstall, (event) => {
     if (fromApp(event)) installUpdate()
   })
@@ -191,13 +222,15 @@ export function installUpdater(d: UpdaterDeps): void {
   autoUpdater.autoDownload = canAutoInstall
   autoUpdater.autoInstallOnAppQuit = canAutoInstall
   // Alphas follow the newest GitHub release, prerelease or stable (the github provider picks the first
-  // alpha/beta/stable entry of the releases feed). Stable builds only look at /releases/latest.
+  // alpha/beta/stable entry of the releases feed). Stable builds only look at /releases/latest. Test builds
+  // follow test releases only (see the header).
   autoUpdater.allowPrerelease = autoUpdater.currentVersion.prerelease.length > 0
   // Never install an older version, even if an older line gets a newer release on GitHub.
   autoUpdater.allowDowngrade = false
   wireEvents()
   log.info(
     `enabled (${platform}, ${state.currentVersion}, prereleases ${autoUpdater.allowPrerelease ? 'on' : 'off'}, ` +
+      `${testBuild ? 'test builds, ' : ''}` +
       `${canAutoInstall ? 'download + install on quit' : 'check only'})`,
   )
 
