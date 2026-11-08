@@ -1,6 +1,6 @@
 # Nexo Server CLI: one download to host a server
 
-**Status:** Approved, in progress · **Date:** 2026-11-08 · **Scope:** a standalone `nexo-server` program, Windows first, then Linux
+**Status:** Implemented (S0–S5, branch `feat/server-cli`); real-network test with friends pending · **Date:** 2026-11-08 · **Scope:** a standalone `nexo-server` program, Windows first, then Linux
 (macOS out of scope) · **Related:** [SERVER.md](SERVER.md) (today's manual setup), [SPEC.md](SPEC.md)
 
 ## 1. Why

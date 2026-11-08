@@ -42,7 +42,7 @@ const freePort = () =>
     })
   })
 
-test('help, version, usage errors, stubs', async () => {
+test('help, version, usage errors, autostart/update from source', async () => {
   const t = setup()
   try {
     assert.equal(await t.run('--help'), 0)
@@ -51,9 +51,11 @@ test('help, version, usage errors, stubs', async () => {
     assert.match(t.s.out(), /nexo-server 0\.5\.0-test/)
     assert.equal(await t.run('bogus'), 2)
     assert.match(t.s.err(), /Unknown command "bogus"[\s\S]*Usage:/)
+    // From source (not the packaged exe), autostart on and update explain instead of acting.
     assert.equal(await t.run('autostart', 'on'), 1)
+    assert.match(t.s.err(), /"autostart on" needs the downloaded nexo-server/)
     assert.equal(await t.run('update'), 1)
-    assert.match(t.s.err(), /"update" is not available yet/)
+    assert.match(t.s.err(), /"update" only works in the downloaded nexo-server/)
   } finally {
     t.cleanup()
   }

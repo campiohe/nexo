@@ -10,17 +10,30 @@ export interface LiveStats {
   online: number
   inVoice: number
   streaming: number
-  /** Host upload in Mbit/s, when measured (S4). */
+  /** The PC's upload in Mbit/s (busiest network adapter, src/upload.ts), when measured. */
   uploadMbps?: number
 }
 
-/** `3 online · 2 in voice · 1 streaming · upload 9.4 Mbit/s`; zero voice/streaming parts are left out. */
+/** `3 online · 2 in voice · 1 streaming · PC upload 9.4 Mbit/s`; zero voice/streaming parts are left out. */
 export function statusLine(s: LiveStats, opts: { ascii?: boolean } = {}): string {
   const parts = [`${s.online} online`]
   if (s.inVoice > 0) parts.push(`${s.inVoice} in voice`)
   if (s.streaming > 0) parts.push(`${s.streaming} streaming`)
-  if (s.uploadMbps !== undefined && Number.isFinite(s.uploadMbps)) parts.push(`upload ${s.uploadMbps.toFixed(1)} Mbit/s`)
+  if (s.uploadMbps !== undefined && Number.isFinite(s.uploadMbps)) parts.push(`PC upload ${s.uploadMbps.toFixed(1)} Mbit/s`)
   return parts.join(` ${symbols(opts.ascii ?? false).dot} `)
+}
+
+/**
+ * Whether the live status is worth printing again: any count changed, upload appeared/disappeared, or it
+ * moved by at least 25% and 1 Mbit/s since the last printed line (so small jitter doesn't scroll the console).
+ */
+export function statusChanged(printed: LiveStats | null, next: LiveStats): boolean {
+  if (!printed) return true
+  if (printed.online !== next.online || printed.inVoice !== next.inVoice || printed.streaming !== next.streaming) return true
+  const a = printed.uploadMbps
+  const b = next.uploadMbps
+  if (a === undefined || b === undefined) return a !== b
+  return Math.abs(a - b) >= Math.max(1, 0.25 * a)
 }
 
 export interface HealthResult {

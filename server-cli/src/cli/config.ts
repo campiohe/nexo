@@ -39,6 +39,11 @@ export interface ServerCliConfig {
   network: {
     mode: NetworkMode
   }
+  /**
+   * Optional, edited by hand: the host's upload speed in Mbit/s. The live status warns above 80% of it
+   * (docs/SPEC-SERVER-CLI.md §7).
+   */
+  uploadLimitMbps?: number
 }
 
 export const DEFAULT_PORTS: ServerCliConfig['ports'] = { http: 3001, livekit: 7880, livekitTcp: 7881, livekitUdp: 7882 }
@@ -116,6 +121,9 @@ export function validateConfig(value: unknown): string[] {
   if (!isObj(c.network) || !NETWORK_MODES.includes(c.network.mode as NetworkMode)) {
     errors.push(`"network.mode" must be one of ${NETWORK_MODES.join(', ')}`)
   }
+  if (c.uploadLimitMbps !== undefined && !(typeof c.uploadLimitMbps === 'number' && c.uploadLimitMbps > 0 && c.uploadLimitMbps <= 100_000)) {
+    errors.push('"uploadLimitMbps" must be your upload speed in Mbit/s (a number above 0), or left out')
+  }
   return errors
 }
 
@@ -176,6 +184,7 @@ export function saveCliConfig(dataDir: string, config: ServerCliConfig): void {
     ports: { ...config.ports },
     livekit: { ...config.livekit },
     network: { ...config.network },
+    ...(config.uploadLimitMbps !== undefined ? { uploadLimitMbps: config.uploadLimitMbps } : {}),
   }
   try {
     writeFileSync(tmp, JSON.stringify(ordered, null, 2) + '\n', { mode: 0o600 })

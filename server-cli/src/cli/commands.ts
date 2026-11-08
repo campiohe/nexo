@@ -21,7 +21,8 @@ export type Command =
   | { kind: 'status'; global: GlobalOptions }
   | { kind: 'backup'; global: GlobalOptions; file?: string }
   | { kind: 'rename-user'; global: GlobalOptions; oldName: string; newName: string; force: boolean }
-  | { kind: 'autostart'; global: GlobalOptions; enable: boolean }
+  /** `autostart` alone (or `status`) shows the current state. */
+  | { kind: 'autostart'; global: GlobalOptions; action: 'on' | 'off' | 'status' }
   | { kind: 'update'; global: GlobalOptions }
   | { kind: 'help'; global: GlobalOptions }
   | { kind: 'version'; global: GlobalOptions }
@@ -44,8 +45,8 @@ export function usage(prog = 'nexo-server'): string {
     `  status                      Is it running, who's online, ports, version`,
     `  backup [file]               Save a copy of the database (default: <data>/backups/)`,
     `  rename-user <old> <new>     Free a name: rename a user, keeping their messages`,
-    `  autostart on|off            Start with the computer (not yet available)`,
-    `  update                      Get the newest server version (not yet available)`,
+    `  autostart [on|off]          Start with the computer (per user, no admin); alone: show the state`,
+    `  update                      Download and install the newest server version`,
     '',
     'Options:',
     `  --data <dir>                Use another data folder (several servers, or an existing server/data)`,
@@ -166,9 +167,9 @@ export function parseArgs(argv: readonly string[]): Command {
       if (args.length < 2) return err('rename-user needs the current name and the new name, e.g. rename-user "Alice" "Alice-old"')
       return extra(2) ?? { kind: 'rename-user', global, oldName: args[0], newName: args[1], force }
     case 'autostart': {
-      const v = args[0]?.toLowerCase()
-      if (v !== 'on' && v !== 'off') return err('autostart needs "on" or "off"')
-      return extra(1) ?? { kind: 'autostart', global, enable: v === 'on' }
+      const v = args[0]?.toLowerCase() ?? 'status'
+      if (v !== 'on' && v !== 'off' && v !== 'status') return err('autostart takes "on", "off" or nothing (shows the state)')
+      return extra(1) ?? { kind: 'autostart', global, action: v }
     }
     default: {
       const near = SUBCOMMANDS.find((c) => c.startsWith(name.slice(0, 3).toLowerCase()))

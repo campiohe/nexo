@@ -125,7 +125,7 @@ test('inviteFromProbe: recommendation per mode', () => {
 })
 
 test('statusLine', () => {
-  assert.equal(statusLine({ online: 3, inVoice: 2, streaming: 1, uploadMbps: 9.44 }), '3 online · 2 in voice · 1 streaming · upload 9.4 Mbit/s')
+  assert.equal(statusLine({ online: 3, inVoice: 2, streaming: 1, uploadMbps: 9.44 }), '3 online · 2 in voice · 1 streaming · PC upload 9.4 Mbit/s')
   assert.equal(statusLine({ online: 0, inVoice: 0, streaming: 0 }), '0 online')
   assert.equal(statusLine({ online: 2, inVoice: 2, streaming: 0 }, { ascii: true }), '2 online | 2 in voice')
 })

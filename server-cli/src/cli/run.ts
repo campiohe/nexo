@@ -5,7 +5,12 @@
 //   cmd.kind === 'start' ? prepareStart(cmd, deps) → start server + LiveKit with the result
 //                        : process.exitCode = await runCommand(cmd, deps)
 
+import { execFile } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import type { Readable, Writable } from 'node:stream'
+import { runAutostart, type Exec } from '../autostart.ts'
+import { runUpdate } from '../update/command.ts'
+import { packagedBinary } from '../update/install.ts'
 import { AdminError, backupDatabase, renameUser } from './admin.ts'
 import { parseArgs, usage, type Command } from './commands.ts'
 import { applyEnvOverrides, ConfigError, loadCliConfig, saveCliConfig, type ServerCliConfig } from './config.ts'
@@ -33,7 +38,27 @@ export interface CliDeps {
   probeNetwork?: (cfg: ServerCliConfig) => Promise<NetworkProbe>
   /** Injected in tests. */
   isAlive?: (pid: number) => boolean
+  /** The packaged nexo-server binary, or null from source. Default: packagedBinary(). */
+  binary?: string | null
+  /** Runs reg.exe / systemctl (autostart). Default: execFile without a shell. */
+  exec?: Exec
+  /** For `update` (GitHub API and downloads). */
+  fetch?: typeof fetch
+  arch?: string
 }
+
+/** execFile without a shell that never throws: exit code + output (autostart's Exec). */
+export const execNoShell: Exec = (file, args) =>
+  new Promise((resolve) => {
+    execFile(file, [...args], { windowsHide: true, encoding: 'utf8', timeout: 30_000 }, (error, stdout, stderr) => {
+      const e = error as (NodeJS.ErrnoException & { code?: string | number }) | null
+      if (e && typeof e.code === 'string') {
+        resolve({ code: -1, stdout: stdout ?? '', stderr: stderr || e.message, missing: e.code === 'ENOENT' })
+        return
+      }
+      resolve({ code: e ? (typeof e.code === 'number' ? e.code : 1) : 0, stdout: stdout ?? '', stderr: stderr ?? '' })
+    })
+  })
 
 interface Io {
   out: (line?: string) => void
@@ -98,10 +123,35 @@ export async function runCommand(cmd: Command, deps: CliDeps): Promise<number> {
         err()
         err(usage())
         return 2
-      case 'autostart':
-      case 'update':
-        err(`"${cmd.kind}" is not available yet in this version of Nexo Server.`)
-        return 1
+      case 'autostart': {
+        const dataDir = dataDirFor(cmd, deps)
+        return await runAutostart(cmd.action, {
+          platform: deps.platform ?? process.platform,
+          binary: deps.binary !== undefined ? deps.binary : packagedBinary(),
+          dataDir,
+          configured: existsSync(dataLayout(dataDir).config),
+          running: runningInstance(dataDir, deps.isAlive) !== null,
+          exec: deps.exec ?? execNoShell,
+          out,
+          err,
+          env,
+        })
+      }
+      case 'update': {
+        const dataDir = dataDirFor(cmd, deps)
+        const stdout = deps.stdout ?? process.stdout
+        return await runUpdate({
+          version: deps.version,
+          platform: deps.platform ?? process.platform,
+          arch: deps.arch ?? process.arch,
+          binary: deps.binary !== undefined ? deps.binary : packagedBinary(),
+          runningPid: runningInstance(dataDir, deps.isAlive)?.pid ?? null,
+          out,
+          err,
+          fetch: deps.fetch,
+          progress: (stdout as Writable & { isTTY?: boolean }).isTTY === true,
+        })
+      }
       case 'setup': {
         const dataDir = dataDirFor(cmd, deps)
         const existing = loadCliConfig(dataDir)

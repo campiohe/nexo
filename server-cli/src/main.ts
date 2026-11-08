@@ -10,7 +10,11 @@ import { start, type NexoInstance } from '../../server/src/server.ts'
 import { parseArgs, prepareStart, runCommand, type CliDeps } from './cli/run.ts'
 import { toServerConfig, type ServerCliConfig } from './cli/config.ts'
 import { inviteFromProbe, renderInvite, supportsUnicode, symbols } from './cli/invite.ts'
-import { statusLine } from './cli/status.ts'
+import { statusChanged, statusLine, type LiveStats } from './cli/status.ts'
+import { createAwake } from './awake.ts'
+import { startupUpdateLine } from './update/command.ts'
+import { cleanupOldFiles, packagedBinary } from './update/install.ts'
+import { startUploadMeter, uploadLimitCheck } from './upload.ts'
 import { defaultPorts, isLoopback, isPrivateIp, mapPorts, probeNetwork, type NetworkProbe, type PortMappingSession } from './network/index.ts'
 import { liveKitYaml, locateLiveKit, portInUse, superviseLiveKit, type LiveKitYamlOptions } from './livekit.ts'
 
@@ -135,6 +139,10 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     version: VERSION,
     probeNetwork: () => probeNetwork(),
   }
+  // Files a previous `nexo-server update` renamed aside (Windows can't delete a running .exe).
+  const binary = packagedBinary()
+  if (binary) cleanupOldFiles(path.dirname(binary))
+
   const cmd = parseArgs(argv)
   if (cmd.kind !== 'start') {
     process.exitCode = await runCommand(cmd, deps)
@@ -166,6 +174,14 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   let running: Running | null = null
   let shuttingDown = false
   let statusTimer: NodeJS.Timeout | undefined
+  // Keep the PC awake while friends are connected (spec §7). Helpers are child processes: stop them on
+  // any exit, including process.exit() from the shutdown path.
+  const awake = createAwake({ log: (line) => logger.info(line) })
+  let upload: ReturnType<typeof startUploadMeter> | null = null
+  process.once('exit', () => {
+    awake.stop()
+    upload?.stop()
+  })
   async function shutdown(reason: string, code = 0) {
     if (shuttingDown) {
       logger.print('Forcing exit')
@@ -173,6 +189,8 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     }
     shuttingDown = true
     clearInterval(statusTimer)
+    awake.stop()
+    upload?.stop()
     logger.print('')
     logger.info(`${reason}: shutting down${sym.ellipsis}`)
     const force = setTimeout(() => {
@@ -255,19 +273,37 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   logger.print('  Keep this window open while you play. Press Ctrl+C to stop.')
   logger.print('')
 
+  // A newer release? One line, at most one GitHub check a day, in the background (spec §8: never silent).
+  if (env.NEXO_UPDATE_CHECK !== '0') {
+    void startupUpdateLine({ dataDir, version: VERSION, platform: process.platform, arch: process.arch }).then((line) => {
+      if (line && !shuttingDown) logger.print(`  ${sym.warn} ${line}`)
+    })
+  }
+
+  upload = startUploadMeter({ log: (line) => logger.info(line) })
+  const uploadWarning = { warned: false }
+
   // Live status: printed when it changes; also written to the lock file for `nexo-server status`.
-  let last = ''
+  let printed: LiveStats | null = null
   let friendFromOutside = false
   const tick = () => {
     if (!running || shuttingDown) return
     const s = running.nexo.stats()
-    const live = { online: s.online, inVoice: s.inVoice, streaming: s.streaming }
+    awake.update(s.online)
+    // Sampled every tick (rates need consecutive samples); shown only while someone is connected.
+    const mbps = upload?.mbps()
+    const live: LiveStats = { online: s.online, inVoice: s.inVoice, streaming: s.streaming }
+    if (s.online > 0 && mbps !== undefined) live.uploadMbps = mbps
     lock.update({ stats: { ...live, updatedAt: new Date().toISOString() } })
-    const line = statusLine(live, { ascii })
-    if (line !== last) {
-      last = line
-      logger.print(`  ${line}`)
+    if (statusChanged(printed, live)) {
+      printed = live
+      logger.print(`  ${statusLine(live, { ascii })}`)
     }
+    const limit = cfg.uploadLimitMbps
+    const alert = uploadLimitCheck(uploadWarning, live.uploadMbps, limit)
+    if (alert === 'warn') {
+      logger.warn(`Upload is at ${live.uploadMbps!.toFixed(1)} of your ${limit} Mbit/s. Streams may stutter: ask streamers to pick a lower quality.`)
+    } else if (alert === 'ok') logger.info('Upload is back under the limit.')
     if (!friendFromOutside && s.clientAddresses.some(isOutsideAddress)) {
       friendFromOutside = true
       logger.print(`  ${sym.ok} A friend connected from outside your network.`)
