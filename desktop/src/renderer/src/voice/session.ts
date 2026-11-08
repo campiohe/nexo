@@ -26,6 +26,14 @@ import { toast } from '@renderer/lib/toast'
 import { useApp } from '@renderer/store/app'
 import type { NexoBridge, TrayAction } from '../../../preload/api'
 import { idealDevice, saveDevicePref, useDevicePrefs, type DeviceKind } from './devices'
+import {
+  effectiveNoiseMode,
+  noiseConstraints,
+  RNNOISE_PROCESSOR_NAME,
+  RnnoiseTrackProcessor,
+  useNoiseStatus,
+  type NoiseMode,
+} from './noise'
 import { useInputPrefs } from './prefs'
 import { usePtt } from './ptt'
 import { clampUserVolume, persistUserVolumes, useUserVolumes } from './userVolumes'
@@ -165,7 +173,10 @@ export function getRoom(): Room | null {
   return room
 }
 
-/** The local microphone MediaStreamTrack when in voice (used by the settings mic meter). */
+/**
+ * The local microphone MediaStreamTrack when in voice (used by the settings mic meter). This is the
+ * track being sent, i.e. the RNNoise output when Enhanced noise suppression is on.
+ */
 export function getLocalMicTrack(): MediaStreamTrack | null {
   const pub = room?.localParticipant.getTrackPublication(Track.Source.Microphone)
   return pub?.track?.mediaStreamTrack ?? null
@@ -232,9 +243,8 @@ export const useVoice = create<VoiceSessionState>()((set, get) => ({
         adaptiveStream: true,
         dynacast: true,
         audioCaptureDefaults: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
+          // AEC + AGC always; Chromium NS only in Standard (SPEC §13.3). RNNoise is added in publishMic.
+          ...noiseConstraints(effectiveNoiseMode(prefs.noiseMode)),
           ...(micId ? { deviceId: micId } : {}),
         },
         videoCaptureDefaults: {
@@ -572,6 +582,8 @@ function wireRoom(r: Room): void {
       syncAllSubscriptions(r)
       rebuild()
       announce()
+      // A full reconnect republishes (and restarts) the mic; make sure the noise mode still holds.
+      void reconcileNoise()
     })
     .on(RoomEvent.Disconnected, (reason) => {
       if (room !== r) return // we initiated it
@@ -989,9 +1001,18 @@ async function publishMic(r: Room): Promise<void> {
       track.stop()
       return
     }
+    // Noise suppression (RNNoise processor) goes on before publishing, so the raw mic is never sent.
+    await applyNoiseMode(track, r)
+    if (room !== r) {
+      track.stop()
+      return
+    }
     // Publish already muted when we shouldn't transmit (PTT not held): nothing leaks.
     if (!wantsTransmit()) await track.mute()
     await r.localParticipant.publishTrack(track, { source: Track.Source.Microphone })
+    bumpMicRev()
+    // The mode may have changed while this was publishing (reconcile skipped the unpublished track).
+    void reconcileNoise()
   } catch (e) {
     track?.stop()
     if (room !== r) return
@@ -1016,13 +1037,142 @@ useInputPrefs.subscribe((s, prev) => {
   if (s.inputMode !== prev.inputMode) void applyMic()
 })
 
+// ---------------------------------------------------------------------------------------------
+// Noise suppression (SPEC §13.3)
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Bumped whenever the published mic's MediaStreamTrack may have changed (publish, device switch, noise
+ * mode change), so the settings mic meter re-reads `getLocalMicTrack()`.
+ */
+export const useMicTrackRev = create<{ rev: number }>()(() => ({ rev: 0 }))
+
+function bumpMicRev(): void {
+  useMicTrackRev.setState((s) => ({ rev: s.rev + 1 }))
+}
+
+/** Mic track restarts (noise mode, device switch) run one at a time. */
+let micOps: Promise<void> = Promise.resolve()
+
+function queueMicOp(op: () => Promise<void>): Promise<void> {
+  const next = micOps.then(op, op)
+  micOps = next.catch(() => undefined)
+  return next
+}
+
+function constraintBool(c: ConstrainBoolean | undefined): boolean | undefined {
+  if (typeof c === 'boolean') return c
+  return c?.exact ?? c?.ideal
+}
+
+/** Whether Chromium's own noise suppressor is running on the track's capture. */
+function trackHasChromiumNs(track: LocalAudioTrack): boolean {
+  const actual = track.getSourceTrackSettings().noiseSuppression
+  if (typeof actual === 'boolean') return actual
+  return constraintBool(track.constraints.noiseSuppression) ?? true // Chromium's default
+}
+
+/** Re-acquires the mic (same device) with Chromium NS on/off, unless it already matches. */
+async function setChromiumNs(track: LocalAudioTrack, on: boolean, force = false): Promise<void> {
+  if (!force && trackHasChromiumNs(track) === on) return
+  await track.restartTrack({
+    ...(track.constraints.deviceId ? { deviceId: track.constraints.deviceId } : {}),
+    echoCancellation: true,
+    autoGainControl: true,
+    noiseSuppression: on,
+  })
+}
+
+function hasRnnoise(track: LocalAudioTrack): boolean {
+  return track.getProcessor()?.name === RNNOISE_PROCESSOR_NAME
+}
+
+/** RNNoise crashed at runtime (noise.ts already reported it): fall back to Standard. */
+function onRnnoiseRuntimeError(): void {
+  void reconcileNoise()
+}
+
+/**
+ * Brings one mic track in line with the noise mode preference:
+ *   enhanced → RNNoise processor on, then Chromium NS off (no unprocessed gap)
+ *   standard / off → processor off, then Chromium NS on / off
+ * If RNNoise can't be attached the track gets Standard instead. Never throws.
+ */
+async function applyNoiseMode(track: LocalAudioTrack, r: Room): Promise<void> {
+  let mode: NoiseMode = effectiveNoiseMode(useDevicePrefs.getState().noiseMode)
+  try {
+    if (mode === 'enhanced' && !hasRnnoise(track)) {
+      try {
+        await track.setProcessor(new RnnoiseTrackProcessor(onRnnoiseRuntimeError))
+        // track.stop() isn't serialised with setProcessor: make sure a late processor is released.
+        if (track.isStopped) await track.getProcessor()?.destroy()
+      } catch (e) {
+        // Load failures were reported by noise.ts (sticky + toast); anything else is retried on the
+        // next reconcile. Either way this track uses Standard for now.
+        console.warn('[voice] could not attach RNNoise', e)
+      }
+      if (!hasRnnoise(track) || !track.getProcessor()?.processedTrack) mode = 'standard'
+    }
+    if (track.isStopped) return
+    if (mode !== 'enhanced' && hasRnnoise(track)) {
+      let stopped = true
+      try {
+        await track.stopProcessor()
+      } catch (e) {
+        // The processor is gone but LiveKit may not have put the raw track back on the sender;
+        // restarting the track below does that.
+        console.warn('[voice] stopping RNNoise failed', e)
+        stopped = false
+      }
+      await setChromiumNs(track, mode === 'standard', !stopped)
+    } else {
+      await setChromiumNs(track, mode === 'standard')
+    }
+  } catch (e) {
+    console.warn('[voice] applying noise suppression failed', e)
+    if (room === r) useVoice.setState({ error: mediaErrorMessage(e, 'Microphone') })
+  } finally {
+    // Future captures (e.g. a republish via createTracks) start with the same processing.
+    const defaults = r.options.audioCaptureDefaults
+    if (defaults) Object.assign(defaults, noiseConstraints(mode))
+  }
+}
+
+/** Re-applies the noise mode to the published mic (if any). Serialised with other mic restarts. */
+function reconcileNoise(): Promise<void> {
+  return queueMicOp(async () => {
+    const r = room
+    if (!r) return
+    const track = localMicTrack(r)
+    if (!track || track.isStopped) return
+    await applyNoiseMode(track, r)
+    bumpMicRev()
+  })
+}
+
+// Live switching from Settings, and the sticky fallback when RNNoise fails.
+useDevicePrefs.subscribe((s, prev) => {
+  if (s.noiseMode !== prev.noiseMode) void reconcileNoise()
+})
+useNoiseStatus.subscribe((s, prev) => {
+  if (s.enhanced === 'failed' && prev.enhanced !== 'failed') void reconcileNoise()
+})
+
 /** Persist a device choice and apply it live when in voice. `null` = system default. */
 export async function setPreferredDevice(kind: DeviceKind, deviceId: string | null): Promise<void> {
   saveDevicePref(kind, deviceId)
   const r = room
   if (!r) return
   try {
-    if (kind === 'videoinput') {
+    if (kind === 'audioinput') {
+      // Serialised with noise-mode changes: both restart the mic track. The RNNoise processor survives
+      // the restart (LiveKit calls its restart() with the new device's track).
+      await queueMicOp(async () => {
+        if (room !== r) return
+        await r.switchActiveDevice(kind, deviceId ?? 'default')
+        bumpMicRev()
+      })
+    } else if (kind === 'videoinput') {
       if (deviceId) {
         await r.switchActiveDevice(kind, deviceId)
       } else if (r.options.videoCaptureDefaults) {

@@ -1,16 +1,27 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import type { Message, User } from '@shared/protocol'
+import type { Attachment, Message, User } from '@shared/protocol'
 import { useApp } from '../store/app'
 import { toast } from '../lib/toast'
 import { formatDay, formatFull, formatTime, isSameDay } from '../lib/time'
 import { Avatar } from './Avatar'
 import { ConfirmDialog } from './Modal'
-import { MessageContent } from './MessageContent'
+import { MessageAttachments, MessageContent } from './MessageContent'
+import { ImageLightbox } from './ImageLightbox'
 import { ArrowDownIcon, HashIcon, TrashIcon } from './icons'
 
 const GROUP_WINDOW_MS = 5 * 60 * 1000
 const STICK_THRESHOLD_PX = 80
 const LOAD_OLDER_THRESHOLD_PX = 120
+/** Older servers send messages without the field. */
+const NO_ATTACHMENTS: Attachment[] = []
+
+/** Short description of a message for the delete confirmation. */
+function previewText(msg: Message): string {
+  const n = msg.attachments?.length ?? 0
+  const images = n === 1 ? '1 image' : `${n} images`
+  if (!msg.content) return n ? `(${images})` : ''
+  return n ? `${msg.content}\n(+ ${images})` : msg.content
+}
 
 interface Row {
   msg: Message
@@ -37,6 +48,7 @@ export function MessageList({ channelId }: { channelId: string }) {
   const channelName = useApp((s) => s.channels.find((c) => c.id === channelId)?.name ?? '')
   const users = useApp((s) => s.users)
   const meId = useApp((s) => s.me?.id)
+  const serverUrl = useApp((s) => s.serverUrl)
   const loadHistory = useApp((s) => s.loadHistory)
   const loadOlder = useApp((s) => s.loadOlder)
 
@@ -49,6 +61,7 @@ export function MessageList({ channelId }: { channelId: string }) {
   })
   const [unseen, setUnseen] = useState(0)
   const [pendingDelete, setPendingDelete] = useState<Message | null>(null)
+  const [lightbox, setLightbox] = useState<Attachment | null>(null)
 
   const items = cm?.items ?? []
   const loaded = !!cm?.loaded
@@ -152,7 +165,9 @@ export function MessageList({ channelId }: { channelId: string }) {
               row={r}
               author={users[r.msg.userId]}
               mine={r.msg.userId === meId}
+              serverUrl={serverUrl}
               onDelete={setPendingDelete}
+              onOpenImage={setLightbox}
             />
           ))}
         </div>
@@ -167,7 +182,7 @@ export function MessageList({ channelId }: { channelId: string }) {
           title="Delete message?"
           message={
             <>
-              <div className="confirm-preview">{pendingDelete.content}</div>
+              <div className="confirm-preview">{previewText(pendingDelete)}</div>
               <span className="muted small">Tip: hold Shift while clicking delete to skip this.</span>
             </>
           }
@@ -181,6 +196,7 @@ export function MessageList({ channelId }: { channelId: string }) {
           }}
         />
       )}
+      {lightbox && <ImageLightbox att={lightbox} serverUrl={serverUrl} onClose={() => setLightbox(null)} />}
     </div>
   )
 }
@@ -197,12 +213,16 @@ const MessageRow = memo(function MessageRow({
   row,
   author,
   mine,
+  serverUrl,
   onDelete,
+  onOpenImage,
 }: {
   row: Row
   author: User | undefined
   mine: boolean
+  serverUrl: string | null
   onDelete(m: Message): void
+  onOpenImage(att: Attachment): void
 }) {
   const { msg, head, day } = row
   return (
@@ -233,7 +253,8 @@ const MessageRow = memo(function MessageRow({
               </time>
             </div>
           )}
-          <MessageContent text={msg.content} />
+          {msg.content && <MessageContent text={msg.content} />}
+          <MessageAttachments attachments={msg.attachments ?? NO_ATTACHMENTS} serverUrl={serverUrl} onOpen={onOpenImage} />
         </div>
         {mine && (
           <div className="message-actions">

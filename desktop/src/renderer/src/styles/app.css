@@ -583,6 +583,23 @@ input, textarea { user-select: text; }
 .profile-card-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .profile-avatar-actions { margin-top: 8px; gap: 8px; }
 
+/* Keybinds tab (combination buttons reuse .vx-keybind from voice.css) */
+.kb-intro { margin: -8px 0 0; }
+.kb-group { display: flex; flex-direction: column; gap: 8px; }
+.kb-item { display: flex; flex-direction: column; gap: 4px; }
+.kb-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-0);
+}
+.kb-row .toggle-text { min-width: 0; }
+.kb-combo { min-width: 150px; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kb-error { margin: 0 0 0 14px; font-size: 12px; color: var(--danger); }
+
 /* App preferences: label + switch */
 .toggle-row {
   display: flex;

@@ -11,10 +11,11 @@ import type {
   User,
   VoiceState,
 } from '../../shared/protocol.ts'
-import { MAX_MESSAGE_LENGTH } from '../../shared/protocol.ts'
+import { MAX_ATTACHMENTS_PER_MESSAGE, MAX_MESSAGE_LENGTH } from '../../shared/protocol.ts'
 import { loadConfig, type Config } from './config.ts'
 import { isUniqueViolation, openDb } from './db.ts'
 import { createAvatarRoutes } from './avatars.ts'
+import { createAttachmentRoutes } from './attachments.ts'
 
 interface SocketData {
   user: User
@@ -30,6 +31,12 @@ export interface StartOptions extends Partial<Omit<Config, 'livekit'>> {
   log?: ((msg: string) => void) | false
   /** Minimum ms between two profile picture changes by the same user. Default: LIMITS.avatarIntervalMs. */
   avatarIntervalMs?: number
+  /** Image uploads per user per minute. Default: LIMITS.attachmentUploadsPerMinute. */
+  attachmentUploadsPerMinute?: number
+  /** Age at which unsent image uploads are deleted. Default: LIMITS.attachmentPendingTtlMs. */
+  attachmentPendingTtlMs?: number
+  /** How often unsent uploads are swept. Default: LIMITS.attachmentSweepIntervalMs. */
+  attachmentSweepIntervalMs?: number
 }
 
 export interface NexoInstance {
@@ -55,6 +62,12 @@ export const LIMITS = {
   tokenTtl: '12h',
   /** One profile picture change (upload or delete) per user every 3 s. */
   avatarIntervalMs: 3000,
+  /** Chat image uploads per user per minute. */
+  attachmentUploadsPerMinute: 20,
+  /** Uploads not attached to a message within an hour are deleted… */
+  attachmentPendingTtlMs: 60 * 60 * 1000,
+  /** …by a sweep that runs at start and then every 10 minutes. */
+  attachmentSweepIntervalMs: 10 * 60 * 1000,
 } as const
 
 export const HANDSHAKE_ERRORS = {
@@ -111,12 +124,20 @@ function fail(ack: unknown, error: string) {
 
 export async function start(options: StartOptions = {}): Promise<NexoInstance> {
   const base = loadConfig()
-  const { log: logOpt, livekit, avatarIntervalMs, ...rest } = options
+  const {
+    log: logOpt,
+    livekit,
+    avatarIntervalMs,
+    attachmentUploadsPerMinute,
+    attachmentPendingTtlMs,
+    attachmentSweepIntervalMs,
+    ...rest
+  } = options
   const config: Config = { ...base, ...rest, livekit: { ...base.livekit, ...livekit } }
   const log = logOpt === false ? () => {} : (logOpt ?? ((m: string) => console.log(m)))
 
   const db = openDb(config.dataDir)
-  const { users, channels, messages } = db
+  const { users, channels, messages, attachments } = db
 
   /** Store `user` as the latest profile on all of its sockets and tell everyone. */
   function publishUser(user: User) {
@@ -133,6 +154,17 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
     log,
   })
 
+  const attachmentRoutes = createAttachmentRoutes({
+    dataDir: config.dataDir,
+    users,
+    attachments,
+    hashToken,
+    uploadsPerMinute: attachmentUploadsPerMinute ?? LIMITS.attachmentUploadsPerMinute,
+    pendingTtlMs: attachmentPendingTtlMs ?? LIMITS.attachmentPendingTtlMs,
+    sweepIntervalMs: attachmentSweepIntervalMs ?? LIMITS.attachmentSweepIntervalMs,
+    log,
+  })
+
   const http = createServer((req, res) => {
     const pathname = (req.url ?? '/').split('?')[0]
     if (pathname === '/health' && (req.method === 'GET' || req.method === 'HEAD')) {
@@ -141,6 +173,7 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
       return
     }
     if (avatarRoutes(req, res)) return
+    if (attachmentRoutes.handle(req, res)) return
     // socket.io handles /socket.io/* itself; everything else is 404.
     if (!pathname.startsWith('/socket.io')) res.writeHead(404).end()
   })
@@ -280,7 +313,7 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
     socket.on('channel:delete', guard('channel:delete', (p, ack) => {
       const existing = isObj(p) && isStr(p.channelId) ? channels.get(p.channelId) : undefined
       if (!existing) return fail(ack, 'Channel not found')
-      channels.delete(existing.id)
+      attachmentRoutes.removeFiles(channels.delete(existing.id))
       // Everyone in a deleted voice channel is out of voice.
       let voiceChanged = false
       for (const [uid, v] of voiceStates) {
@@ -301,9 +334,22 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
       const channel = isObj(p) && isStr(p.channelId) ? channels.get(p.channelId) : undefined
       if (!channel || channel.type !== 'text') return fail(ack, 'Channel not found')
       const content = isStr(p.content) ? p.content.trim() : ''
-      if (!content) return fail(ack, 'Message is empty')
+      let attachmentIds: string[] = []
+      if (p.attachmentIds !== undefined && p.attachmentIds !== null) {
+        if (!Array.isArray(p.attachmentIds) || !p.attachmentIds.every(isStr)) return fail(ack, 'Invalid attachments')
+        attachmentIds = p.attachmentIds
+      }
+      if (!content && attachmentIds.length === 0) return fail(ack, 'Message is empty')
       if (content.length > MAX_MESSAGE_LENGTH) return fail(ack, `Messages are limited to ${MAX_MESSAGE_LENGTH} characters`)
-      const msg = messages.create(channel.id, userId, content)
+      if (attachmentIds.length > MAX_ATTACHMENTS_PER_MESSAGE) {
+        return fail(ack, `Messages can have at most ${MAX_ATTACHMENTS_PER_MESSAGE} images`)
+      }
+      if (new Set(attachmentIds).size !== attachmentIds.length) return fail(ack, 'The same image is attached twice')
+      // Pending uploads of this user only. (Checked and claimed synchronously, so nothing can race in between.)
+      if (!attachmentIds.every((id) => attachments.pending(id, userId))) {
+        return fail(ack, 'An image upload expired or was not found. Remove it and add it again')
+      }
+      const msg = messages.create(channel.id, userId, content, attachmentIds)
       io.emit('message:new', msg)
       ok(ack, msg)
     }))
@@ -312,7 +358,7 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
       const msg = isObj(p) && isStr(p.messageId) ? messages.get(p.messageId) : undefined
       if (!msg) return fail(ack, 'Message not found')
       if (msg.userId !== userId) return fail(ack, 'You can only delete your own messages')
-      messages.delete(msg.id)
+      attachmentRoutes.removeFiles(messages.delete(msg.id))
       io.emit('message:deleted', { messageId: msg.id, channelId: msg.channelId })
       ok(ack, null)
     }))
@@ -420,6 +466,7 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
 
   await new Promise<void>((resolve, reject) => {
     const onError = (err: Error) => {
+      attachmentRoutes.close()
       db.close()
       reject(err)
     }
@@ -435,6 +482,7 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
   let closing: Promise<void> | undefined
   const close = () =>
     (closing ??= (async () => {
+      attachmentRoutes.close()
       io.disconnectSockets(true)
       await io.close() // also closes the http server
       http.closeAllConnections()

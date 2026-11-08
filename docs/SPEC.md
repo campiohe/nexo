@@ -42,7 +42,7 @@ Nexo is a desktop app for small friend groups to chat, hang out in voice, and sh
 
 ### Deferred (v2+)
 
-Per-application audio capture (see §11), message editing, reactions, image/file uploads, DMs, notifications and unread badges, auto-update, E2EE, roles.
+Per-application audio capture (see §11), message editing, reactions, non-image file uploads, DMs, notifications and unread badges, E2EE, roles. (Auto-update shipped in v0.2; image attachments, global hotkeys and enhanced noise suppression are specified in §13 for v0.3.)
 
 ---
 
@@ -385,3 +385,129 @@ Nexo is hosted on the owner's own PC. LiveKit and the Nexo server run in Docker/
 ## 12. Next step
 
 After this spec is reviewed, the implementation plan will split the work into parallel workstreams with clear interfaces (`shared/protocol.ts` is the contract between them). For example: server, Electron shell and capture, renderer chat UI, renderer voice and stage, and packaging/devops. Each workstream gets its own subagent.
+
+---
+
+## 13. v0.3: images in chat, global hotkeys, noise suppression
+
+Three independent features. `shared/protocol.ts` and `desktop/src/preload/api.ts` remain the contracts.
+
+### 13.1 Images in chat
+
+**UX.** You can add images to the composer in three ways: paste (Ctrl/Cmd+V of an image or copied image
+files), drag and drop onto the text channel, or the attach button (file picker). Each message can carry
+**up to 4 images** plus optional text. Pending images show as thumbnails above the input, each with a
+remove button and an upload progress indicator. Uploads start as soon as an image is added, and Send
+waits for them. In the message list, images render below the text. They're laid out from the stored width
+and height (no layout shift), up to 400×300 per image in a small grid. Clicking one opens a lightbox at
+full size. Esc closes it, and it has an **Open original** button (system browser).
+
+**Formats and limits.** PNG, JPEG, WebP and GIF (animated GIFs stay animated), at most
+`ATTACHMENT_MAX_BYTES` = 10 MB each. The client re-encodes a still image over the limit (e.g. a 4K PNG
+screenshot) to WebP at quality 0.9, longest side ≤ 4096 px, before uploading. A GIF over the limit is
+rejected with a toast.
+
+**Protocol** (`shared/protocol.ts`):
+```ts
+type AttachmentType = 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif'
+interface Attachment { id: string; type: AttachmentType; width: number; height: number; size: number }
+interface Message { …; attachments: Attachment[] }     // always present, [] for text-only
+'message:send': { channelId, content, attachmentIds?: string[] }  // content may be '' when attachments exist
+```
+
+**HTTP** (like avatars, §5.3: bytes don't go over the socket):
+- `POST /api/attachments` with `Authorization: Bearer <device token>`, the raw image bytes as the body,
+  and a `Content-Type` of one of the types above. Returns `201 { attachment: Attachment }`. The server
+  sniffs magic bytes (the Content-Type must match). It reads the width and height from the header (PNG
+  IHDR, GIF logical screen, JPEG SOFn, WebP VP8/VP8L/VP8X) without decoding. It rejects files over the
+  size limit and dimensions over 16384. It stores the file in `<dataDir>/attachments/<id>` with a
+  random UUID as the id. The row is **pending** (`message_id` NULL) until a message claims it.
+- `GET /attachments/:id` serves the bytes with the stored type, `Cache-Control: public, max-age=31536000,
+  immutable` and `X-Content-Type-Options: nosniff`. There's no auth, so it works in `<img>` tags. The
+  128-bit random id is the capability, the same model as avatars. Unknown or pending ids return 404.
+- `message:send` with `attachmentIds`: each id must exist, be pending and have been uploaded by the
+  sender, with at most 4 ids and no duplicates. The message and the attachment links are written in one
+  transaction.
+- Cleanup:
+  - Deleting a message deletes its attachment rows and files.
+  - Deleting a channel does the same for all its messages.
+  - Pending uploads older than 1 hour are removed by a sweep (on start, then every 10 minutes).
+- DB: `attachments (id TEXT PK, message_id → messages ON DELETE CASCADE NULL, uploader_id → users,
+  type TEXT, width INT, height INT, size INT, position INT, created_at INT)`, indexed by `message_id`.
+- Rate limit: 20 uploads per minute per user (in memory).
+
+**Compatibility.**
+- An older client receiving a message with attachments shows only its text (which may be empty).
+- A new client on an old server gets a 404 from `POST /api/attachments`. It shows "This server doesn't
+  support images yet. Ask the host to update."
+
+**CSP.** `img-src` already allows `http:`/`https:` (needed for user-entered server URLs). No change is
+needed.
+
+### 13.2 Global hotkeys (customizable)
+
+**Actions.**
+- *Global* (work while a game has focus, via the uiohook hook that push to talk already uses):
+  - **Push to talk** (existing)
+  - **Toggle mute**
+  - **Toggle deafen**
+  - **Toggle screen share**: stops the current share, or brings Nexo to the front with the share picker
+    open
+  - **Leave voice**
+- *In-app* (only while Nexo is focused, DOM keydown):
+  - **Quick switcher** (default Ctrl/Cmd+K)
+  - **Open settings** (default Ctrl/Cmd+,)
+
+Global actions have no default binding, because any default would collide with some game.
+
+**Binding format.** The existing `PttBinding` is generalized to
+`Keybind { kind: 'key' | 'mouse'; code: number; mods: { ctrl, shift, alt, meta: boolean }; label }`.
+Stored PTT bindings without `mods` load as no modifiers. A combination is matched when the main key or
+button goes down while exactly those modifiers are held (left and right variants are equivalent).
+Push to talk ignores modifiers held *in addition* to its own, so that PTT plus Shift still talks. Toggles
+fire once per press, ignoring OS auto-repeat. Recording a binding captures the modifiers held with the
+next non-modifier key or mouse button. A lone modifier (e.g. Left Ctrl) can also be bound by pressing
+and releasing it alone. Escape cancels, and Backspace/Delete clears.
+
+**Main process.** `ptt.ts` becomes `hotkeys.ts`:
+- `setBindings({ ptt, toggleMute, toggleDeafen, toggleShare, leaveVoice })` keeps one hook running while
+  any binding is set.
+- `onAction(action, phase)` reaches the renderer over IPC.
+- PTT keeps its pressed/released semantics.
+
+Bridge: `nexo.hotkeys { setBindings, captureBinding, onAction, status }`. `nexo.ptt` is kept as a thin
+alias until the renderer stops using it. Conflicts (the same combination on two actions) are rejected in
+the UI. Platform limits are unchanged from push to talk: Wayland works only while focused, and macOS
+needs the Accessibility permission.
+
+**Settings.** A new **Keybinds** tab lists each action with **Record** / **Clear** and the current
+combination, plus the in-app shortcuts with a **Reset to default**. Bindings persist in renderer
+`localStorage` next to the input prefs, as PTT does today.
+
+### 13.3 Noise suppression
+
+**Settings → Audio & video → Noise suppression:**
+
+| Mode | What it does |
+|---|---|
+| **Off** | `noiseSuppression: false` |
+| **Standard** | Chromium's built-in suppressor. This is the current behaviour. |
+| **Enhanced** (new default) | RNNoise: a small recurrent neural network running locally as WASM in an AudioWorklet. Chromium NS is turned off so the two don't stack. |
+
+Echo cancellation and AGC stay on in every mode.
+
+**Implementation.**
+- Uses `@sapphi-red/web-noise-suppressor` (MIT): an RNNoise worklet plus the WASM and SIMD-WASM builds,
+  bundled as app assets.
+- Applied through LiveKit's audio `TrackProcessor` (`LocalAudioTrack.setProcessor`). The chain is
+  mic MediaStreamTrack → AudioContext(48 kHz) → RnnoiseWorkletNode → MediaStreamDestination, and that
+  destination becomes the processed track.
+- Switching modes live re-applies the constraints and adds or removes the processor without leaving
+  voice.
+- The Audio & video **mic test** uses the same chain, so the difference can be heard before joining.
+- If the WASM or worklet fails to load, Nexo falls back to Standard with a toast.
+- Cost: about 1–2% of one core at 48 kHz mono.
+- Push to talk and mute gate the processed track exactly as before.
+- **CSP:** `script-src` gains `'wasm-unsafe-eval'`, which is required to compile WebAssembly. Worklet
+  modules load from `'self'`.
+

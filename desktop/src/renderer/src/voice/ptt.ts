@@ -1,25 +1,62 @@
-// Owner: workstream D. Push-to-talk input: keeps the main-process global hook in sync with the
-// preferences, listens for presses (global hook, or in-window keys/buttons as a fallback) and
-// exposes the mic gate (`usePtt().open`). session.ts applies the gate to the published mic track.
+// Owner: workstream D (generalized to all global hotkeys, SPEC §13.2). Keeps the main-process global hook
+// in sync with the keybind preferences, receives presses (global hook, or in-window keys/buttons as a
+// fallback when the hook can't run), records keybinds, and exposes the push-to-talk mic gate
+// (`usePtt().open`). session.ts applies the gate to the published mic track; the other global actions
+// (toggle mute / deafen / share, leave voice) go to the handler registered with `setHotkeyHandler`.
 //
 // Initialized once at module load (session.ts imports this module), so React StrictMode double
 // effects never register duplicate listeners.
 import { create } from 'zustand'
-import type { NexoBridge, PttBinding, PttStatus } from '../../../preload/api'
-import { useInputPrefs } from './prefs'
+import {
+  effectiveMods,
+  modifierOf,
+  modsEqual,
+  NO_MODS,
+  type GlobalHotkeyAction,
+  type HotkeyBindings,
+  type HotkeyPhase,
+  type HotkeyStatus,
+  type Keybind,
+  type KeybindCapture,
+  type NexoBridge,
+  type PttStatus,
+} from '../../../preload/api'
+import {
+  domKey,
+  domMods,
+  domMouseButton,
+  domPressMatches,
+  isTypingTarget,
+  makeKeybind,
+  mouseButtonLabel,
+  typesText,
+} from '../lib/keybinds'
+import { useInputPrefs, useKeybinds, type KeybindPrefs } from './prefs'
 
 export interface PttState {
-  /** Result of the last `setBinding` while in PTT mode (null in voice-activity mode / pending). */
+  /** Hook status while in PTT mode (null in voice-activity mode / pending). */
   status: PttStatus | null
+  /** Result of the last global `setBindings` (null: pending / no bridge and nothing bound). */
+  hookStatus: HotkeyStatus | null
   /** The bound key or button is physically held. */
   keyDown: boolean
   /** Mic gate: open while held and for the release delay afterwards. */
   open: boolean
-  /** A keybind recording is in progress (see `captureBinding`). */
+  /** A keybind recording is in progress (see `recordKeybind`). */
   capturing: boolean
 }
 
-export const usePtt = create<PttState>()(() => ({ status: null, keyDown: false, open: false, capturing: false }))
+export const usePtt = create<PttState>()(() => ({
+  status: null,
+  hookStatus: null,
+  keyDown: false,
+  open: false,
+  capturing: false,
+}))
+
+export type GlobalToggleAction = Exclude<GlobalHotkeyAction, 'ptt'>
+
+const TOGGLES: readonly GlobalToggleAction[] = ['toggleMute', 'toggleDeafen', 'toggleShare', 'leaveVoice']
 
 function bridge(): NexoBridge | undefined {
   return (window as { nexo?: NexoBridge }).nexo
@@ -67,6 +104,33 @@ export function setPttPressed(pressed: boolean): void {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Actions
+// ---------------------------------------------------------------------------------------------
+
+let toggleHandler: ((action: GlobalToggleAction) => void) | null = null
+
+/** Register who performs the toggle actions (App.tsx). Returns an unregister function. */
+export function setHotkeyHandler(fn: (action: GlobalToggleAction) => void): () => void {
+  toggleHandler = fn
+  return () => {
+    if (toggleHandler === fn) toggleHandler = null
+  }
+}
+
+function onHotkey(action: GlobalHotkeyAction, phase: HotkeyPhase): void {
+  if (action === 'ptt') {
+    setPttPressed(phase === 'down')
+    return
+  }
+  if (phase !== 'down') return
+  try {
+    toggleHandler?.(action)
+  } catch (e) {
+    console.warn(`[voice] hotkey ${action} failed`, e)
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
 // Global hook (main process)
 // ---------------------------------------------------------------------------------------------
 
@@ -76,174 +140,104 @@ function errorText(e: unknown): string {
   return e instanceof Error && e.message ? e.message : 'unknown error'
 }
 
-async function syncBinding(): Promise<void> {
+/** The bindings the global hook should watch (push to talk only in PTT mode). */
+function globalBindings(): HotkeyBindings {
   const { inputMode, pttBinding } = useInputPrefs.getState()
+  const kb = useKeybinds.getState()
+  const out: HotkeyBindings = { ptt: inputMode === 'ptt' ? pttBinding : null }
+  for (const a of TOGGLES) out[a] = kb[a]
+  return out
+}
+
+function setHookStatus(hookStatus: HotkeyStatus | null): void {
+  const ptt = useInputPrefs.getState().inputMode === 'ptt'
+  usePtt.setState({ hookStatus, status: ptt ? (hookStatus ?? { active: false }) : null })
+}
+
+async function syncBindings(): Promise<void> {
+  const bindings = globalBindings()
+  const anyBound = Object.values(bindings).some(Boolean)
   const seq = ++syncSeq
-  const ptt = bridge()?.ptt
-  if (!ptt) {
-    usePtt.setState({
-      status:
-        inputMode === 'ptt'
-          ? { active: false, reason: 'Global push to talk needs the Nexo desktop app. It only works while this window is focused.' }
-          : null,
-    })
+  const hotkeys = bridge()?.hotkeys
+  if (!hotkeys) {
+    setHookStatus(
+      anyBound || useInputPrefs.getState().inputMode === 'ptt'
+        ? { active: false, reason: 'Global hotkeys need the Nexo desktop app. They only work while this window is focused.' }
+        : null,
+    )
     return
   }
   try {
-    const status = await ptt.setBinding(inputMode === 'ptt' ? pttBinding : null)
-    if (seq !== syncSeq) return
-    usePtt.setState({ status: inputMode === 'ptt' ? status : null })
+    const status = await hotkeys.setBindings(bindings)
+    if (seq === syncSeq) setHookStatus(status)
   } catch (e) {
-    if (seq !== syncSeq) return
-    usePtt.setState({
-      status: inputMode === 'ptt' ? { active: false, reason: `Global push to talk is unavailable (${errorText(e)}).` } : null,
-    })
+    if (seq === syncSeq) setHookStatus({ active: false, reason: `Global hotkeys are unavailable (${errorText(e)}).` })
   }
 }
 
+const hookActive = (): boolean => usePtt.getState().hookStatus?.active === true
+
 // ---------------------------------------------------------------------------------------------
-// DOM <-> uiohook codes (in-window fallback + local keybind capture)
+// In-window fallback (only while the global hook is not active)
 // ---------------------------------------------------------------------------------------------
 
-/** KeyboardEvent.code -> [uiohook keycode, label]. Matches uiohook-napi's `UiohookKey`. */
-const DOM_KEYS: Record<string, [number, string]> = {
-  Backspace: [0x000e, 'Backspace'],
-  Tab: [0x000f, 'Tab'],
-  Enter: [0x001c, 'Enter'],
-  CapsLock: [0x003a, 'Caps Lock'],
-  Escape: [0x0001, 'Esc'],
-  Space: [0x0039, 'Space'],
-  PageUp: [0x0e49, 'Page Up'],
-  PageDown: [0x0e51, 'Page Down'],
-  End: [0x0e4f, 'End'],
-  Home: [0x0e47, 'Home'],
-  ArrowLeft: [0xe04b, 'Left'],
-  ArrowUp: [0xe048, 'Up'],
-  ArrowRight: [0xe04d, 'Right'],
-  ArrowDown: [0xe050, 'Down'],
-  Insert: [0x0e52, 'Insert'],
-  Delete: [0x0e53, 'Delete'],
-  Numpad0: [0x0052, 'Num 0'],
-  Numpad1: [0x004f, 'Num 1'],
-  Numpad2: [0x0050, 'Num 2'],
-  Numpad3: [0x0051, 'Num 3'],
-  Numpad4: [0x004b, 'Num 4'],
-  Numpad5: [0x004c, 'Num 5'],
-  Numpad6: [0x004d, 'Num 6'],
-  Numpad7: [0x0047, 'Num 7'],
-  Numpad8: [0x0048, 'Num 8'],
-  Numpad9: [0x0049, 'Num 9'],
-  NumpadMultiply: [0x0037, 'Num *'],
-  NumpadAdd: [0x004e, 'Num +'],
-  NumpadSubtract: [0x004a, 'Num -'],
-  NumpadDecimal: [0x0053, 'Num .'],
-  NumpadDivide: [0x0e35, 'Num /'],
-  NumpadEnter: [0x0e1c, 'Num Enter'],
-  Semicolon: [0x0027, ';'],
-  Equal: [0x000d, '='],
-  Comma: [0x0033, ','],
-  Minus: [0x000c, '-'],
-  Period: [0x0034, '.'],
-  Slash: [0x0035, '/'],
-  Backquote: [0x0029, '`'],
-  BracketLeft: [0x001a, '['],
-  Backslash: [0x002b, '\\'],
-  BracketRight: [0x001b, ']'],
-  Quote: [0x0028, "'"],
-  ControlLeft: [0x001d, 'Left Ctrl'],
-  ControlRight: [0x0e1d, 'Right Ctrl'],
-  AltLeft: [0x0038, 'Left Alt'],
-  AltRight: [0x0e38, 'Right Alt'],
-  ShiftLeft: [0x002a, 'Left Shift'],
-  ShiftRight: [0x0036, 'Right Shift'],
-  MetaLeft: [0x0e5b, 'Left Meta'],
-  MetaRight: [0x0e5c, 'Right Meta'],
-  NumLock: [0x0045, 'Num Lock'],
-  ScrollLock: [0x0046, 'Scroll Lock'],
-  PrintScreen: [0x0e37, 'Print Screen'],
-}
-const LETTERS: Record<string, number> = {
-  A: 0x1e, B: 0x30, C: 0x2e, D: 0x20, E: 0x12, F: 0x21, G: 0x22, H: 0x23, I: 0x17, J: 0x24, K: 0x25, L: 0x26, M: 0x32,
-  N: 0x31, O: 0x18, P: 0x19, Q: 0x10, R: 0x13, S: 0x1f, T: 0x14, U: 0x16, V: 0x2f, W: 0x11, X: 0x2d, Y: 0x15, Z: 0x2c,
-}
-const DIGITS = [0x0b, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a]
-const FKEYS = [
-  0x3b, 0x3c, 0x3d, 0x3e, 0x3f, 0x40, 0x41, 0x42, 0x43, 0x44, 0x57, 0x58, 0x5b, 0x5c, 0x5d, 0x63, 0x64, 0x65, 0x66, 0x67,
-  0x68, 0x69, 0x6a, 0x6b,
-]
-
-function domKey(code: string): [number, string] | null {
-  const known = DOM_KEYS[code]
-  if (known) return known
-  let m = /^Key([A-Z])$/.exec(code)
-  if (m) return [LETTERS[m[1]], m[1]]
-  m = /^Digit([0-9])$/.exec(code)
-  if (m) return [DIGITS[Number(m[1])], m[1]]
-  m = /^F([0-9]{1,2})$/.exec(code)
-  if (m && Number(m[1]) >= 1 && Number(m[1]) <= 24) return [FKEYS[Number(m[1]) - 1], `F${m[1]}`]
-  return null
-}
-
-/** MouseEvent.button (0 left, 1 middle, 2 right, 3 back, 4 forward) -> uiohook button (1..5). */
-function domMouseButton(button: number): number | null {
-  if (button === 1) return 3
-  if (button === 3) return 4
-  if (button === 4) return 5
-  return null // left/right are never PTT bindings
-}
-
-function isTypingTarget(t: EventTarget | null): boolean {
-  if (!(t instanceof HTMLElement)) return false
-  if (t.isContentEditable) return true
-  if (t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement) return true
-  if (t instanceof HTMLInputElement) {
-    return !['checkbox', 'radio', 'range', 'button', 'submit', 'reset', 'color', 'file'].includes(t.type)
-  }
-  return false
-}
-
-/** The binding the in-window fallback should react to (only when the global hook is not active). */
-function fallbackBinding(): PttBinding | null {
+function fallbackPtt(): Keybind | null {
   const { inputMode, pttBinding } = useInputPrefs.getState()
-  if (inputMode !== 'ptt' || !pttBinding) return null
-  if (usePtt.getState().status?.active) return null
+  if (inputMode !== 'ptt' || !pttBinding || hookActive()) return null
   return pttBinding
 }
 
+/** Toggle actions pressed through this in-window event (exact modifiers). */
+function fallbackToggles(kind: Keybind['kind'], code: number | null, e: KeyboardEvent | MouseEvent): GlobalToggleAction[] {
+  if (hookActive()) return []
+  const kb = useKeybinds.getState()
+  const typing = e instanceof KeyboardEvent && isTypingTarget(e.target)
+  return TOGGLES.filter((a) => {
+    const b = kb[a]
+    return !!b && domPressMatches(b, kind, code, e) && !(typing && typesText(b))
+  })
+}
+
 // ---------------------------------------------------------------------------------------------
-// Keybind capture
+// Keybind recording
 // ---------------------------------------------------------------------------------------------
 
 let captureSeq = 0
-let localCapture: ((b: PttBinding | null) => void) | null = null
+let localCapture: ((r: KeybindCapture) => void) | null = null
+/** In-window recording: keys held since it started, and a modifier pressed alone (bound on release). */
+const localHeld = new Set<string>()
+let localLoneModifier: string | null = null
 
 /**
- * Record the next key / mouse button. Uses the main-process hook when available (so e.g. side
- * mouse buttons are seen exactly as the hook reports them), else in-window events. Esc cancels
- * (resolves null). While recording, key events never reach the rest of the app (so Esc doesn't
- * also close the Settings modal).
+ * Record the next combination: modifiers held + a non-modifier key or mouse button 3+, or a lone
+ * modifier pressed and released alone. Esc cancels (null); Backspace/Delete without modifiers resolves
+ * 'clear'. Uses the main-process hook when available (so e.g. side mouse buttons are seen exactly as the
+ * hook reports them), else in-window events. While recording, key events never reach the rest of the
+ * app (so Esc doesn't also close the Settings modal).
  */
-export async function captureBinding(): Promise<PttBinding | null> {
+export async function recordKeybind(): Promise<KeybindCapture> {
   const seq = ++captureSeq
   localCapture?.(null)
+  localHeld.clear()
+  localLoneModifier = null
   usePtt.setState({ capturing: true })
   try {
-    const ptt = bridge()?.ptt
-    const st = usePtt.getState().status
+    const hotkeys = bridge()?.hotkeys
+    const st = usePtt.getState().hookStatus
     // The hook can't run at all (Wayland, missing macOS permission…): record in-window instead.
-    const hookUsable = !!ptt && !(st && !st.active && st.reason)
-    let result: PttBinding | null = null
+    const hookUsable = !!hotkeys && !(st && !st.active && st.reason)
+    let result: KeybindCapture = null
     let viaHook = false
-    if (ptt && hookUsable) {
+    if (hotkeys && hookUsable) {
       const t0 = performance.now()
       let localDone = false
       // Race with the local listener so in-window Esc cancels right away.
-      const local = waitLocal(true).then((b) => {
+      const local = waitLocal(true).then((r) => {
         localDone = true
-        return b
+        return r
       })
       try {
-        result = await Promise.race([ptt.captureBinding(), local])
+        result = await Promise.race([hotkeys.captureBinding(), local])
         // An instant null without Esc means the hook couldn't capture: fall back to in-window.
         viaHook = !(result === null && !localDone && performance.now() - t0 < 500)
       } catch {
@@ -260,6 +254,15 @@ export async function captureBinding(): Promise<PttBinding | null> {
   }
 }
 
+/**
+ * @deprecated Use recordKeybind. Kept for the push-to-talk recorder in Audio & video: resolves the
+ * combination, or null on cancel and on Backspace/Delete.
+ */
+export async function captureBinding(): Promise<Keybind | null> {
+  const r = await recordKeybind()
+  return r === 'clear' ? null : r
+}
+
 /** Abort a recording in progress (resolves it with null). */
 export function cancelCapture(): void {
   captureSeq++
@@ -268,58 +271,87 @@ export function cancelCapture(): void {
   usePtt.setState({ capturing: false })
 }
 
-/** Resolve on the next in-window key / button. With `escOnly`, only Esc (cancel) resolves it. */
-function waitLocal(escOnly: boolean): Promise<PttBinding | null> {
+/** Resolve on the next in-window combination. With `escOnly`, only Esc (cancel) resolves it. */
+function waitLocal(escOnly: boolean): Promise<KeybindCapture> {
   return new Promise((resolve) => {
     const timer = window.setTimeout(() => finish(null), 15_000)
-    const finish = (b: PttBinding | null) => {
+    const finish = (r: KeybindCapture) => {
       window.clearTimeout(timer)
       if (localCapture === handler) localCapture = null
-      resolve(b)
+      resolve(r)
     }
-    const handler = (b: PttBinding | null) => {
-      if (escOnly && b) return
-      finish(b)
+    const handler = (r: KeybindCapture) => {
+      if (escOnly && r) return
+      finish(r)
     }
     localCapture = handler
   })
 }
 
+function recordKeyDown(e: KeyboardEvent): void {
+  if (e.code === 'Escape') {
+    localCapture?.(null)
+    return
+  }
+  const k = domKey(e.code)
+  if (!k) return
+  if (modifierOf('key', k[0])) {
+    localLoneModifier = localHeld.size === 0 ? e.code : null
+    localHeld.add(e.code)
+    return
+  }
+  localHeld.add(e.code)
+  localLoneModifier = null
+  const mods = effectiveMods(domMods(e), 'key', k[0])
+  if ((e.code === 'Backspace' || e.code === 'Delete') && modsEqual(mods, NO_MODS)) {
+    localCapture?.('clear')
+    return
+  }
+  localCapture?.(makeKeybind('key', k[0], k[1], mods))
+}
+
+function recordKeyUp(e: KeyboardEvent): void {
+  const wasHeld = localHeld.delete(e.code)
+  if (wasHeld && localLoneModifier === e.code && localHeld.size === 0) {
+    const k = domKey(e.code)
+    if (k) localCapture?.(makeKeybind('key', k[0], k[1], { ...NO_MODS }))
+  }
+  if (localHeld.size === 0) localLoneModifier = null
+}
+
 // ---------------------------------------------------------------------------------------------
-// Window listeners (registered at module load: before any modal, so capture can swallow keys)
+// Window listeners (registered at module load: before any modal, so recording can swallow keys)
 // ---------------------------------------------------------------------------------------------
 
 function onKeyDown(e: KeyboardEvent): void {
   if (usePtt.getState().capturing) {
     e.preventDefault()
     e.stopImmediatePropagation()
-    if (e.repeat) return
-    if (e.code === 'Escape') {
-      localCapture?.(null)
-      return
-    }
-    const k = domKey(e.code)
-    if (k) localCapture?.({ kind: 'key', code: k[0], label: k[1] })
+    if (!e.repeat) recordKeyDown(e)
     return
   }
-  const b = fallbackBinding()
-  if (!b || b.kind !== 'key') return
-  const k = domKey(e.code)
-  if (!k || k[0] !== b.code) return
-  if (isTypingTarget(e.target)) return
-  if (!e.repeat) setPttPressed(true)
+  const code = domKey(e.code)?.[0] ?? null
+  if (code === null) return
+  const ptt = fallbackPtt()
+  if (ptt && domPressMatches(ptt, 'key', code, e, true) && !(isTypingTarget(e.target) && typesText(ptt))) {
+    if (!e.repeat) setPttPressed(true)
+  }
+  const toggles = fallbackToggles('key', code, e)
+  if (toggles.length === 0) return
+  e.preventDefault()
+  if (!e.repeat) toggles.forEach((a) => onHotkey(a, 'down'))
 }
 
 function onKeyUp(e: KeyboardEvent): void {
   if (usePtt.getState().capturing) {
     e.preventDefault()
     e.stopImmediatePropagation()
+    recordKeyUp(e)
     return
   }
-  const b = fallbackBinding()
+  const b = fallbackPtt()
   if (!b || b.kind !== 'key' || !usePtt.getState().keyDown) return
-  const k = domKey(e.code)
-  if (k && k[0] === b.code) setPttPressed(false)
+  if (domKey(e.code)?.[0] === b.code) setPttPressed(false)
 }
 
 function onMouseDown(e: MouseEvent): void {
@@ -327,25 +359,37 @@ function onMouseDown(e: MouseEvent): void {
   if (usePtt.getState().capturing) {
     if (btn === null) return
     e.preventDefault()
-    localCapture?.({ kind: 'mouse', code: btn, label: btn === 3 ? 'Middle Mouse' : `Mouse ${btn}` })
+    localCapture?.(makeKeybind('mouse', btn, mouseButtonLabel(btn), domMods(e)))
     return
   }
-  const b = fallbackBinding()
-  if (b?.kind === 'mouse' && btn === b.code) setPttPressed(true)
+  if (btn === null) return
+  if (domPressMatches(fallbackPtt(), 'mouse', btn, e, true)) setPttPressed(true)
+  const toggles = fallbackToggles('mouse', btn, e)
+  if (toggles.length === 0) return
+  e.preventDefault()
+  toggles.forEach((a) => onHotkey(a, 'down'))
 }
 
 function onMouseUp(e: MouseEvent): void {
   const btn = domMouseButton(e.button)
   if (btn === null) return
-  const b = usePtt.getState().capturing ? null : fallbackBinding()
+  const b = usePtt.getState().capturing ? null : fallbackPtt()
   if (btn >= 4) e.preventDefault() // side buttons: no history navigation
   if (b?.kind === 'mouse' && btn === b.code && usePtt.getState().keyDown) setPttPressed(false)
 }
 
 function onBlur(): void {
   // The in-window fallback can't see the release once the window loses focus.
-  if (fallbackBinding() && usePtt.getState().keyDown) setPttPressed(false)
+  if (fallbackPtt() && usePtt.getState().keyDown) setPttPressed(false)
 }
+
+function onFocus(): void {
+  // The hook couldn't start (e.g. macOS permission just granted in System Settings): try again.
+  const st = usePtt.getState().hookStatus
+  if (st && !st.active && st.reason && Object.values(globalBindings()).some(Boolean)) void syncBindings()
+}
+
+const globalKeybindsChanged = (a: KeybindPrefs, b: KeybindPrefs): boolean => TOGGLES.some((k) => a[k] !== b[k])
 
 function init(): () => void {
   window.addEventListener('keydown', onKeyDown, true)
@@ -353,21 +397,25 @@ function init(): () => void {
   window.addEventListener('mousedown', onMouseDown, true)
   window.addEventListener('mouseup', onMouseUp, true)
   window.addEventListener('blur', onBlur)
+  window.addEventListener('focus', onFocus)
 
-  let offChange: (() => void) | undefined
+  let offAction: (() => void) | undefined
   try {
-    offChange = bridge()?.ptt?.onChange((pressed) => setPttPressed(pressed))
+    offAction = bridge()?.hotkeys?.onAction(onHotkey)
   } catch (e) {
-    console.warn('[voice] ptt.onChange unavailable', e)
+    console.warn('[voice] hotkeys.onAction unavailable', e)
   }
 
   const offPrefs = useInputPrefs.subscribe((s, prev) => {
     if (s.inputMode !== prev.inputMode || s.pttBinding !== prev.pttBinding) {
       closeGateNow()
-      void syncBinding()
+      void syncBindings()
     }
   })
-  void syncBinding()
+  const offKeybinds = useKeybinds.subscribe((s, prev) => {
+    if (globalKeybindsChanged(s, prev)) void syncBindings()
+  })
+  void syncBindings()
 
   return () => {
     window.removeEventListener('keydown', onKeyDown, true)
@@ -375,8 +423,10 @@ function init(): () => void {
     window.removeEventListener('mousedown', onMouseDown, true)
     window.removeEventListener('mouseup', onMouseUp, true)
     window.removeEventListener('blur', onBlur)
-    offChange?.()
+    window.removeEventListener('focus', onFocus)
+    offAction?.()
     offPrefs()
+    offKeybinds()
     closeGateNow()
   }
 }

@@ -6,10 +6,16 @@ import {
   IPC,
   type AppPrefs,
   type CaptureSource,
+  type GlobalHotkeyAction,
+  type HotkeyBindings,
+  type HotkeyEvent,
+  type HotkeyStatus,
+  type KeybindCapture,
   type NexoBridge,
   type PttBinding,
   type PttStatus,
   type TrayAction,
+  GLOBAL_HOTKEY_ACTIONS,
   type UpdateState,
   UPDATE_STATUSES,
 } from './api'
@@ -36,8 +42,13 @@ function subscribe<T>(channel: string, accept: (v: unknown) => v is T, cb: (v: T
   }
 }
 
-const isBoolean = (v: unknown): v is boolean => typeof v === 'boolean'
 const isTrayAction = (v: unknown): v is TrayAction => TRAY_ACTIONS.includes(v as TrayAction)
+
+function isHotkeyEvent(v: unknown): v is HotkeyEvent {
+  if (typeof v !== 'object' || v === null) return false
+  const e = v as Record<string, unknown>
+  return GLOBAL_HOTKEY_ACTIONS.includes(e.action as GlobalHotkeyAction) && (e.phase === 'down' || e.phase === 'up')
+}
 
 const OPTIONAL_STRINGS = ['version', 'error', 'reason', 'downloadUrl', 'releaseNotesUrl'] as const
 
@@ -74,10 +85,25 @@ const bridge: NexoBridge = {
 
   openExternal: (url: string): void => ipcRenderer.send(IPC.openExternal, url),
 
+  hotkeys: {
+    setBindings: (bindings: HotkeyBindings): Promise<HotkeyStatus> =>
+      ipcRenderer.invoke(IPC.hotkeysSetBindings, bindings),
+    captureBinding: (): Promise<KeybindCapture> => ipcRenderer.invoke(IPC.hotkeysCapture),
+    onAction: (cb): (() => void) => subscribe(IPC.hotkeysAction, isHotkeyEvent, (e) => cb(e.action, e.phase)),
+    status: (): Promise<HotkeyStatus> => ipcRenderer.invoke(IPC.hotkeysStatus),
+    focusWindow: (): void => ipcRenderer.send(IPC.hotkeysFocus),
+  },
+
   ptt: {
     setBinding: (binding: PttBinding | null): Promise<PttStatus> => ipcRenderer.invoke(IPC.pttSetBinding, binding),
-    captureBinding: (): Promise<PttBinding | null> => ipcRenderer.invoke(IPC.pttCapture),
-    onChange: (cb: (pressed: boolean) => void): (() => void) => subscribe(IPC.pttChange, isBoolean, cb),
+    captureBinding: async (): Promise<PttBinding | null> => {
+      const result: KeybindCapture = await ipcRenderer.invoke(IPC.hotkeysCapture)
+      return result === 'clear' ? null : result
+    },
+    onChange: (cb: (pressed: boolean) => void): (() => void) =>
+      subscribe(IPC.hotkeysAction, isHotkeyEvent, (e) => {
+        if (e.action === 'ptt') cb(e.phase === 'down')
+      }),
   },
 
   prefs: {

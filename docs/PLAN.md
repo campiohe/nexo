@@ -99,3 +99,22 @@ Each workstream owns a disjoint set of files. It may **read** anything, but **ed
 ## Out of scope for v1 (tracked)
 
 Push-to-talk, per-user volume for voice, per-application audio capture, DMs, uploads, reactions, editing, notifications and unread state, auto-update, code signing.
+
+---
+
+## v0.3 plan: images, global hotkeys, noise suppression (SPEC §13)
+
+Three parallel workstreams in one working tree, with strict file ownership. Nobody commits. Integration,
+Windows end-to-end checks and the release happen after all three finish.
+
+| Workstream | Owns (creates or edits) | Must not touch |
+|---|---|---|
+| **I: Images** | `shared/protocol.ts` (Message/Attachment, `message:send`), `server/src/*` + `server/test/*` (new `attachments.ts`, db migration, send/delete/channel-delete cleanup, sweep, rate limit), renderer chat: `Composer.tsx`, `MessageList.tsx`, `MessageContent.tsx`, `TextChannel.tsx`, new `ImageLightbox.tsx`, new `net/attachments.ts`, `store/app.ts` (sendMessage signature), chat CSS | voice/*, main/*, preload/*, SettingsModal |
+| **H: Hotkeys** | `desktop/src/main/ptt.ts` → `hotkeys.ts`, `main/index.ts` (install call only), `preload/api.ts`, `preload/index.ts`, `renderer/src/voice/ptt.ts`, `voice/prefs.ts` (binding fields), new `renderer/src/lib/keybinds.ts`, `App.tsx` (in-app shortcuts), `SettingsModal.tsx` (new Keybinds tab) | server, shared, chat components, `voice/session.ts` (use `useVoice.getState()` actions only), DeviceSettings |
+| **N: Noise suppression** | new `renderer/src/voice/noise.ts`, `voice/session.ts` (mic capture/publish only), `voice/devices.ts` (noise-mode pref), `components/voice/DeviceSettings.tsx` (mode selector and mic test), `renderer/index.html` (CSP `'wasm-unsafe-eval'`), `desktop/package.json` + root `package-lock.json` (add `@sapphi-red/web-noise-suppressor`), `electron.vite.config.ts` if asset handling needs it | server, shared, main, preload, SettingsModal, voice/prefs.ts, voice/ptt.ts |
+
+Each workstream finishes with:
+- `npm run typecheck -w desktop`; for I, also `npm test -w server`. Errors in files another workstream
+  owns are reported, not fixed.
+- A short report listing the files changed, decisions taken, anything left for integration, and how to
+  verify by hand.

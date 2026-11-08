@@ -1,10 +1,13 @@
 // Owner: workstream D. Mic / speaker / camera selection + mic level meter + input mode (push to talk).
+// Noise suppression selector + mic test through the same chain as the call: workstream N (SPEC §13.3).
 // Rendered by workstream C inside the Settings modal. Changes apply live when in voice.
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { useDevicePrefs, type DeviceKind } from '../../voice/devices'
-import { PTT_RELEASE_DELAY_MAX, setInputPrefs, useInputPrefs, type InputMode } from '../../voice/prefs'
+import { saveNoiseMode, useDevicePrefs, type DeviceKind } from '../../voice/devices'
+import { effectiveNoiseMode, NOISE_MODES, noiseConstraints, RnnoiseGraph, useNoiseStatus } from '../../voice/noise'
+import { actionLabel, findConflict } from '../../lib/keybinds'
+import { allKeybinds, PTT_RELEASE_DELAY_MAX, setInputPrefs, useInputPrefs, type InputMode } from '../../voice/prefs'
 import { cancelCapture, captureBinding, usePtt } from '../../voice/ptt'
-import { getLocalMicTrack, setPreferredDevice, useVoice } from '../../voice/session'
+import { getLocalMicTrack, setPreferredDevice, useMicTrackRev, useVoice } from '../../voice/session'
 import { AlertIcon, CameraIcon, MicIcon, SpeakerIcon } from './icons'
 import './voice.css'
 
@@ -78,7 +81,8 @@ export function DeviceSettings() {
         value={prefs.audioinput}
         loaded={loaded}
       />
-      <MicMeter deviceId={prefs.audioinput} />
+      <NoiseSuppressionSection />
+      <MicMeter deviceId={prefs.audioinput} outputId={prefs.audiooutput} />
       <InputModeSection />
 
       <DeviceSelect
@@ -146,20 +150,67 @@ function DeviceSelect({ icon, label, kind, devices, value, loaded, disabledReaso
   )
 }
 
-/** Live input level from the selected mic (the call's own mic track while unmuted in voice). */
-function MicMeter({ deviceId }: { deviceId: string | null }) {
+/** Off / Standard / Enhanced (RNNoise). Applies live to the call's mic and to the mic test below. */
+function NoiseSuppressionSection() {
+  const mode = useDevicePrefs((s) => s.noiseMode)
+  const failed = useNoiseStatus((s) => s.enhanced === 'failed')
+  const active = NOISE_MODES.find((m) => m.id === mode) ?? NOISE_MODES[2]
+  return (
+    <div className="vx-field">
+      <span className="vx-field-label" id="vx-noise-label">
+        Noise suppression
+      </span>
+      <div className="vx-seg" role="radiogroup" aria-labelledby="vx-noise-label">
+        {NOISE_MODES.map((m) => (
+          <button
+            key={m.id}
+            type="button"
+            role="radio"
+            aria-checked={mode === m.id}
+            className={`vx-seg-btn ${mode === m.id ? 'is-active' : ''}`}
+            onClick={() => saveNoiseMode(m.id)}
+          >
+            {m.label}
+          </button>
+        ))}
+      </div>
+      <p className="vx-field-hint">{active.hint}</p>
+      {failed && mode === 'enhanced' && (
+        <p className="vx-warn-box" role="status">
+          <AlertIcon size={15} />
+          <span>Enhanced couldn’t start on this computer, so Standard is used. Restart Nexo to try again.</span>
+        </p>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Mic test: live input level from the selected mic, optionally played back ("Hear yourself") through
+ * the selected speaker. Uses the call's own (processed) mic track while unmuted in voice; otherwise
+ * captures the mic with the same processing chain as the call (noise mode constraints + RNNoise).
+ */
+function MicMeter({ deviceId, outputId }: { deviceId: string | null; outputId: string | null }) {
   const barRef = useRef<HTMLDivElement>(null)
   const inVoice = useVoice((s) => s.status === 'connected' || s.status === 'reconnecting')
   const muted = useVoice((s) => s.muted || s.deafened)
   // In push-to-talk mode the call's track is silent while the key is up: meter a separate stream.
   const ptt = useInputPrefs((s) => s.inputMode === 'ptt')
+  // Re-read when the noise mode (or its availability) changes, or the call's mic track is replaced.
+  const mode = useDevicePrefs((s) => s.noiseMode)
+  const enhancedFailed = useNoiseStatus((s) => s.enhanced === 'failed')
+  const micRev = useMicTrackRev((s) => s.rev)
+  const [listening, setListening] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
     let ownStream: MediaStream | null = null
+    let graph: RnnoiseGraph | null = null
     let ctx: AudioContext | null = null
+    let player: SinkAudio | null = null
     let raf = 0
+    const effective = effectiveNoiseMode(mode)
 
     const start = async () => {
       setError(null)
@@ -169,9 +220,7 @@ function MicMeter({ deviceId }: { deviceId: string | null }) {
           ownStream = await navigator.mediaDevices.getUserMedia({
             audio: {
               ...(deviceId ? { deviceId: { ideal: deviceId } } : {}),
-              echoCancellation: true,
-              noiseSuppression: true,
-              autoGainControl: true,
+              ...noiseConstraints(effective),
             },
           })
         } catch (e) {
@@ -183,8 +232,23 @@ function MicMeter({ deviceId }: { deviceId: string | null }) {
           return
         }
         track = ownStream.getAudioTracks()[0] ?? null
+        if (track && effective === 'enhanced') {
+          try {
+            const g = await RnnoiseGraph.create()
+            if (cancelled) {
+              g.close()
+              return
+            }
+            graph = g
+            g.setInput(track)
+            track = g.track
+          } catch {
+            // Reported by noise.ts (toast + Standard fallback), which re-runs this effect.
+            return
+          }
+        }
       }
-      if (!track) return
+      if (!track || cancelled) return
       ctx = new AudioContext()
       const source = ctx.createMediaStreamSource(new MediaStream([track]))
       const analyser = ctx.createAnalyser()
@@ -205,6 +269,18 @@ function MicMeter({ deviceId }: { deviceId: string | null }) {
         raf = requestAnimationFrame(tick)
       }
       tick()
+
+      if (listening) {
+        const el: SinkAudio = new Audio()
+        player = el
+        el.srcObject = new MediaStream([track])
+        try {
+          if (outputId && el.setSinkId) await el.setSinkId(outputId)
+          if (!cancelled) await el.play()
+        } catch {
+          /* ignore: the meter still works */
+        }
+      }
     }
 
     // Small delay so a just-switched device has replaced the call's track.
@@ -213,18 +289,35 @@ function MicMeter({ deviceId }: { deviceId: string | null }) {
       cancelled = true
       window.clearTimeout(t)
       cancelAnimationFrame(raf)
+      if (player) {
+        player.pause()
+        player.srcObject = null
+      }
+      graph?.close()
       ownStream?.getTracks().forEach((tr) => tr.stop())
       void ctx?.close().catch(() => {})
       if (barRef.current) barRef.current.style.clipPath = 'inset(0 100% 0 0)'
     }
-  }, [deviceId, inVoice, muted, ptt])
+  }, [deviceId, outputId, inVoice, muted, ptt, mode, enhancedFailed, micRev, listening])
 
   return (
     <div className="vx-meter-wrap">
       <div className="vx-meter" role="meter" aria-label="Microphone level">
         <div className="vx-meter-fill" ref={barRef} />
       </div>
-      <p className="vx-field-hint">{error ?? 'Speak to test your microphone.'}</p>
+      <div className="vx-keybind-row">
+        <button
+          type="button"
+          className={`vx-btn vx-btn-sm ${listening ? 'is-active' : ''}`}
+          aria-pressed={listening}
+          onClick={() => setListening((v) => !v)}
+        >
+          {listening ? 'Stop listening' : 'Hear yourself'}
+        </button>
+        <p className="vx-field-hint">
+          {error ?? (listening ? 'Use headphones to avoid feedback.' : 'Speak to test your microphone.')}
+        </p>
+      </div>
     </div>
   )
 }
@@ -287,6 +380,7 @@ function InputModeSection() {
   const status = usePtt((s) => s.status)
   const capturing = usePtt((s) => s.capturing)
   const held = usePtt((s) => s.open)
+  const [conflict, setConflict] = useState<string | null>(null)
 
   // Leaving the settings mid-recording cancels it.
   useEffect(() => () => {
@@ -298,8 +392,15 @@ function InputModeSection() {
       cancelCapture()
       return
     }
+    setConflict(null)
     const b = await captureBinding()
-    if (b) setInputPrefs({ pttBinding: b })
+    if (!b) return
+    const other = findConflict(allKeybinds(), 'ptt', b)
+    if (other) {
+      setConflict(`${b.label} is already used by ${actionLabel(other)}. Change it in Settings → Keybinds first.`)
+      return
+    }
+    setInputPrefs({ pttBinding: b })
   }
 
   const warning =
@@ -352,9 +453,11 @@ function InputModeSection() {
             <p className="vx-field-hint">
               {capturing
                 ? 'Esc cancels. Left and right click can’t be used.'
-                : binding
-                  ? 'Click to change. Mouse side buttons work too.'
-                  : 'Choose the key or mouse button to hold while talking.'}
+                : conflict
+                  ? conflict
+                  : binding
+                    ? 'Click to change. Mouse side buttons work too.'
+                    : 'Choose the key or mouse button to hold while talking.'}
             </p>
           </div>
 

@@ -13,6 +13,18 @@ import path from 'node:path'
 import type { User } from '../../shared/protocol.ts'
 import { AVATAR_MAX_BYTES } from '../../shared/protocol.ts'
 import type { Db } from './db.ts'
+import {
+  HttpError,
+  UUID_RE,
+  authenticate,
+  corsHeaders,
+  declaredLength,
+  declaredType,
+  finish,
+  preflight,
+  readBody,
+  sendJson,
+} from './http.ts'
 
 export type ImageType = 'image/webp' | 'image/png' | 'image/jpeg'
 const IMAGE_TYPES: readonly string[] = ['image/webp', 'image/png', 'image/jpeg'] satisfies ImageType[]
@@ -33,99 +45,8 @@ export function sniffImage(buf: Uint8Array): ImageType | null {
 /** Version token: first 12 hex chars of the SHA-256 of the image bytes. */
 export const avatarToken = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex').slice(0, 12)
 
-/** User ids are server-generated UUIDs; anything else (e.g. `..%2F`) never reaches the filesystem. */
-const USER_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-
-const CORS_HEADERS = {
-  'access-control-allow-origin': '*',
-  'access-control-allow-methods': 'PUT, DELETE, OPTIONS',
-  'access-control-allow-headers': 'Authorization, Content-Type',
-  'access-control-max-age': '600',
-}
-
-class HttpError extends Error {
-  status: number
-  headers: Record<string, string>
-  constructor(status: number, message: string, headers: Record<string, string> = {}) {
-    super(message)
-    this.status = status
-    this.headers = headers
-  }
-}
-
-function sendJson(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}) {
-  if (res.headersSent) {
-    res.destroy()
-    return
-  }
-  const json = JSON.stringify(body)
-  res.writeHead(status, {
-    ...CORS_HEADERS,
-    'content-type': 'application/json; charset=utf-8',
-    'content-length': Buffer.byteLength(json),
-    'cache-control': 'no-store',
-    'x-content-type-options': 'nosniff',
-    ...headers,
-  })
-  res.end(json)
-}
-
-/**
- * After an early error response: discard what's left of the upload so the client can read the response,
- * but only up to a bound (bytes and time) before dropping the connection.
- */
-function drain(req: IncomingMessage) {
-  if (req.complete || req.destroyed) return
-  let size = 0
-  const timer = setTimeout(() => req.destroy(), 10_000)
-  timer.unref()
-  req.on('data', (chunk: Buffer) => {
-    size += chunk.length
-    if (size > AVATAR_MAX_BYTES * 4) req.destroy()
-  })
-  req.on('close', () => clearTimeout(timer))
-  req.resume()
-}
-
-/**
- * Reads the request body, failing with 413 as soon as it exceeds `limit` bytes.
- * On overflow the rest of the upload is drained (bounded) so the client can read the 413 response.
- */
-function readBody(req: IncomingMessage, limit: number): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = []
-    let size = 0
-    let done = false
-    const tooLarge = () => new HttpError(413, `Profile pictures are limited to ${Math.round(limit / 1024)} KB`)
-    const onData = (chunk: Buffer) => {
-      if (done) return
-      size += chunk.length
-      if (size > limit) {
-        done = true
-        chunks.length = 0
-        reject(tooLarge())
-        return
-      }
-      chunks.push(chunk)
-    }
-    req.on('data', onData)
-    req.on('end', () => {
-      if (done) return
-      done = true
-      resolve(Buffer.concat(chunks, size))
-    })
-    req.on('error', (err) => {
-      if (done) return
-      done = true
-      reject(err)
-    })
-    req.on('close', () => {
-      if (done) return
-      done = true
-      reject(new HttpError(400, 'Upload aborted'))
-    })
-  })
-}
+const CORS_HEADERS = corsHeaders('PUT, DELETE')
+const tooLarge = () => new HttpError(413, `Profile pictures are limited to ${Math.round(AVATAR_MAX_BYTES / 1024)} KB`)
 
 export interface AvatarRoutesOptions {
   dataDir: string
@@ -150,15 +71,6 @@ export function createAvatarRoutes(opts: AvatarRoutesOptions) {
   /** userId -> time of the last accepted avatar change */
   const lastChange = new Map<string, number>()
 
-  function authenticate(req: IncomingMessage): User {
-    const header = req.headers.authorization
-    const m = typeof header === 'string' ? /^Bearer\s+(\S+)\s*$/i.exec(header) : null
-    if (!m) throw new HttpError(401, 'Missing device token (Authorization: Bearer <token>)', { 'www-authenticate': 'Bearer' })
-    const user = users.byTokenHash(opts.hashToken(m[1]))
-    if (!user) throw new HttpError(401, 'Unknown device token', { 'www-authenticate': 'Bearer error="invalid_token"' })
-    return user
-  }
-
   function rateLimit(userId: string) {
     const now = Date.now()
     const wait = (lastChange.get(userId) ?? -Infinity) + opts.minIntervalMs - now
@@ -171,18 +83,15 @@ export function createAvatarRoutes(opts: AvatarRoutesOptions) {
   }
 
   async function upload(req: IncomingMessage, res: ServerResponse) {
-    const user = authenticate(req)
-    const declared = (req.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase()
+    const user = authenticate(req, users, opts.hashToken)
+    const declared = declaredType(req)
     if (!IMAGE_TYPES.includes(declared)) {
       throw new HttpError(415, 'Profile pictures must be WebP, PNG or JPEG (Content-Type image/webp, image/png or image/jpeg)')
     }
-    const length = Number(req.headers['content-length'])
-    if (Number.isFinite(length) && length > AVATAR_MAX_BYTES) {
-      throw new HttpError(413, `Profile pictures are limited to ${Math.round(AVATAR_MAX_BYTES / 1024)} KB`)
-    }
+    if (declaredLength(req) > AVATAR_MAX_BYTES) throw tooLarge()
     rateLimit(user.id)
 
-    const body = await readBody(req, AVATAR_MAX_BYTES)
+    const body = await readBody(req, AVATAR_MAX_BYTES, tooLarge)
     if (body.length === 0) throw new HttpError(400, 'The upload is empty')
     const actual = sniffImage(body)
     if (actual !== declared) {
@@ -202,23 +111,23 @@ export function createAvatarRoutes(opts: AvatarRoutesOptions) {
     if (!updated) throw new HttpError(401, 'Unknown device token')
     opts.onUserUpdated(updated)
     opts.log(`[nexo] ${updated.name} changed their profile picture (${actual}, ${body.length} bytes)`)
-    sendJson(res, 200, { user: updated })
+    sendJson(res, 200, { user: updated }, CORS_HEADERS)
   }
 
   async function remove(req: IncomingMessage, res: ServerResponse) {
-    const user = authenticate(req)
-    if (user.avatar === null) return sendJson(res, 200, { user })
+    const user = authenticate(req, users, opts.hashToken)
+    if (user.avatar === null) return sendJson(res, 200, { user }, CORS_HEADERS)
     rateLimit(user.id)
     await rm(fileFor(user.id), { force: true })
     const updated = users.setAvatar(user.id, null)
     if (!updated) throw new HttpError(401, 'Unknown device token')
     opts.onUserUpdated(updated)
     opts.log(`[nexo] ${updated.name} removed their profile picture`)
-    sendJson(res, 200, { user: updated })
+    sendJson(res, 200, { user: updated }, CORS_HEADERS)
   }
 
   async function serve(req: IncomingMessage, res: ServerResponse, userId: string, version: string | null) {
-    const user = USER_ID_RE.test(userId) ? users.get(userId) : undefined
+    const user = UUID_RE.test(userId) ? users.get(userId) : undefined
     if (!user || user.avatar === null) throw new HttpError(404, 'No profile picture')
     let bytes: Buffer
     try {
@@ -256,9 +165,7 @@ export function createAvatarRoutes(opts: AvatarRoutesOptions) {
 
     if (url.pathname === '/api/avatar') {
       if (method === 'OPTIONS') {
-        // Chromium asks before a public/file:// page talks to a private-network server (LAN, Tailscale).
-        const pna = req.headers['access-control-request-private-network'] === 'true'
-        res.writeHead(204, { ...CORS_HEADERS, ...(pna ? { 'access-control-allow-private-network': 'true' } : {}) }).end()
+        preflight(req, res, CORS_HEADERS)
         return true
       }
       if (method === 'PUT') work = upload(req, res)
@@ -274,18 +181,7 @@ export function createAvatarRoutes(opts: AvatarRoutesOptions) {
       return false
     }
 
-    work.catch((err: unknown) => {
-      // A rejected upload may still be streaming in: don't keep the connection alive for whatever else it sends.
-      const unread = !req.complete
-      const extra: Record<string, string> = unread ? { connection: 'close' } : {}
-      if (err instanceof HttpError) {
-        sendJson(res, err.status, { error: err.message }, { ...err.headers, ...extra })
-      } else {
-        console.error('[nexo] avatar request failed:', err)
-        sendJson(res, 500, { error: 'Server error, try again' }, extra)
-      }
-      if (unread) drain(req)
-    })
+    finish(req, res, work, { label: 'avatar', cors: CORS_HEADERS, drainBytes: AVATAR_MAX_BYTES * 4 })
     return true
   }
 }

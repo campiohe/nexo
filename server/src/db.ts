@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { mkdirSync } from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
-import type { Channel, ChannelType, Message, User } from '../../shared/protocol.ts'
+import type { Attachment, Channel, ChannelType, Message, User } from '../../shared/protocol.ts'
 import { MESSAGE_PAGE_SIZE } from '../../shared/protocol.ts'
 
 const SCHEMA = `
@@ -35,6 +35,21 @@ const SCHEMA = `
     created_at  INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS messages_by_channel ON messages (channel_id, created_at);
+
+  -- v0.3: chat images. message_id is NULL while the upload is pending (not yet claimed by a message).
+  -- Created with IF NOT EXISTS, so older databases simply gain the table.
+  CREATE TABLE IF NOT EXISTS attachments (
+    id          TEXT PRIMARY KEY,
+    message_id  TEXT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    uploader_id TEXT NOT NULL REFERENCES users(id),
+    type        TEXT NOT NULL,
+    width       INTEGER NOT NULL,
+    height      INTEGER NOT NULL,
+    size        INTEGER NOT NULL,
+    position    INTEGER NOT NULL DEFAULT 0,
+    created_at  INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS attachments_by_message ON attachments (message_id, position);
 `
 
 export type Db = ReturnType<typeof openDb>
@@ -68,6 +83,7 @@ export function openDb(dataDir: string) {
   const userCols = 'id, name, color, avatar'
   const chanCols = 'id, name, type, position'
   const msgCols = 'id, channel_id AS channelId, user_id AS userId, content, created_at AS createdAt'
+  const attCols = 'id, type, width, height, size'
 
   const q = {
     usersAll: db.prepare(`SELECT ${userCols} FROM users ORDER BY name`),
@@ -93,6 +109,55 @@ export function openDb(dataDir: string) {
     msgHistory: db.prepare(
       `SELECT ${msgCols} FROM messages WHERE channel_id = ? AND created_at < ? ORDER BY created_at DESC, id DESC LIMIT ?`,
     ),
+
+    attInsert: db.prepare(
+      'INSERT INTO attachments (id, uploader_id, type, width, height, size, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ),
+    /** Pending, uploaded by the given user. */
+    attPending: db.prepare(`SELECT ${attCols} FROM attachments WHERE id = ? AND uploader_id = ? AND message_id IS NULL`),
+    /** Only attachments that belong to a message are public. */
+    attServable: db.prepare('SELECT type, size FROM attachments WHERE id = ? AND message_id IS NOT NULL'),
+    attClaim: db.prepare(
+      'UPDATE attachments SET message_id = ?, position = ? WHERE id = ? AND uploader_id = ? AND message_id IS NULL',
+    ),
+    /** Attachments of a JSON array of message ids, in display order. */
+    attForMessages: db.prepare(
+      `SELECT message_id AS messageId, ${attCols} FROM attachments
+       WHERE message_id IN (SELECT value FROM json_each(?)) ORDER BY message_id, position`,
+    ),
+    attDeleteForMessage: db.prepare('DELETE FROM attachments WHERE message_id = ? RETURNING id'),
+    attDeleteForChannel: db.prepare(
+      'DELETE FROM attachments WHERE message_id IN (SELECT id FROM messages WHERE channel_id = ?) RETURNING id',
+    ),
+    attDeletePendingBefore: db.prepare('DELETE FROM attachments WHERE message_id IS NULL AND created_at < ? RETURNING id'),
+    attAllIds: db.prepare('SELECT id FROM attachments'),
+  }
+
+  /** Runs `fn` in a transaction (rolled back if it throws). */
+  function transaction<T>(fn: () => T): T {
+    db.exec('BEGIN')
+    try {
+      const result = fn()
+      db.exec('COMMIT')
+      return result
+    } catch (err) {
+      db.exec('ROLLBACK')
+      throw err
+    }
+  }
+
+  const ids = (rows: unknown[]) => (rows as { id: string }[]).map((r) => r.id)
+
+  /** Fills `attachments` on message rows (one query for the whole page). */
+  function withAttachments(rows: Omit<Message, 'attachments'>[]): Message[] {
+    const msgs: Message[] = rows.map((r) => ({ ...r, attachments: [] }))
+    if (msgs.length === 0) return msgs
+    const byId = new Map(msgs.map((m) => [m.id, m]))
+    const atts = q.attForMessages.all(JSON.stringify(msgs.map((m) => m.id))) as unknown as (Attachment & {
+      messageId: string
+    })[]
+    for (const { messageId, ...a } of atts) byId.get(messageId)?.attachments.push({ ...a })
+    return msgs
   }
 
   // History is paged by timestamp (`before` = createdAt of the oldest message the client has).
@@ -140,27 +205,74 @@ export function openDb(dataDir: string) {
       q.chanRename.run(name, id)
       return channels.get(id)
     },
-    /** Deletes the channel and (via ON DELETE CASCADE) its messages. */
-    delete(id: string): void {
-      q.chanDelete.run(id)
+    /**
+     * Deletes the channel and (via ON DELETE CASCADE) its messages.
+     * Returns the ids of the attachments that went with them; their files are the caller's to delete.
+     */
+    delete(id: string): string[] {
+      return transaction(() => {
+        const removed = ids(q.attDeleteForChannel.all(id))
+        q.chanDelete.run(id)
+        return removed
+      })
     },
   }
 
   const messages = {
-    create(channelId: string, userId: string, content: string): Message {
-      const msg: Message = { id: randomUUID(), channelId, userId, content, createdAt: nextTimestamp() }
-      q.msgInsert.run(msg.id, channelId, userId, content, msg.createdAt)
-      return msg
+    /**
+     * Inserts a message and claims `attachmentIds` (pending uploads of `userId`, see attachments.pending)
+     * in one transaction. Throws if any of them can't be claimed.
+     */
+    create(channelId: string, userId: string, content: string, attachmentIds: string[] = []): Message {
+      const msg: Message = { id: randomUUID(), channelId, userId, content, createdAt: 0, attachments: [] }
+      return transaction(() => {
+        msg.createdAt = nextTimestamp()
+        q.msgInsert.run(msg.id, channelId, userId, content, msg.createdAt)
+        attachmentIds.forEach((attId, position) => {
+          const att = q.attPending.get(attId, userId) as Attachment | undefined
+          if (!att || q.attClaim.run(msg.id, position, attId, userId).changes !== 1) {
+            throw new Error(`attachment ${attId} is not a pending upload of ${userId}`)
+          }
+          msg.attachments.push({ ...att })
+        })
+        return msg
+      })
     },
-    get: (id: string): Message | undefined => q.msgById.get(id) as Message | undefined,
-    delete(id: string): void {
-      q.msgDelete.run(id)
+    get(id: string): Message | undefined {
+      const row = q.msgById.get(id) as Omit<Message, 'attachments'> | undefined
+      return row && withAttachments([row])[0]
+    },
+    /** Deletes the message and returns the ids of its attachments (their files are the caller's to delete). */
+    delete(id: string): string[] {
+      return transaction(() => {
+        const removed = ids(q.attDeleteForMessage.all(id))
+        q.msgDelete.run(id)
+        return removed
+      })
     },
     /** Newest page strictly before `before`, returned oldest-first. */
     history(channelId: string, before = Number.MAX_SAFE_INTEGER): Message[] {
-      const rows = q.msgHistory.all(channelId, before, MESSAGE_PAGE_SIZE) as unknown as Message[]
-      return rows.reverse()
+      const rows = q.msgHistory.all(channelId, before, MESSAGE_PAGE_SIZE) as unknown as Omit<Message, 'attachments'>[]
+      return withAttachments(rows.reverse())
     },
+  }
+
+  const attachments = {
+    /** Records a pending upload (the file must already be in place). */
+    create(uploaderId: string, a: Omit<Attachment, 'id'>): Attachment {
+      const att: Attachment = { id: randomUUID(), ...a }
+      q.attInsert.run(att.id, uploaderId, att.type, att.width, att.height, att.size, Date.now())
+      return att
+    },
+    /** The upload if it exists, is still pending and was made by `uploaderId`. */
+    pending: (id: string, uploaderId: string): Attachment | undefined =>
+      q.attPending.get(id, uploaderId) as Attachment | undefined,
+    /** Type and size of an attachment that belongs to a message (pending ones aren't served). */
+    servable: (id: string): Pick<Attachment, 'type' | 'size'> | undefined =>
+      q.attServable.get(id) as Pick<Attachment, 'type' | 'size'> | undefined,
+    /** Deletes pending uploads created before `cutoff` (ms) and returns their ids. */
+    deletePendingBefore: (cutoff: number): string[] => ids(q.attDeletePendingBefore.all(cutoff)),
+    allIds: (): Set<string> => new Set(ids(q.attAllIds.all())),
   }
 
   if (channels.count() === 0) {
@@ -174,6 +286,7 @@ export function openDb(dataDir: string) {
     users,
     channels,
     messages,
+    attachments,
     close(): void {
       if (db.isOpen) db.close()
     },

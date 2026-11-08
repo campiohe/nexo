@@ -1,4 +1,4 @@
-// Owner: workstream B. Electron main process: window, tray, push-to-talk, security, capture, secrets, updates.
+// Owner: workstream B. Electron main process: window, tray, global hotkeys, security, capture, secrets, updates.
 import { app, BrowserWindow, ipcMain, Menu, type MenuItemConstructorOptions } from 'electron'
 import { join, resolve } from 'node:path'
 import icon from '../../resources/icon.png?asset'
@@ -6,7 +6,7 @@ import { IPC } from '../preload/api'
 import { installCapture } from './capture'
 import { devMode, isDev, platform, preloadArguments } from './platform'
 import { getPrefs, installPrefs } from './prefs'
-import { installPtt } from './ptt'
+import { installHotkeys } from './hotkeys'
 import { installSecrets } from './secrets'
 import { installSecurity, isAppUrl, openExternalSafe, rendererEntry } from './security'
 import { destroyTray, hasTray, installTray, maybeShowTrayHint, setTrayUpdateReady } from './tray'
@@ -132,6 +132,24 @@ function focusMainWindow(): void {
 }
 
 /**
+ * Like focusMainWindow, for a global hotkey pressed while another app (usually a game) is in front.
+ * Windows refuses SetForegroundWindow from a background process, so focus() alone only flashes the
+ * taskbar button. Briefly making the window topmost puts it in front anyway.
+ */
+function raiseMainWindow(): void {
+  focusMainWindow()
+  const win = mainWindow
+  // isFocused() can't be trusted here: Electron reports focus even when Windows refused it.
+  if (platform !== 'win32' || !win || win.isDestroyed()) return
+  win.setAlwaysOnTop(true)
+  win.moveTop()
+  win.focus()
+  setTimeout(() => {
+    if (!win.isDestroyed()) win.setAlwaysOnTop(false)
+  }, 250)
+}
+
+/**
  * `--user-data-dir=<path>` gives each copy its own profile (scripts/win-run.sh runs two side by side).
  * Chromium/Electron may already honour the switch; setting the same path again is a no-op, so only call
  * setPath when it differs. Must run before anything touches userData and before the single-instance lock,
@@ -177,7 +195,7 @@ if (!app.requestSingleInstanceLock()) {
     installCapture()
     installSecrets()
     installPrefs()
-    installPtt(() => mainWindow)
+    installHotkeys({ getWindow: () => mainWindow, focusWindow: raiseMainWindow })
     ipcMain.on(IPC.openExternal, (event, url: unknown) => {
       if (isAppUrl(event.senderFrame?.url)) openExternalSafe(url)
     })

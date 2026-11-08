@@ -13,19 +13,124 @@ export interface CaptureSource {
   icon: string | null
 }
 
-/** A global push-to-talk binding: a keyboard key (uiohook keycode) or a mouse button (3+ = middle/side buttons). */
-export interface PttBinding {
+/** Modifiers that must be held with a keybind's main key/button. Left and right variants are equivalent. */
+export interface KeybindMods {
+  ctrl: boolean
+  shift: boolean
+  alt: boolean
+  /** Cmd on macOS, Win on Windows, Super on Linux. */
+  meta: boolean
+}
+
+/**
+ * A key combination: modifiers + a keyboard key (uiohook keycode, i.e. a physical scancode) or a mouse
+ * button (3 = middle, 4/5 = side buttons; left/right click are never bindable).
+ * A lone modifier (e.g. Left Ctrl) is a `key` binding with that modifier's code and no `mods`.
+ */
+export interface Keybind {
   kind: 'key' | 'mouse'
   code: number
-  /** Human-readable, e.g. "Mouse 4", "V", "Caps Lock". */
+  mods: KeybindMods
+  /** Human-readable, e.g. "Ctrl+Shift+M", "Mouse 4", "Alt+Mouse 5", "Caps Lock". */
   label: string
 }
 
-export interface PttStatus {
-  /** True when the global hook is running with this binding. */
+/** @deprecated Use Keybind. Kept for the `nexo.ptt` alias; bindings without `mods` mean no modifiers. */
+export type PttBinding = Keybind
+
+/** Actions handled by the system-wide hook (work while a game has focus). */
+export type GlobalHotkeyAction = 'ptt' | 'toggleMute' | 'toggleDeafen' | 'toggleShare' | 'leaveVoice'
+
+export const GLOBAL_HOTKEY_ACTIONS: readonly GlobalHotkeyAction[] = [
+  'ptt',
+  'toggleMute',
+  'toggleDeafen',
+  'toggleShare',
+  'leaveVoice',
+]
+
+/** Global bindings; a missing or null entry is unbound. */
+export type HotkeyBindings = Partial<Record<GlobalHotkeyAction, Keybind | null>>
+
+/**
+ * `down` when the combination is pressed (once per press: OS auto-repeat is ignored), `up` when its main
+ * key/button is released. Push to talk uses both; toggles only act on `down`.
+ */
+export type HotkeyPhase = 'down' | 'up'
+
+export interface HotkeyEvent {
+  action: GlobalHotkeyAction
+  phase: HotkeyPhase
+}
+
+/** Result of recording a keybind: the combination, 'clear' (Backspace/Delete), or null (Esc / timeout). */
+export type KeybindCapture = Keybind | 'clear' | null
+
+export interface HotkeyStatus {
+  /** True when the global hook is running with the current bindings. */
   active: boolean
-  /** Why it isn't active (e.g. Wayland, macOS Accessibility permission missing). */
+  /** Why it isn't (or can't be) active, e.g. Wayland, macOS Accessibility permission missing. */
   reason?: string
+}
+
+/** @deprecated Use HotkeyStatus. */
+export type PttStatus = HotkeyStatus
+
+// ── Keybind helpers (pure: shared by main and renderer) ─────────────────────────────────────────────────
+
+export const NO_MODS: Readonly<KeybindMods> = Object.freeze({ ctrl: false, shift: false, alt: false, meta: false })
+
+const MOD_KEYS: readonly (keyof KeybindMods)[] = ['ctrl', 'alt', 'shift', 'meta']
+
+/** uiohook keycodes of the modifier keys (left and right) → the modifier they are. */
+export const MODIFIER_KEYCODES: Readonly<Record<number, keyof KeybindMods>> = Object.freeze({
+  0x001d: 'ctrl', // Ctrl
+  0x0e1d: 'ctrl', // CtrlRight
+  0x0038: 'alt', // Alt
+  0x0e38: 'alt', // AltRight
+  0x002a: 'shift', // Shift
+  0x0036: 'shift', // ShiftRight
+  0x0e5b: 'meta', // Meta
+  0x0e5c: 'meta', // MetaRight
+})
+
+/** The modifier a key binding's main key is, if any. */
+export function modifierOf(kind: Keybind['kind'], code: number): keyof KeybindMods | null {
+  return kind === 'key' ? (MODIFIER_KEYCODES[code] ?? null) : null
+}
+
+export function modsEqual(a: KeybindMods, b: KeybindMods): boolean {
+  return MOD_KEYS.every((k) => a[k] === b[k])
+}
+
+/** True when every modifier in `required` is held in `held` (extra held modifiers are allowed). */
+export function modsInclude(held: KeybindMods, required: KeybindMods): boolean {
+  return MOD_KEYS.every((k) => !required[k] || held[k])
+}
+
+/**
+ * Modifiers that count for matching a key event: the main key's own modifier is dropped, so a lone-modifier
+ * binding (e.g. Left Ctrl) matches whether or not the OS already reports Ctrl as held on its keydown.
+ */
+export function effectiveMods(held: KeybindMods, kind: Keybind['kind'], code: number): KeybindMods {
+  const own = modifierOf(kind, code)
+  return own ? { ...held, [own]: false } : held
+}
+
+/** Platform names of the modifiers, in display order. */
+export function modifierNames(platform: NexoBridge['platform']): Record<keyof KeybindMods, string> {
+  return {
+    ctrl: 'Ctrl',
+    alt: platform === 'darwin' ? 'Option' : 'Alt',
+    shift: 'Shift',
+    meta: platform === 'darwin' ? 'Cmd' : platform === 'win32' ? 'Win' : 'Super',
+  }
+}
+
+/** "Ctrl+Shift+M", "Alt+Mouse 5"… `key` is the main key/button's own name. */
+export function formatKeybindLabel(mods: KeybindMods, key: string, platform: NexoBridge['platform']): string {
+  const names = modifierNames(platform)
+  return [...MOD_KEYS.filter((k) => mods[k]).map((k) => names[k]), key].join('+')
 }
 
 /** App-level preferences persisted by the main process. */
@@ -106,16 +211,37 @@ export interface NexoBridge {
   /** Open an http(s) URL in the system browser. */
   openExternal(url: string): void
 
-  /** Global push-to-talk (works while other apps, e.g. games, have focus). */
-  ptt: {
-    /** Start the global hook for this binding; null stops it. */
-    setBinding(binding: PttBinding | null): Promise<PttStatus>
+  /**
+   * Global hotkeys (work while other apps, e.g. games, have focus). One system-wide hook runs while any
+   * binding is set.
+   */
+  hotkeys: {
+    /** Replace all global bindings (missing = unbound). Starts the hook if any is set, else stops it. */
+    setBindings(bindings: HotkeyBindings): Promise<HotkeyStatus>
     /**
-     * Resolve with the next key or mouse button pressed anywhere (left/right click are ignored).
-     * Escape cancels and resolves null. Times out after 15 s (null).
+     * Record the next combination pressed anywhere: modifiers held + a non-modifier key or mouse button
+     * 3+, or a lone modifier pressed and released alone. Esc cancels (null), Backspace/Delete without
+     * modifiers resolves 'clear'. Times out after 15 s (null). Rejects when the hook can't run.
      */
+    captureBinding(): Promise<KeybindCapture>
+    /** A bound combination was pressed or released. */
+    onAction(cb: (action: GlobalHotkeyAction, phase: HotkeyPhase) => void): () => void
+    /** Current hook status (does not start the hook); `reason` explains why it can't run. */
+    status(): Promise<HotkeyStatus>
+    /**
+     * Show and focus the main window (even when hidden in the tray). Only honoured right after a global
+     * `toggleShare` press, so the share picker can open in front of a game.
+     */
+    focusWindow(): void
+  }
+
+  /** @deprecated Thin alias over `hotkeys` for the push-to-talk slot. */
+  ptt: {
+    /** Set only the push-to-talk binding (other hotkeys are kept); null unbinds it. */
+    setBinding(binding: PttBinding | null): Promise<PttStatus>
+    /** Like hotkeys.captureBinding, but 'clear' resolves null. */
     captureBinding(): Promise<PttBinding | null>
-    /** Called with true when the bound key/button goes down and false when it is released. */
+    /** Called with true when the push-to-talk combination goes down and false when it is released. */
     onChange(cb: (pressed: boolean) => void): () => void
   }
 
@@ -150,9 +276,12 @@ export const IPC = {
   secretGet: 'nexo:secrets:get',
   secretSet: 'nexo:secrets:set',
   openExternal: 'nexo:open-external',
-  pttSetBinding: 'nexo:ptt:set-binding',
-  pttCapture: 'nexo:ptt:capture',
-  pttChange: 'nexo:ptt:change', // main → renderer (boolean)
+  pttSetBinding: 'nexo:ptt:set-binding', // legacy: sets the 'ptt' slot only
+  hotkeysSetBindings: 'nexo:hotkeys:set-bindings',
+  hotkeysCapture: 'nexo:hotkeys:capture',
+  hotkeysStatus: 'nexo:hotkeys:status',
+  hotkeysFocus: 'nexo:hotkeys:focus-window',
+  hotkeysAction: 'nexo:hotkeys:action', // main → renderer (HotkeyEvent)
   prefsGet: 'nexo:prefs:get',
   prefsSet: 'nexo:prefs:set',
   trayVoiceState: 'nexo:tray:voice-state',

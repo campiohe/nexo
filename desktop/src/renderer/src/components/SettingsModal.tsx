@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ChangeEvent } from 'react'
-import type { AppPrefs, UpdateState } from '../../../preload/api'
+import type { AppPrefs, HotkeyStatus, Keybind, UpdateState } from '../../../preload/api'
 import { useApp } from '../store/app'
 import { useUi } from '../store/ui'
 import { SWATCHES } from '../lib/colors'
@@ -7,6 +7,9 @@ import { toast, useToasts } from '../lib/toast'
 import { AVATAR_INPUT_TYPES, loadImageFile, type LoadedImage } from '../lib/imageCrop'
 import { removeAvatar, uploadAvatar } from '../net/avatar'
 import { hasUpdates, useInCall, useUpdates } from '../lib/updates'
+import { actionLabel, defaultInAppBinding, findConflict, HOTKEY_ACTIONS, sameCombo, type HotkeyAction } from '../lib/keybinds'
+import { allKeybinds, isInAppAction, setKeybind, useInputPrefs, useKeybinds } from '../voice/prefs'
+import { cancelCapture, recordKeybind, usePtt } from '../voice/ptt'
 import { DeviceSettings } from './voice/DeviceSettings'
 import { Avatar } from './Avatar'
 import { AvatarCropDialog } from './AvatarCropDialog'
@@ -14,7 +17,7 @@ import { ColorSwatches } from './ColorSwatches'
 import { ConfirmDialog, Modal } from './Modal'
 import { AlertIcon, LogoutIcon } from './icons'
 
-type Tab = 'profile' | 'av' | 'app' | 'server'
+type Tab = 'profile' | 'av' | 'keybinds' | 'app' | 'server'
 
 /** The App section needs the Electron bridge (window.nexo.prefs); it's hidden in a plain browser. */
 const hasPrefs = () => typeof window.nexo?.prefs?.get === 'function'
@@ -22,6 +25,7 @@ const hasPrefs = () => typeof window.nexo?.prefs?.get === 'function'
 const TABS: { id: Tab; label: string; available?: () => boolean }[] = [
   { id: 'profile', label: 'Profile' },
   { id: 'av', label: 'Audio & video' },
+  { id: 'keybinds', label: 'Keybinds' },
   { id: 'app', label: 'App', available: hasPrefs },
   { id: 'server', label: 'Server' },
 ]
@@ -56,6 +60,7 @@ export function SettingsModal() {
               <DeviceSettings />
             </section>
           )}
+          {tab === 'keybinds' && <KeybindsSection />}
           {tab === 'app' && hasPrefs() && <AppSection />}
           {tab === 'server' && <ServerSection onDone={close} />}
         </div>
@@ -167,6 +172,162 @@ function AvatarActions({ hasAvatar }: { hasAvatar: boolean }) {
       )}
       {image && <AvatarCropDialog image={image} onCancel={() => setImage(null)} onConfirm={upload} />}
     </div>
+  )
+}
+
+const KEYBIND_HINTS: Partial<Record<HotkeyAction, string>> = {
+  toggleShare: 'Stops your stream, or brings Nexo to the front with the share picker open.',
+}
+
+/** SPEC §13.2: record / clear each action's combination; in-app shortcuts can be reset to their default. */
+function KeybindsSection() {
+  const keybinds = useKeybinds()
+  const pttBinding = useInputPrefs((s) => s.pttBinding)
+  const inputMode = useInputPrefs((s) => s.inputMode)
+  const hookStatus = usePtt((s) => s.hookStatus)
+  const capturing = usePtt((s) => s.capturing)
+  const [recording, setRecording] = useState<HotkeyAction | null>(null)
+  const [error, setError] = useState<{ action: HotkeyAction; text: string } | null>(null)
+  const [probe, setProbe] = useState<HotkeyStatus | null>(null)
+
+  // Leaving the tab (or closing Settings) mid-recording cancels it.
+  useEffect(() => () => {
+    if (usePtt.getState().capturing) cancelCapture()
+  }, [])
+
+  // Explain up front when the global hook can't run here, even before anything is bound.
+  useEffect(() => {
+    let alive = true
+    window.nexo?.hotkeys
+      ?.status()
+      .then((s) => alive && setProbe(s))
+      .catch(() => {})
+    return () => {
+      alive = false
+    }
+  }, [])
+
+  const bindings: Record<HotkeyAction, Keybind | null> = { ...keybinds, ptt: pttBinding }
+
+  const record = async (action: HotkeyAction) => {
+    setError(null)
+    if (recording === action && capturing) {
+      cancelCapture()
+      setRecording(null)
+      return
+    }
+    setRecording(action)
+    const result = await recordKeybind()
+    setRecording((cur) => (cur === action ? null : cur))
+    if (result === null) return
+    if (result === 'clear') {
+      setKeybind(action, null)
+      return
+    }
+    const conflict = findConflict(allKeybinds(), action, result)
+    if (conflict) {
+      setError({ action, text: `${result.label} is already used by ${actionLabel(conflict)}. Clear it there first.` })
+      return
+    }
+    setKeybind(action, result)
+  }
+
+  const reset = (action: HotkeyAction) => {
+    if (!isInAppAction(action)) return
+    setError(null)
+    const def = defaultInAppBinding(action)
+    const conflict = findConflict(allKeybinds(), action, def)
+    if (conflict) {
+      setError({ action, text: `${def.label} is used by ${actionLabel(conflict)}. Clear it there first.` })
+      return
+    }
+    setKeybind(action, def)
+  }
+
+  const anyGlobal = HOTKEY_ACTIONS.some((a) => a.scope === 'global' && bindings[a.id])
+  const reason =
+    anyGlobal && hookStatus && !hookStatus.active && hookStatus.reason
+      ? `${hookStatus.reason} Until then, these shortcuts only work while Nexo is focused.`
+      : !anyGlobal && probe?.reason
+        ? `${probe.reason} Without it, global shortcuts only work while Nexo is focused.`
+        : null
+
+  const row = (action: HotkeyAction) => {
+    const b = bindings[action]
+    const isRecording = recording === action && capturing
+    const inApp = isInAppAction(action)
+    const hint =
+      action === 'ptt'
+        ? inputMode === 'ptt'
+          ? 'Hold to talk. Holding extra modifiers (like Shift) still talks.'
+          : 'Used when Input mode is Push to talk (Audio & video).'
+        : KEYBIND_HINTS[action]
+    const isDefault = inApp && !!b && sameCombo(b, defaultInAppBinding(action))
+    return (
+      <div key={action} className="kb-item">
+        <div className="kb-row">
+          <span className="toggle-text">
+            <span>{actionLabel(action)}</span>
+            {hint && <span className="muted small">{hint}</span>}
+          </span>
+          <button
+            type="button"
+            className={`vx-keybind kb-combo ${isRecording ? 'is-recording' : b ? '' : 'is-empty'}`}
+            onClick={() => void record(action)}
+            aria-label={
+              isRecording
+                ? 'Recording: press a key combination or mouse button. Esc cancels, Backspace clears.'
+                : `Change the ${actionLabel(action)} shortcut`
+            }
+            title={b?.label}
+          >
+            {isRecording ? 'Press keys…' : (b?.label ?? 'Not set')}
+          </button>
+          <button type="button" className="btn btn-ghost btn-sm" disabled={!b || isRecording} onClick={() => setKeybind(action, null)}>
+            Clear
+          </button>
+          {inApp && (
+            <button type="button" className="btn btn-ghost btn-sm" disabled={isDefault || isRecording} onClick={() => reset(action)}>
+              Reset
+            </button>
+          )}
+        </div>
+        {error?.action === action && (
+          <p className="kb-error" role="alert">
+            {error.text}
+          </p>
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <section>
+      <h3 className="settings-heading">Keybinds</h3>
+      <p className="muted small kb-intro">
+        {capturing
+          ? 'Hold any modifiers and press a key or mouse button. To bind a modifier alone, press and release it. Esc cancels, Backspace clears.'
+          : 'Click a shortcut to record a new one. Left and right click can’t be used.'}
+      </p>
+      {reason && (
+        <div className="callout callout-warn">
+          <AlertIcon size={16} />
+          <span>{reason}</span>
+        </div>
+      )}
+      <div className="kb-group">
+        <span className="field-label">Global</span>
+        <span className="muted small">
+          Work even while another app, like a game, is focused. None are set by default, so they never clash with your games.
+        </span>
+        {HOTKEY_ACTIONS.filter((a) => a.scope === 'global').map((a) => row(a.id))}
+      </div>
+      <div className="kb-group">
+        <span className="field-label">In Nexo</span>
+        <span className="muted small">Only while the Nexo window is focused.</span>
+        {HOTKEY_ACTIONS.filter((a) => a.scope === 'app').map((a) => row(a.id))}
+      </div>
+    </section>
   )
 }
 

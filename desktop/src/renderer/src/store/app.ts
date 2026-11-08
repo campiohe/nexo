@@ -63,7 +63,8 @@ export interface AppState {
   // ---- data actions ----
   loadHistory(channelId: string): Promise<void>
   loadOlder(channelId: string): Promise<void>
-  sendMessage(channelId: string, content: string): Promise<Message>
+  /** `attachmentIds`: uploaded images (net/attachments.ts), in display order. Text may be empty when there are some. */
+  sendMessage(channelId: string, content: string, attachmentIds?: string[]): Promise<Message>
   deleteMessage(messageId: string): Promise<void>
   createChannel(name: string, type: ChannelType): Promise<Channel>
   renameChannel(channelId: string, name: string): Promise<Channel>
@@ -228,11 +229,12 @@ export const useApp = create<AppState>()((set, get) => {
       }
     },
 
-    sendMessage: async (channelId, content) => {
+    sendMessage: async (channelId, content, attachmentIds = []) => {
       const text = content.trim()
-      if (!text) throw new Error('Message is empty')
+      if (!text && attachmentIds.length === 0) throw new Error('Message is empty')
       if (text.length > MAX_MESSAGE_LENGTH) throw new Error(`Messages are limited to ${MAX_MESSAGE_LENGTH} characters`)
-      const msg = await request('message:send', { channelId, content: text })
+      // attachmentIds is only sent when used, so text-only messages look exactly like before to older servers.
+      const msg = await request('message:send', attachmentIds.length ? { channelId, content: text, attachmentIds } : { channelId, content: text })
       // The broadcast `message:new` normally lands first; insert anyway (deduped) in case it didn't.
       const cur = get().messages[channelId]
       if (cur?.loaded) patchChannel(channelId, { items: mergeMessages(cur.items, [msg]) })

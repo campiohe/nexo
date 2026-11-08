@@ -256,10 +256,61 @@ The server checks the file's magic bytes against its `Content-Type`. It doesn't 
 no native image libraries. Errors come back as JSON `{error}`: 400 empty, 401 bad token, 413 too big,
 415 wrong type, 429 more than one change per 3 s.
 
+## Images in chat
+
+You can add up to **4 images** to a message in three ways: paste (Ctrl+V, e.g. a screenshot), drag
+files onto the channel, or use the **📎** button. Text is optional. PNG, JPEG, WebP and GIF are
+supported, and animated GIFs stay animated. The limit is **10 MB** per image. A bigger still image, such
+as a 4K PNG screenshot, is converted to WebP automatically before upload. Click an image to view it full
+size. **Open original** opens it in your browser. Deleting a message, or its channel, deletes its images
+from the server.
+
+**Hosts:** images are stored in `DATA_DIR/attachments/` (back it up with `nexo.db`). They're served on
+the same port as everything else:
+
+| Request | Auth | Result |
+|---|---|---|
+| `POST /api/attachments` (body = image, matching `Content-Type`, ≤ 10 MB) | `Authorization: Bearer <device token>` | `201 {attachment}`, pending until a message uses it |
+| `GET /attachments/<id>` | none (the id is a random UUID) | the image, cached long-term |
+
+Uploads that no message claims within an hour are deleted. The limit is 20 uploads per minute per user.
+Older clients show only the text of messages with images. Older servers don't accept images, and the
+app says so.
+
+## Keybinds
+
+**Settings → Keybinds.** Click a shortcut, then press the key, mouse button or combination (e.g.
+**Ctrl+Shift+M**, **Mouse 5**, **Alt+Mouse 4**). **Esc** cancels, **Backspace** clears. The same
+combination can't be used twice.
+
+- **Global** (they work while a game has focus): **Push to talk**, **Toggle mute**, **Toggle deafen**,
+  **Toggle screen share** and **Leave voice**. None are set by default, so they can't clash with your
+  games. Toggle screen share stops your stream. If you aren't streaming, it brings Nexo to the front
+  with the share picker open (over windowed apps; a fullscreen game stays in front).
+- **In Nexo** (only while the window is focused): **Quick switcher** (Ctrl+K) and **Open settings**
+  (Ctrl+,). Both can be rebound, cleared or reset.
+
+Nexo only *listens* to the keys; the game still receives them too. Platform notes are the same as for
+push to talk below.
+
+## Noise suppression
+
+**Settings → Audio & video → Noise suppression:**
+
+| Mode | What it does |
+|---|---|
+| **Enhanced** (default) | [RNNoise](https://jmvalin.ca/demo/rnnoise/), a small neural network running on your PC (about 1–2% of one CPU core). It removes keyboard clicks, fans and background noise. |
+| **Standard** | The browser's built-in suppressor. This was the default before v0.3. |
+| **Off** | No suppression. Use it for music, or if your mic already does it. |
+
+You can switch while in a call. **Hear yourself** plays your mic back with the selected mode, so use
+headphones. In testing with keyboard, fan and hiss noise, the voice stayed at the same level, and its
+margin above the noise grew from 11 dB (Off) to 24 dB (Standard) to 30 dB (Enhanced).
+
 ## Push to talk
 
-In **Settings → Audio & video → Input mode**, choose **Push to talk**. Then click the key box and press
-any key or mouse button. Mouse side buttons (Mouse 4/5) work well for gaming. Your mic is sent only
+In **Settings → Audio & video → Input mode**, choose **Push to talk**. Then click the key box (or use
+**Settings → Keybinds**) and press any key, mouse button or combination. Mouse side buttons (Mouse 4/5) work well for gaming. Your mic is sent only
 while you hold it, even when a game has focus, plus a short **release delay** (default 200 ms) so the
 ends of words aren't cut off. Mute and deafen always win over push to talk. The voice panel shows a
 **PTT** badge, and the mic button lights up while you're transmitting.
@@ -268,8 +319,8 @@ The global key hook uses [uiohook-napi](https://github.com/SnosMe/uiohook-napi):
 
 - **Windows:** works out of the box.
 - **macOS:** needs **System Settings → Privacy & Security → Accessibility** for Nexo.
-- **Linux:** works on X11. On Wayland, push to talk only works while the Nexo window is focused.
-  The settings page shows a warning when the global hook isn't active.
+- **Linux:** works on X11. On Wayland, push to talk and the global keybinds only work while the Nexo
+  window is focused. The settings page shows a warning when the global hook isn't active.
 
 ## Friend volume
 
