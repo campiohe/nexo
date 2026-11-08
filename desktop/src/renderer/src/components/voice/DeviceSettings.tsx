@@ -2,12 +2,13 @@
 // Noise suppression selector + mic test through the same chain as the call: workstream N (SPEC §13.3).
 // Rendered by workstream C inside the Settings modal. Changes apply live when in voice.
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { saveNoiseMode, useDevicePrefs, type DeviceKind } from '../../voice/devices'
+import { saveNoiseMode, saveSoundEffects, useDevicePrefs, type DeviceKind } from '../../voice/devices'
 import { effectiveNoiseMode, NOISE_MODES, noiseConstraints, RnnoiseGraph, useNoiseStatus } from '../../voice/noise'
 import { actionLabel, findConflict } from '../../lib/keybinds'
 import { allKeybinds, PTT_RELEASE_DELAY_MAX, setInputPrefs, useInputPrefs, type InputMode } from '../../voice/prefs'
 import { cancelCapture, captureBinding, usePtt } from '../../voice/ptt'
 import { getLocalMicTrack, setPreferredDevice, useMicTrackRev, useVoice } from '../../voice/session'
+import { playVoiceSound } from '../../voice/sounds'
 import { AlertIcon, CameraIcon, MicIcon, SpeakerIcon } from './icons'
 import './voice.css'
 
@@ -95,6 +96,7 @@ export function DeviceSettings() {
         disabledReason={supportsSinkId ? undefined : 'Output selection is not supported here; the system default is used.'}
       />
       <SpeakerTest deviceId={prefs.audiooutput} />
+      <SoundEffectsToggle />
 
       <DeviceSelect
         icon={<CameraIcon size={16} />}
@@ -364,6 +366,33 @@ function SpeakerTest({ deviceId }: { deviceId: string | null }) {
     <button className="vx-btn vx-btn-sm vx-speaker-test" onClick={() => void play()} disabled={playing}>
       {playing ? 'Playing…' : 'Play test sound'}
     </button>
+  )
+}
+
+/** Mute / deafen confirmation sounds (voice/sounds.ts), played on the speaker above. */
+function SoundEffectsToggle() {
+  const on = useDevicePrefs((s) => s.soundEffects)
+  return (
+    <label className="toggle-row">
+      <span className="toggle-text">
+        <span>Sound effects</span>
+        <span className="muted small">
+          Short sounds when you mute, unmute, deafen or undeafen, including from keybinds while a game has focus.
+          Only you hear them.
+        </span>
+      </span>
+      <input
+        type="checkbox"
+        role="switch"
+        className="switch"
+        checked={on}
+        onChange={(e) => {
+          saveSoundEffects(e.target.checked)
+          // Preview on the selected speaker when turning them on.
+          if (e.target.checked) playVoiceSound('unmute')
+        }}
+      />
+    </label>
   )
 }
 

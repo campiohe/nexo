@@ -15,6 +15,8 @@ export interface DevicePrefs {
   audiooutput: string | null
   videoinput: string | null
   noiseMode: NoiseMode
+  /** Short synthesized sounds on mute / unmute / deafen / undeafen (voice/sounds.ts). */
+  soundEffects: boolean
 }
 
 function isNoiseMode(v: unknown): v is NoiseMode {
@@ -24,7 +26,13 @@ function isNoiseMode(v: unknown): v is NoiseMode {
 const STORAGE_KEY = 'nexo.devices'
 
 function load(): DevicePrefs {
-  const empty: DevicePrefs = { audioinput: null, audiooutput: null, videoinput: null, noiseMode: DEFAULT_NOISE_MODE }
+  const empty: DevicePrefs = {
+    audioinput: null,
+    audiooutput: null,
+    videoinput: null,
+    noiseMode: DEFAULT_NOISE_MODE,
+    soundEffects: true,
+  }
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (!raw) return empty
@@ -34,6 +42,7 @@ function load(): DevicePrefs {
       audiooutput: typeof parsed.audiooutput === 'string' ? parsed.audiooutput : null,
       videoinput: typeof parsed.videoinput === 'string' ? parsed.videoinput : null,
       noiseMode: isNoiseMode(parsed.noiseMode) ? parsed.noiseMode : DEFAULT_NOISE_MODE,
+      soundEffects: parsed.soundEffects !== false,
     }
   } catch {
     return empty
@@ -60,6 +69,13 @@ export function saveDevicePref(kind: DeviceKind, deviceId: string | null): void 
 export function saveNoiseMode(mode: NoiseMode): void {
   if (useDevicePrefs.getState().noiseMode === mode) return
   useDevicePrefs.setState({ noiseMode: mode })
+  persist()
+}
+
+/** Persist the mute / deafen sound effects toggle. */
+export function saveSoundEffects(on: boolean): void {
+  if (useDevicePrefs.getState().soundEffects === on) return
+  useDevicePrefs.setState({ soundEffects: on })
   persist()
 }
 

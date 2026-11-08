@@ -56,6 +56,7 @@ import {
   stopNativeShare,
 } from './nativeShare'
 import { createCaptureLowDetector } from './shareHealth'
+import { playVoiceSound } from './sounds'
 
 export type VoiceStatus = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'error'
 
@@ -329,8 +330,11 @@ export const useVoice = create<VoiceSessionState>()((set, get) => ({
     await teardown(true)
   },
 
+  // toggleMute / toggleDeafen are the user-initiated paths only (buttons, global keybinds, tray), so the
+  // confirmation sounds live here; joins, push to talk and mic errors set state without a sound.
   toggleMute() {
     const s = get()
+    playVoiceSound(s.deafened ? 'undeafen' : s.muted ? 'unmute' : 'mute')
     if (s.deafened) {
       // Unmuting while deafened also un-deafens (you can't talk without hearing).
       set({ deafened: false, muted: false })
@@ -344,6 +348,7 @@ export const useVoice = create<VoiceSessionState>()((set, get) => ({
 
   toggleDeafen() {
     const s = get()
+    playVoiceSound(s.deafened ? 'undeafen' : 'deafen')
     if (!s.deafened) {
       mutedBeforeDeafen = s.muted
       set({ deafened: true, muted: true })
