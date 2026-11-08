@@ -1,4 +1,4 @@
 # Build output (bundle, SEA exe, livekit-server.exe)
 dist/
-# Downloaded, checksum-verified toolchain archives (Node, LiveKit); see build/*.lock
+# Downloaded, checksum-verified toolchain archives (Node, LiveKit); see scripts/*.lock
 .cache/

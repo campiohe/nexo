@@ -15,7 +15,7 @@ import { defaultPorts, isLoopback, isPrivateIp, mapPorts, probeNetwork, type Net
 import { liveKitYaml, locateLiveKit, portInUse, superviseLiveKit, type LiveKitYamlOptions } from './livekit.ts'
 
 declare const __NEXO_SERVER_VERSION__: string
-/** Injected by the bundle (build/bundle.ts); "dev" when run from source. */
+/** Injected by the bundle (scripts/bundle.ts); "dev" when run from source. */
 export const VERSION = typeof __NEXO_SERVER_VERSION__ === 'string' ? __NEXO_SERVER_VERSION__ : 'dev'
 
 export interface RunOptions {

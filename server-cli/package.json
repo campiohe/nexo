@@ -7,8 +7,8 @@
   "type": "module",
   "scripts": {
     "dev": "node --env-file-if-exists=../.env src/main.ts",
-    "build": "node build/bundle.ts",
-    "build:win": "node build/build-win.ts",
+    "build": "node scripts/bundle.ts",
+    "build:win": "node scripts/build-win.ts",
     "test": "node --test --test-timeout=60000 \"test/**/*.test.ts\"",
     "typecheck": "tsc --noEmit"
   },
