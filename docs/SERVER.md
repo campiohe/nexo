@@ -40,7 +40,8 @@ your upload, and it tells you when the first friend connects from outside your n
 The server checks your network when it starts and tells you in plain words:
 
 - **Tailscale** (if it's running on this PC): it invites friends with your Tailscale address, and opens
-  nothing on your router. This works on every internet connection. See [Tailscale](#tailscale-recommended).
+  nothing on your router. This works on every internet connection. See
+  [Tailscale on a Windows host](#on-a-windows-host-nexo-server).
 - **Automatic port forwarding (UPnP)**: without Tailscale, it asks your router to forward the ports
   ([Ports](#ports)) while it runs, and invites friends with your public address.
 - **"Your internet provider doesn't let friends connect to you directly (CGNAT)"**: many providers share one
@@ -281,8 +282,31 @@ There are two ways to make the server reachable from outside your home:
 ### Tailscale (recommended)
 
 Tailscale gives the host a private `100.x.y.z` address that your friends can reach from anywhere, with no
-port forwarding or TLS needed, and traffic encrypted by WireGuard. On a Windows host, Tailscale runs
-**inside WSL** (not only on Windows), so WSL gets its own tailnet IP.
+port forwarding or TLS needed, and traffic encrypted by WireGuard. It works on every internet connection,
+including CGNAT and routers with UPnP off. Set up the host first, then let your friends in.
+
+#### On a Windows host (Nexo Server)
+
+1. **Install Tailscale for Windows** from <https://tailscale.com/download> and sign in. The Windows app is
+   all you need (no WSL).
+2. **Start (or restart) `nexo-server`.** In the default `auto` mode it finds Tailscale by itself: it opens
+   nothing on your router, tells LiveKit to use the Tailscale address, and the **Invite your friends** box
+   shows `http://100.x.y.z:3001` labeled **Tailscale**. There is nothing to configure.
+3. You still join from the same PC with `http://localhost:3001`.
+
+To always use Tailscale, run `nexo-server setup` → **Advanced** and set the network mode to `tailscale`.
+In that mode, if Tailscale isn't running when the server starts, the invite says so instead of quietly
+falling back to your router or local network.
+
+If friends can open the server but voice or streams don't connect, check that the Windows Firewall rules
+for `nexo-server.exe` and `livekit-server.exe` (from the two **Allow** prompts) allow the network type
+Windows gives the Tailscale adapter (usually **Private**): **Windows Security → Firewall & network
+protection → Allow an app through firewall**.
+
+#### On a Linux or WSL host (manual setup)
+
+On a Windows host with WSL, Tailscale runs **inside WSL** (not only on Windows), so WSL gets its own
+tailnet IP.
 
 1. **Install** (official script, needs sudo):
 
@@ -296,9 +320,6 @@ port forwarding or TLS needed, and traffic encrypted by WireGuard. On a Windows 
    sudo tailscale up
    tailscale ip -4          # → 100.x.y.z  (the host's tailnet IP)
    ```
-
-   Optional: in the Tailscale admin console, rename the machine (e.g. `nexo`) and turn off
-   **key expiry** for it, so it doesn't drop off the tailnet after a few months.
 
 3. **Tell LiveKit to advertise that IP** for media. Edit `.env`:
 
@@ -320,25 +341,31 @@ port forwarding or TLS needed, and traffic encrypted by WireGuard. On a Windows 
    The server gives clients the LiveKit address automatically (`ws://<same host>:7880`). Only set
    `LIVEKIT_PUBLIC_URL` if LiveKit lives somewhere else.
 
-5. **Let your friends in.** Pick one way in the [admin console](https://login.tailscale.com/admin/machines):
+#### Let your friends in
+
+Optional first: in the [admin console](https://login.tailscale.com/admin/machines), rename the host machine
+(e.g. `nexo`) and turn off **key expiry** for it, so it doesn't drop off the tailnet after a few months.
+
+1. **Give them access.** Pick one way in the [admin console](https://login.tailscale.com/admin/machines):
    - **Share the machine** (recommended): on the host machine, choose **⋯ → Share…** and send each friend
      the invite link. They only see this one machine, not your other devices.
    - **Invite them to your tailnet**: go to **Users → Invite users**. This gives them full tailnet
      membership, so check your access rules.
 
-6. **Each friend:**
+2. **Each friend:**
    1. Installs Tailscale from <https://tailscale.com/download>, signs in, and accepts your share or
       invite. Your machine then appears in their Tailscale list.
    2. Installs Nexo from [Releases](https://github.com/campiohe/nexo/releases) (see the
       [User guide](USER-GUIDE.md#install)).
    3. Opens Nexo and enters the server URL `http://100.x.y.z:3001`, a name, a color, and the server
-      password if you set one.
+      password if there is one.
 
    Quick check from a friend's PC: opening `http://100.x.y.z:3001/health` in a browser should show
    `{"ok":true,…}`.
 
-> Tip: set `SERVER_PASSWORD` in `.env` if you share the machine widely. It is asked only once, when a
-> new person picks a name. Returning devices log in with their stored token.
+> Tip: keep a server password if you share the machine widely (Nexo Server sets one by default; change it
+> with `nexo-server setup`; on a manual setup it's `SERVER_PASSWORD` in `.env`). It is asked only once,
+> when a new person picks a name. Returning devices log in with their stored token.
 
 ### Port forwarding or a public host
 

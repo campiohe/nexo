@@ -21,7 +21,17 @@ If friends can't connect
 ------------------------
 The window tells you how friends can reach you. If it says your internet
 provider doesn't allow direct connections (CGNAT), or that automatic port
-forwarding isn't available, use Tailscale: see the server guide below.
+forwarding isn't available, use Tailscale:
+
+1. Install Tailscale for Windows (https://tailscale.com/download) and sign in.
+2. Restart nexo-server. It finds Tailscale by itself and the invite shows
+   your Tailscale address (http://100.x.y.z:3001). Nothing on your router
+   is opened.
+3. Share this PC with each friend: in the Tailscale admin console, open
+   Machines, then ... > Share, and send them the link. They install
+   Tailscale, accept, and join with the address from the invite.
+
+More in the server guide (link below), section "Tailscale".
 
 Commands (in a terminal, in this folder)
 -----------------------------------------
