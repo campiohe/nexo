@@ -1,0 +1,28 @@
+{
+  "name": "@nexo/server-cli",
+  "private": true,
+  "version": "0.4.0-beta.2",
+  "license": "MIT",
+  "description": "Nexo Server CLI: the Nexo server + LiveKit in one download (docs/SPEC-SERVER-CLI.md)",
+  "type": "module",
+  "scripts": {
+    "dev": "node --env-file-if-exists=../.env src/main.ts",
+    "build": "node build/bundle.ts",
+    "build:win": "node build/build-win.ts",
+    "test": "node --test --test-timeout=60000 \"test/**/*.test.ts\"",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=23.6"
+  },
+  "dependencies": {
+    "livekit-server-sdk": "^2.19.2",
+    "socket.io": "^4.8.4"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "esbuild": "0.28.2",
+    "postject": "1.0.0-alpha.6",
+    "typescript": "^7.0.2"
+  }
+}

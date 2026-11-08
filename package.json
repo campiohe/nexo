@@ -6,7 +6,8 @@
   "description": "Chat, voice and game/screen sharing for friend groups",
   "workspaces": [
     "server",
-    "desktop"
+    "desktop",
+    "server-cli"
   ],
   "scripts": {
     "media": "docker compose up -d livekit",
