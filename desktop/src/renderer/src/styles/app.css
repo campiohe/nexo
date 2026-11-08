@@ -3,6 +3,8 @@
 /* ---------- base ---------- */
 
 .app { height: 100%; background: var(--bg-0); overflow: hidden; }
+/* Window not focused (a game is): no endless animations, so Chromium stops redrawing (lib/idleAnimations.ts). */
+html.is-inactive *, html.is-inactive *::before, html.is-inactive *::after { animation-play-state: paused !important; }
 button, input, textarea, select { font: inherit; color: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: default; }
