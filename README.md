@@ -174,11 +174,23 @@ on Linux:
 
 ```bash
 NEXO_MEDIA_FAKE=1 scripts/win-run.sh                       # fake helper: connecting → live → 1 Hz stats
-NEXO_MEDIA_FAKE=1 FAKE_NEXO_MEDIA=crash scripts/win-run.sh # or encoder-unavailable | source-closed | stall
+NEXO_MEDIA_FAKE=1 FAKE_NEXO_MEDIA=crash scripts/win-run.sh # see the modes below
 NEXO_MEDIA_DEBUG=1 scripts/win-run.sh --native             # log every helper command/event (token redacted)
 ```
 
+`FAKE_NEXO_MEDIA` modes (comma-separated): `encoder-unavailable`, `crash`, `source-closed`, `stall`,
+`livekit-connect`, `encoder-lost`, `device-lost`, `audio-failed`, `idle`, `no-audio`.
 `NEXO_MEDIA_EXE=<path>` points main at another helper build.
+
+The helper can also be driven directly (from a local-disk copy; borderless capture fails from `\\wsl$`):
+
+```bash
+native/out/nexo-media.exe --selftest            # adapter, hardware encoder, capture/audio features (JSON)
+node --env-file=.env scripts/stream-token.mjs voice-<channelId> <userId> |
+  native/out/nexo-media.exe --test-pattern --url ws://<WSL IP>:7880 --token-stdin --duration 120
+```
+
+Benchmarks and their tools: [docs/benchmarks](docs/benchmarks) (`native/tools/gpu-burn`).
 
 ### Installers for friends
 
@@ -354,7 +366,17 @@ closing the window keeps Nexo running in the tray, and you stay in voice. The tr
 **Open Nexo**, **Mute**, **Deafen**, **Leave voice** and **Quit Nexo**. Clicking the tray icon, or
 starting Nexo again, brings the window back. Turn the setting off to make the close button quit the app.
 
-**Settings → App → "Fast game capture"** (Windows, on by default). Captured frames stay on the GPU
+**Settings → App → "Capture engine"** (Windows): **Native (beta)** (the default) or **Chromium**. The
+native engine is a small helper program, `nexo-media.exe`. It captures the game, encodes it on your
+graphics card's video encoder (NVIDIA, AMD or Intel) and streams it as a separate connection. It also
+captures **only the game's audio** when you share a window, and **everything except Nexo** when you share
+a screen, so viewers never hear the voice chat echoed in your stream. The row shows the graphics card and
+encoder it found, or why native capture isn't available. Then streams use Chromium automatically, as they
+do whenever the helper fails. A share with audio uses Chromium on Windows older than 10 version 2004.
+When you share a screen, **"Hide Nexo from the stream"** in the share dialog (on by default) keeps Nexo's
+own window out of it.
+
+**Settings → App → "Fast game capture"** (Windows, on by default, Chromium engine only). Captured frames stay on the GPU
 instead of being copied back to the CPU for every frame. That keeps streams smooth while a game keeps
 the GPU busy. In testing, a GPU-bound game went from ~30 to ~55 stream fps. It takes effect after
 restarting Nexo. Turn it off if your stream shows a black or frozen picture. On Windows older than
@@ -453,12 +475,13 @@ silence it, run `sudo sysctl -w net.core.rmem_max=5000000`.
 
 ---
 
-## Known limitations (v1)
+## Known limitations
 
-- **Stream audio echo:** on Windows, "include system audio" captures the *whole* system mix, including
-  Nexo's own voice playback. Viewers then hear the voice chat echoed in the stream. Headphones alone don't
-  fix this if they are the default output device. Instead, set Nexo's **speaker** (Settings → Audio & video)
-  to a different device than the one the game plays on. Per-application audio capture is planned for v2.
+- **Stream audio echo (Chromium engine only):** the native engine (Windows 10 2004+) captures only the
+  shared app's audio, or everything except Nexo, so there is no echo. With the Chromium engine, "include
+  system audio" captures the *whole* system mix, including Nexo's own voice playback, so viewers hear the
+  voice chat echoed. Then set Nexo's **speaker** (Settings → Audio & video) to a different device than the
+  one the game plays on.
 - **Linux (and Wayland):** screen/window video works, but there is **no system audio** capture yet.
   macOS system audio is best-effort.
 - Nexo is only available **while the host PC is on**, and the host's home upload carries every stream.

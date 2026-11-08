@@ -6,6 +6,18 @@ The beta ports **game and screen sharing on Windows** to the native helper `nexo
 hardware H.264 through Media Foundation, pre-encoded publish through the LiveKit C++ SDK). Voice, webcam,
 viewing, and macOS/Linux stay as they are.
 
+## Status (2026-11-08, branch `beta/native-media`)
+
+| Phase | State |
+|---|---|
+| 0 · M0 spike | ✅ Done. Pre-encoded H.264 published from our own MF encoder: 1080p60, 0 dropped. Viewer check by eye still open |
+| 1 · Contracts | ✅ Done |
+| 2 · M1 video (N, S, E, R) | ✅ Done (`83a5a0c`) |
+| 3 · Integration | ✅ Real supervisor + real helper + LiveKit end to end. ⏳ Your two-PC check and the alpha vs beta game benchmark |
+| 4 · M2 audio | ✅ Done (`83924e6`). Include and exclude verified by measurement. ⏳ By-ear check, Windows 10 builds |
+| 5 · M3 hardening | ✅ Device-loss rebuild, fast stop, LiveKit restart, shareId, motion ⇄ detail. ⚠️ GPU-starvation goal not met yet (SPEC-BETA B2): follow-up in `docs/benchmarks/beta-m3-fps-gap.md` |
+| 6 · M4 release | ⏳ Docs done. Version bump, release notes and tag after the hardware checks |
+
 ## Decisions locked for the beta
 
 | Topic | Decision |

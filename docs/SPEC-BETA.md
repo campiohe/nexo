@@ -1,6 +1,6 @@
 # Nexo Beta — Native Media Spec
 
-**Status:** Draft for review · **Date:** 2026-11-07 · **Scope:** Windows streamer side (game and screen sharing)
+**Status:** Implemented through M3 (branch `beta/native-media`) · **Date:** 2026-11-08 · **Scope:** Windows streamer side (game and screen sharing)
 
 The alpha (v0.1–v0.3) does everything inside Electron: Chromium captures the game, Chromium's WebRTC encodes it,
 and livekit-client publishes it. The beta keeps Electron as the **interface shell** and moves the **heavy media
@@ -128,12 +128,16 @@ The Nexo server's only new duty is signing the stream participant's token (§7).
   device, with no cross-adapter copies on our side.
 - `D3D11CreateDevice(..., D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT)`, with
   `ID3D10Multithread::SetMultithreadProtected(TRUE)` (shared with the MFT through `IMFDXGIDeviceManager`).
-- **Priority experiments** (M3, measured, each one a setting flag until proven):
-  `IDXGIDevice::SetGPUThreadPriority(7)`, `D3DKMTSetProcessSchedulingPriorityClass(HIGH)` (REALTIME needs admin:
-  out of scope), process priority class `ABOVE_NORMAL`.
+- **Priority experiments** (M3, measured): `IDXGIDevice::SetGPUThreadPriority(7)`,
+  `D3DKMTSetProcessSchedulingPriorityClass(HIGH)` (REALTIME needs admin: out of scope), process priority class
+  `ABOVE_NORMAL`. **Result: none of them changes the frame rate**, so all stay off by default and are opt-in env
+  flags (`NEXO_MEDIA_GPU_PRIORITY`, `NEXO_MEDIA_GPU_SCHED_HIGH`, `NEXO_MEDIA_ABOVE_NORMAL`). What decides the
+  frame rate is whether the GPU-bound game is the **foreground** window
+  ([benchmarks/beta-m3-gpu-priority.md](benchmarks/beta-m3-gpu-priority.md)).
 - **Device removed** (`DXGI_ERROR_DEVICE_REMOVED`/`RESET`): rebuild the device, frame pool, converter and encoder.
-  The LiveKit track **stays published**: the first new frame is an IDR, so viewers see a short freeze, not a
-  disconnect.
+  The LiveKit tracks **stay published**: the first new frame is an IDR, so viewers see a short freeze (≈ 0.2 s
+  measured), not a disconnect. A failed rebuild is retried after 2 s. A second failure, or more than 3 losses in
+  60 s, ends the share with `ended device-lost`, and the renderer falls back to Chromium once.
 
 ### 4.4 Capture (WGC through C++/WinRT)
 
@@ -187,6 +191,9 @@ The Nexo server's only new duty is signing the stream participant's token (§7).
   - `rate_control.target_bitrate_bps` → `min(target, preset.maxBitrate)`, applied when it changes by > 5%.
   - `rate_control.framerate_fps` is only **logged**. It is libwebrtc's estimate of the *input* rate, so obeying it
     would lock an idle screen share at ~1 fps (§11.2). Frame-rate degradation follows the §4.9 policy instead.
+- **Live changes:** bitrate changes apply through `ICodecAPI`. A `contentHint` (CBR ⇄ peak-constrained VBR) or
+  fps change doesn't apply mid-stream on the NVIDIA MFT (it accepts the value but keeps the old mode), so the
+  helper reads the mode back and, if needed, **recreates only the encoder** with an IDR (≈ 50 ms).
 - **No hardware MFT**, the session limit reached (consumer NVIDIA GPUs cap concurrent NVENC sessions), or encoder
   creation fails → report `encoder-unavailable` and fall back to the alpha path.
 - Timestamps: WGC `SystemRelativeTime` (QPC-based) converted to µs → `frame.timestamp_us`.
@@ -201,11 +208,15 @@ The Nexo server's only new duty is signing the stream participant's token (§7).
 | Window | `INCLUDE_TARGET_PROCESS_TREE` | owner of the HWND (`GetWindowThreadProcessId`) | Only that app's audio (and its child processes) |
 | Screen | `EXCLUDE_TARGET_PROCESS_TREE` | Electron main's PID | Everything **except** Nexo (voice chat, sounds) |
 
+- `features.processLoopback` is reported on **Windows 10 2004+ (build 19041)**, the same floor OBS's application
+  audio capture uses. A failed activation at share time is an `audio-failed` error: the video keeps going. On
+  older builds the renderer sends shares **with audio** to the Chromium engine (one toast per session).
+- `app` mode on a monitor source is treated as `system-but-nexo`.
+
 - Format requested: 48 kHz, stereo, 16-bit PCM (process loopback doesn't support `GetMixFormat`; we name the format).
-- Process loopback delivers nothing while the source is silent, so the audio thread fills gaps with silence on a
-  10 ms clock to keep timing steady.
-- Published as `AudioSource(48000, 2)` with source ScreenShareAudio. If the SDK turns out to be mono-only, downmix
-  (§11).
+- If process loopback delivers nothing for 30 ms (silent source, on some builds), the audio thread fills silence on
+  a 10 ms clock to keep timing steady. It never fills in the middle of flowing audio.
+- Published as `AudioSource(48000, 2)` with source ScreenShareAudio, track `screen-audio`, 128 kbps, DTX off.
 - This resolves **SPEC R1** (voice chat echoed into the stream) for both window and screen shares.
 
 ### 4.8 Publishing (LiveKit C++ SDK)
@@ -335,7 +346,11 @@ Because the server signs the identity, any client can trust `X#stream` to be X's
 
 ### 8.2 Preload
 
-`window.nexo.nativeShare`: `capabilities()`, `start(opts)`, `update(opts)`, `stop()`, `on(event, cb)`.
+`window.nexo.nativeShare`: `capabilities()`, `start(opts)` → `{ shareId }`, `update(opts)`, `stop()`, `release()`,
+`onEvent(cb)`. Main numbers every accepted start, and **every event carries its `shareId`**: the renderer ignores
+events of any other share, and main only attributes helper events to a share after the helper answered its
+`start`. A late `ended` from the previous share can't end a new one. Failed calls reject with a plain object
+`{ name: 'NativeShareError', code, message, fallback }`, because Electron drops custom Error properties across IPC.
 
 ### 8.3 Renderer
 
@@ -427,7 +442,7 @@ Flags: `--doctor` (toolchain check), `--debug`, `--clean`.
 | # | Risk | Impact | Handling |
 |---|---|---|---|
 | B1 | **The C++ SDK is young:** pre-encoded since v1.11.0 (2026-09), frequent releases | Medium | Pin the version, keep it behind `publish/`, M0 proves the path end to end before anything else is built on it |
-| B2 | GPU priority doesn't fix starvation on its own | High (the main goal) | M3 measures each lever. Even without it, the GPU-only path removes the alpha's readback stall. The capped-game hint stays |
+| B2 | GPU priority doesn't fix starvation on its own | High (the main goal) | **Happened (M3).** With the GPU-bound game in the foreground, capture was ~20 fps and encode ~10 fps, whatever the priority levers. Follow-up profiling and experiments: [benchmarks/beta-m3-fps-gap.md](benchmarks/beta-m3-fps-gap.md). The capped-game hint stays |
 | B3 | Two congestion controllers on one uplink (Chromium for voice, the helper for the stream) | Low | Voice is ~40 kbps. The stream reacts to its own feedback. Watch for voice drops in M3 tests |
 | B4 | Hardware MFT quirks by vendor (missing SPS/PPS, latency, session limits) | Medium | SPS/PPS repair, test matrix across NVIDIA/AMD/Intel, fallback to the alpha path |
 | B5 | Exclusive fullscreen games: window capture may show black | Medium | Most "fullscreen" games run flip-model borderless on Win10/11. Otherwise recommend screen capture |
@@ -481,6 +496,9 @@ Flags: `--doctor` (toolchain check), `--debug`, `--clean`.
    single-PC mode (the C++ default). M2 checks it by ear.
 6. **Process loopback minimum build:** confirm against Microsoft docs; SPEC.md assumed Win10 2004. Older builds get
    window-only/no audio or the alpha path.
+   *Resolved (M2):* gated on build 19041 (Windows 10 2004), like OBS's application audio capture. Verified on
+   build 26200: include mode captures the target at its exact level (−40 dBFS tone); exclude mode removes it
+   (−70 to −84 dBFS). Builds 19041–19045 are not yet tested on real hardware.
 7. **Chromium window source id == HWND** on Windows.
    *Resolved (M0, verified):* yes. `desktopCapturer.getSources` in Electron 45 on this PC returned
    `window:30017576:0`, `window:198836:0` and `window:133152:0`, exactly the `MainWindowHandle`s of those windows

@@ -4,6 +4,10 @@
 
 Nexo is a desktop app for small friend groups to chat, hang out in voice, and share their screen or a game while others watch.
 
+> **Beta (v0.4):** on Windows, game and screen sharing moved to a native helper (WGC capture, hardware H.264,
+> LiveKit C++ SDK). See [SPEC-BETA.md](SPEC-BETA.md). This document still describes everything else, and the
+> Chromium capture path that remains the fallback and the engine on macOS and Linux.
+
 ---
 
 ## 1. Goals and non-goals
@@ -365,9 +369,9 @@ Nexo is hosted on the owner's own PC. LiveKit and the Nexo server run in Docker/
 
 | # | Risk / question | Impact | Proposed handling |
 |---|---|---|---|
-| R1 | **Windows loopback captures the whole system mix**, including Nexo's own voice playback, so viewers hear the voice chat echoed in the stream. | High for game streaming | v1: document it and tell streamers to route Nexo's voice output to a different device than the default one (headphones alone don't help if they are the default device). Stream audio also requests `restrictOwnAudio`. Optionally mute stream audio for viewers who are in the same call. v2: native addon using the Windows *process loopback* API (Win10 2004+) to capture only the chosen game's audio, excluding Nexo. |
+| R1 | **Windows loopback captures the whole system mix**, including Nexo's own voice playback, so viewers hear the voice chat echoed in the stream. | High for game streaming | v1: document it and tell streamers to route Nexo's voice output to a different device than the default one (headphones alone don't help if they are the default device). Stream audio also requests `restrictOwnAudio`. Optionally mute stream audio for viewers who are in the same call. v2: native addon using the Windows *process loopback* API (Win10 2004+) to capture only the chosen game's audio, excluding Nexo. **Resolved on Windows in the beta** (SPEC-BETA §4.7): process loopback on Windows 10 2004+. |
 | R2 | Linux has no system audio capture. | Medium | v2 PipeWire integration. Video works today. |
-| R3 | Hardware H.264 encoding availability varies by GPU and driver in Electron/Chromium. | Medium | Fall back to VP8 automatically. Show the encoder in a "stream stats" overlay. |
+| R3 | Hardware H.264 encoding availability varies by GPU and driver in Electron/Chromium. | Medium | Fall back to VP8 automatically. Show the encoder in a "stream stats" overlay. Beta: the native engine picks the GPU's hardware encoder itself and falls back to the Chromium path when there is none. |
 | R4 | macOS loopback audio support. | Low (friends mostly on Windows?) | Verify during implementation. Ship video-only on macOS if needed. |
 | R5 | Lost device token means a lost identity. | Low | Admin CLI to reset a name (v2). |
 | R6 | Code signing: unsigned Windows and macOS builds trigger SmartScreen and Gatekeeper warnings. | Low for friends | Accept for v1. Document "More info → Run anyway". |
