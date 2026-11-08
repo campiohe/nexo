@@ -5,6 +5,10 @@
 #   scripts/win-run.sh --no-build    launch the last build
 #   NEXO_PROFILE=2 scripts/win-run.sh   second, separate profile (log in as another user)
 #   scripts/win-run.sh --remote-debugging-port=9223   extra args are passed to Electron
+#   scripts/win-run.sh --native      also build the native helper (scripts/native-build.sh) and copy
+#                                    native/out/* into the app's resources/native/ (kept for later runs)
+#   NEXO_MEDIA_FAKE=1 scripts/win-run.sh   use the fake helper (desktop/scripts/fake-nexo-media.mjs);
+#                                    FAKE_NEXO_MEDIA=crash|encoder-unavailable|source-closed|stall picks a failure
 #
 # Windows doesn't need Node: the built app in desktop/out is plain JS, so the official
 # Electron zip for win32-x64 is downloaded once (checksum-verified) into %LOCALAPPDATA%\nexo-dev.
@@ -12,9 +16,14 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD=1
+NATIVE=0
 EXTRA_ARGS=()
 for arg in "$@"; do
-  if [[ "$arg" == "--no-build" ]]; then BUILD=0; else EXTRA_ARGS+=("$arg"); fi
+  case "$arg" in
+    --no-build) BUILD=0 ;;
+    --native) NATIVE=1 ;;
+    *) EXTRA_ARGS+=("$arg") ;;
+  esac
 done
 
 command -v cmd.exe >/dev/null || { echo "cmd.exe not found: this script must run inside WSL with Windows interop" >&2; exit 1; }
@@ -57,7 +66,8 @@ if [[ $BUILD == 1 || ! -f "$APP_DIR/out/main/index.js" ]]; then
   rm -rf "$APP_DIR/out"
   mkdir -p "$APP_DIR"
   cp -r "$ROOT/desktop/out" "$APP_DIR/out"
-  [[ -d "$ROOT/desktop/resources" ]] && rm -rf "$APP_DIR/resources" && cp -r "$ROOT/desktop/resources" "$APP_DIR/resources"
+  # Merged, not replaced: resources/native/ (step 3c) must survive, and a running copy may hold it locked.
+  [[ -d "$ROOT/desktop/resources" ]] && mkdir -p "$APP_DIR/resources" && cp -r "$ROOT/desktop/resources/." "$APP_DIR/resources/"
   cat > "$APP_DIR/package.json" <<EOF
 { "name": "nexo-dev", "productName": "Nexo Dev", "version": "0.0.0-dev", "main": "./out/main/index.js" }
 EOF
@@ -82,6 +92,33 @@ copy_module() { # <package name> <files/dirs inside the package...>
 }
 copy_module node-gyp-build package.json index.js node-gyp-build.js LICENSE
 copy_module uiohook-napi package.json dist LICENSE prebuilds/win32-x64
+
+# 3c. Native helper (--native): build it on Windows (skipped with --no-build), then copy native/out/* to
+#     resources/native/, where main looks for nexo-media.exe in dev. Like uiohook above, files a running copy
+#     keeps locked are skipped: unchanged ones aren't touched, and a failed copy only warns.
+if [[ $NATIVE == 1 ]]; then
+  if [[ $BUILD == 1 ]]; then
+    echo "→ Building native helper"
+    "$ROOT/scripts/native-build.sh"
+  fi
+  [[ -f "$ROOT/native/out/nexo-media.exe" ]] || { echo "native/out/nexo-media.exe not found; run without --no-build" >&2; exit 1; }
+  mkdir -p "$APP_DIR/resources/native"
+  for f in "$ROOT/native/out/"*; do
+    dst="$APP_DIR/resources/native/$(basename "$f")"
+    [[ -f "$f" ]] || continue
+    cmp -s "$f" "$dst" 2>/dev/null && continue
+    cp "$f" "$dst.tmp" 2>/dev/null && mv -f "$dst.tmp" "$dst" 2>/dev/null \
+      || { rm -f "$dst.tmp"; echo "  ! $(basename "$f") is in use by a running copy; kept the old one" >&2; }
+  done
+fi
+
+# 3d. Fake helper: main finds it at <app>/scripts/ when NEXO_MEDIA_FAKE=1 (see src/main/native-media/index.ts).
+mkdir -p "$APP_DIR/scripts"
+cmp -s "$ROOT/desktop/scripts/fake-nexo-media.mjs" "$APP_DIR/scripts/fake-nexo-media.mjs" 2>/dev/null \
+  || cp "$ROOT/desktop/scripts/fake-nexo-media.mjs" "$APP_DIR/scripts/fake-nexo-media.mjs"
+
+# Windows processes only see the WSL environment variables listed in WSLENV (/p translates a path).
+export WSLENV="${WSLENV:+$WSLENV:}NEXO_MEDIA_FAKE:FAKE_NEXO_MEDIA:NEXO_MEDIA_DEBUG:NEXO_MEDIA_EXE/p:NEXO_MEDIA_FAKE_SCRIPT/p"
 
 # 4. Launch. Each profile gets its own user-data dir, so two copies can log in as different users.
 USER_DATA_WIN="$(wslpath -w "$DEV_DIR/profile-$PROFILE")"

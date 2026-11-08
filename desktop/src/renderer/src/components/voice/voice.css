@@ -587,3 +587,21 @@
 .vx-uv-toggle input:checked + .vx-uv-switch { background: var(--danger); }
 .vx-uv-toggle input:checked + .vx-uv-switch::after { transform: translateX(14px); }
 .vx-uv-toggle input:focus-visible + .vx-uv-switch { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ---------- own native stream: "You're live" card (no self-preview) ---------- */
+.vx-livecard .vx-unwatched { gap: 6px; }
+.vx-livecard-preset { color: var(--text-1); font-size: 12.5px; font-weight: 600; }
+.vx-livecard-stats {
+  max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--text-2); font: 500 11.5px var(--mono);
+}
+.vx-livecard-notice {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 9px;
+  border-radius: var(--radius-sm);
+  background: var(--warn-soft); color: var(--warn);
+  font-size: 12px; font-weight: 600;
+}
+.vx-livecard .vx-btn { margin-top: 4px; }
+.vx-tile.is-strip .vx-livecard-notice { padding: 2px 6px; font-size: 10.5px; }

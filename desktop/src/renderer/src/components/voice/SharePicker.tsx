@@ -4,11 +4,13 @@ import { createPortal } from 'react-dom'
 import { create } from 'zustand'
 import type { CaptureSource } from '../../../../preload/api'
 import { DEFAULT_SHARE_PRESET, SHARE_PRESETS, getBridge, useVoice, type SharePreset } from '../../voice/session'
-import { CloseIcon, RefreshIcon, ScreenIcon, VolumeIcon, WindowIcon } from './icons'
+import { refreshNativeEngine, useNativeAudioSupported, useNativeEngineLikely } from '../../voice/nativeShare'
+import { CloseIcon, EyeOffIcon, RefreshIcon, ScreenIcon, VolumeIcon, WindowIcon } from './icons'
 import './voice.css'
 
 const PRESET_KEY = 'nexo.sharePreset'
 const AUDIO_KEY = 'nexo.shareAudio'
+const HIDE_NEXO_KEY = 'nexo.shareHideNexo'
 
 const PRESET_BLURB: Record<SharePreset['id'], string> = {
   smooth: 'Games on a weaker upload',
@@ -30,6 +32,15 @@ function readPreset(): SharePreset['id'] {
 function readAudio(): boolean {
   try {
     return localStorage.getItem(AUDIO_KEY) !== '0'
+  } catch {
+    return true
+  }
+}
+
+/** "Hide Nexo from the stream" (native engine, screens): on unless turned off once. */
+function readHideNexo(): boolean {
+  try {
+    return localStorage.getItem(HIDE_NEXO_KEY) !== '0'
   } catch {
     return true
   }
@@ -73,7 +84,11 @@ export function SharePickerHost() {
 export function SharePicker({ onClose }: { onClose(): void }) {
   const bridge = getBridge()
   const systemPicker = !bridge || bridge.usesSystemPicker
-  const audioSupported = bridge ? bridge.supportsSystemAudio : true
+  // Windows native engine (decided again in startShare; this only drives the labels). Until the helper's
+  // capabilities arrive the picker shows the Chromium options rather than waiting for them.
+  const native = useNativeEngineLikely() && !systemPicker
+  const nativeAudio = useNativeAudioSupported()
+  const audioSupported = native ? nativeAudio : bridge ? bridge.supportsSystemAudio : true
 
   const [tab, setTab] = useState<'screen' | 'window'>('screen')
   const [sources, setSources] = useState<CaptureSource[]>([])
@@ -82,6 +97,7 @@ export function SharePicker({ onClose }: { onClose(): void }) {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [presetId, setPresetId] = useState<SharePreset['id']>(readPreset)
   const [withAudio, setWithAudio] = useState<boolean>(readAudio)
+  const [hideNexo, setHideNexo] = useState<boolean>(readHideNexo)
   const starting = useVoice((s) => s.shareStarting)
   const panelRef = useRef<HTMLDivElement>(null)
   const closeRef = useRef(onClose)
@@ -111,6 +127,9 @@ export function SharePicker({ onClose }: { onClose(): void }) {
     return () => window.clearInterval(id)
   }, [refresh, systemPicker])
 
+  // The capture engine setting applies to the next share: re-read it whenever the picker opens.
+  useEffect(() => refreshNativeEngine(), [])
+
   useEffect(() => {
     const prev = document.activeElement as HTMLElement | null
     panelRef.current?.focus()
@@ -135,13 +154,19 @@ export function SharePicker({ onClose }: { onClose(): void }) {
     setWithAudio(v)
     store(AUDIO_KEY, v ? '1' : '0')
   }
+  const toggleHideNexo = (v: boolean) => {
+    setHideNexo(v)
+    store(HIDE_NEXO_KEY, v ? '1' : '0')
+  }
 
   const audio = withAudio && audioSupported
   const canGo = !starting && (systemPicker || !!selectedId)
   const goLive = () => {
     if (!canGo) return
-    void useVoice.getState().startShare({ sourceId: systemPicker ? null : selectedId, presetId, withAudio: audio })
+    void useVoice.getState().startShare({ sourceId: systemPicker ? null : selectedId, presetId, withAudio: audio, hideNexo })
   }
+  // The selected source decides what the audio checkbox captures (it can sit on the other tab).
+  const selectedKind = sources.find((s) => s.id === selectedId)?.kind ?? tab
 
   const shown = sources.filter((s) => s.kind === tab)
   const screenCount = sources.filter((s) => s.kind === 'screen').length
@@ -210,7 +235,7 @@ export function SharePicker({ onClose }: { onClose(): void }) {
                     onClick={() => setSelectedId(s.id)}
                     onDoubleClick={() => {
                       setSelectedId(s.id)
-                      void useVoice.getState().startShare({ sourceId: s.id, presetId, withAudio: audio })
+                      void useVoice.getState().startShare({ sourceId: s.id, presetId, withAudio: audio, hideNexo })
                     }}
                     title={s.name}
                   >
@@ -259,13 +284,22 @@ export function SharePicker({ onClose }: { onClose(): void }) {
             <span className="vx-check-box" aria-hidden="true" />
             <span className="vx-check-text">
               <span className="vx-check-label">
-                <VolumeIcon size={15} /> Share audio
+                <VolumeIcon size={15} />{' '}
+                {!native ? 'Share audio' : selectedKind === 'window' ? 'App audio' : 'System audio (without Nexo)'}
               </span>
               {!audioSupported ? (
                 <span className="vx-check-hint">
-                  {bridge?.platform === 'linux'
-                    ? "System audio capture isn't available on Linux yet — viewers will get video only."
-                    : "System audio capture isn't supported on this system — viewers will get video only."}
+                  {native
+                    ? "This version of Windows can't capture app audio — viewers will get video only."
+                    : bridge?.platform === 'linux'
+                      ? "System audio capture isn't available on Linux yet — viewers will get video only."
+                      : "System audio capture isn't supported on this system — viewers will get video only."}
+                </span>
+              ) : native && audio ? (
+                <span className="vx-check-hint">
+                  {selectedKind === 'window'
+                    ? 'Viewers hear only this app.'
+                    : 'Viewers hear everything your PC plays except Nexo, so the call stays out of the stream.'}
                 </span>
               ) : audio ? (
                 <span className="vx-check-hint is-warn">
@@ -277,6 +311,22 @@ export function SharePicker({ onClose }: { onClose(): void }) {
               )}
             </span>
           </label>
+
+          {native && selectedKind === 'screen' && (
+            <label className="vx-check">
+              <input type="checkbox" checked={hideNexo} onChange={(e) => toggleHideNexo(e.target.checked)} />
+              <span className="vx-check-box" aria-hidden="true" />
+              <span className="vx-check-text">
+                <span className="vx-check-label">
+                  <EyeOffIcon size={15} /> Hide Nexo from the stream
+                </span>
+                <span className="vx-check-hint">
+                  Viewers won't see your chats or the member list. While you share, Nexo is also hidden from your own
+                  screenshots and recordings.
+                </span>
+              </span>
+            </label>
+          )}
         </div>
 
         <footer className="vx-modal-foot">

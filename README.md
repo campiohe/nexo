@@ -165,6 +165,21 @@ On the host PC, use the **`172.x` URL** from `scripts/urls.sh` (`http://172.26.x
 reaches WSL directly on that address. If Tailscale is installed on Windows too, the `100.x` URL also
 works. The WSL `172.x` IP can change after a reboot, so re-run `scripts/urls.sh` when that happens.
 
+**Native share helper (beta, [SPEC-BETA](docs/SPEC-BETA.md)).** `scripts/win-run.sh --native` also builds
+`nexo-media.exe` (`scripts/native-build.sh`, needs the Windows prerequisites in SPEC-BETA §9.2) and copies
+`native/out/*` into the dev app's `resources/native/`. The copy stays there for later runs without `--native`.
+To work on the Electron side without the helper, use the fake one, `desktop/scripts/fake-nexo-media.mjs`.
+It speaks the same protocol and is run by the Electron binary itself, so it also works with `npm run dev`
+on Linux:
+
+```bash
+NEXO_MEDIA_FAKE=1 scripts/win-run.sh                       # fake helper: connecting → live → 1 Hz stats
+NEXO_MEDIA_FAKE=1 FAKE_NEXO_MEDIA=crash scripts/win-run.sh # or encoder-unavailable | source-closed | stall
+NEXO_MEDIA_DEBUG=1 scripts/win-run.sh --native             # log every helper command/event (token redacted)
+```
+
+`NEXO_MEDIA_EXE=<path>` points main at another helper build.
+
 ### Installers for friends
 
 Friends download from **[Releases](https://github.com/campiohe/nexo/releases)**. Each release has the

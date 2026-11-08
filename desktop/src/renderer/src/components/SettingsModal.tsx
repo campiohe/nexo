@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ChangeEvent } from 'react'
-import type { AppPrefs, HotkeyStatus, Keybind, UpdateState } from '../../../preload/api'
+import type { AppPrefs, CaptureEngine, HotkeyStatus, Keybind, NativeShareCapabilities, UpdateState } from '../../../preload/api'
 import { useApp } from '../store/app'
 import { useUi } from '../store/ui'
 import { SWATCHES } from '../lib/colors'
@@ -11,6 +11,7 @@ import { actionLabel, defaultInAppBinding, findConflict, HOTKEY_ACTIONS, sameCom
 import { allKeybinds, isInAppAction, setKeybind, useInputPrefs, useKeybinds } from '../voice/prefs'
 import { cancelCapture, recordKeybind, usePtt } from '../voice/ptt'
 import { DeviceSettings } from './voice/DeviceSettings'
+import { useVoice } from '../voice/session'
 import { Avatar } from './Avatar'
 import { AvatarCropDialog } from './AvatarCropDialog'
 import { ColorSwatches } from './ColorSwatches'
@@ -344,6 +345,46 @@ function fastCaptureAtStartup(): Promise<boolean> {
   return startupFastCapture
 }
 
+const CAPTURE_ENGINES: { id: CaptureEngine; label: string }[] = [
+  { id: 'native', label: 'Native (beta)' },
+  { id: 'chromium', label: 'Chromium' },
+]
+
+/** What the native capture helper found on this PC (Windows). Starts the helper if it isn't running. */
+function useNativeCapabilities(enabled: boolean): NativeShareCapabilities | null {
+  const [caps, setCaps] = useState<NativeShareCapabilities | null>(null)
+  useEffect(() => {
+    const native = window.nexo.nativeShare
+    if (!enabled || !native) return
+    let alive = true
+    native
+      .capabilities()
+      .then((c) => {
+        if (alive) setCaps(c)
+        // Main caches capabilities for the app session, so the helper isn't needed after this answer. Outside
+        // voice nothing else would shut it down (leaving voice does), so release it right away.
+        const v = useVoice.getState()
+        if (!v.channelId && !v.sharing && !v.shareStarting) void native.release().catch(() => undefined)
+      })
+      .catch((err: unknown) => alive && setCaps({ available: false, reason: errorText(err) }))
+    return () => {
+      alive = false
+    }
+  }, [enabled])
+  return caps
+}
+
+function errorText(err: unknown): string {
+  return err instanceof Error && err.message ? err.message : 'The capture helper did not start'
+}
+
+function nativeCapabilitiesLine(caps: NativeShareCapabilities | null): string {
+  if (!caps) return 'Checking your graphics card…'
+  if (!caps.available) return `Native capture isn't available on this PC: ${caps.reason ?? 'unknown reason'}. Streams use Chromium.`
+  const encoder = caps.encoder ?? 'the hardware encoder'
+  return caps.adapter ? `Streams with ${encoder} on ${caps.adapter}.` : `Streams with ${encoder}.`
+}
+
 function AppSection() {
   const [prefs, setPrefs] = useState<AppPrefs | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -365,6 +406,10 @@ function AppSection() {
   }, [])
 
   const [restartNeeded, setRestartNeeded] = useState(false)
+  const isWindows = window.nexo.platform === 'win32'
+  const nativeCaps = useNativeCapabilities(isWindows)
+  // Missing in prefs written before the beta: the default is native (preload/api.ts).
+  const engine: CaptureEngine = prefs?.captureEngine ?? 'native'
 
   const setPref = async (patch: Partial<AppPrefs>) => {
     if (!prefs || saving) return
@@ -408,13 +453,40 @@ function AppSection() {
               onChange={(e) => void setPref({ closeToTray: e.target.checked })}
             />
           </label>
-          {window.nexo.platform === 'win32' && (
+          {isWindows && (
+            <div className="toggle-row" style={{ cursor: 'default' }}>
+              <span className="toggle-text">
+                <span id="capture-engine-label">Capture engine</span>
+                <span className="muted small">
+                  Native captures and encodes streams on your graphics card, outside Nexo, so games keep their frame
+                  rate and the stream stays smooth. If it fails, Nexo switches to Chromium on its own.{' '}
+                  {nativeCapabilitiesLine(nativeCaps)} Applies to your next stream.
+                </span>
+              </span>
+              <div className="vx-seg" role="radiogroup" aria-labelledby="capture-engine-label">
+                {CAPTURE_ENGINES.map((e) => (
+                  <button
+                    key={e.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={engine === e.id}
+                    className={`vx-seg-btn ${engine === e.id ? 'is-active' : ''}`}
+                    disabled={!prefs || saving}
+                    onClick={() => engine !== e.id && void setPref({ captureEngine: e.id })}
+                  >
+                    {e.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          {isWindows && (
             <label className="toggle-row">
               <span className="toggle-text">
                 <span>Fast game capture</span>
                 <span className="muted small">
-                  Keeps stream frames on the GPU, so streams stay smooth while a game keeps your GPU busy. Turn it off
-                  if your stream shows a black or frozen picture.
+                  Chromium capture engine only. Keeps stream frames on the GPU, so streams stay smooth while a game
+                  keeps your GPU busy. Turn it off if your stream shows a black or frozen picture.
                   {restartNeeded && <strong> Restart Nexo to apply.</strong>}
                 </span>
               </span>

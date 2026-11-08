@@ -1,0 +1,6 @@
+# Build trees (CMake presets put them in nexo-media/build/<preset>)
+build/
+# Install output of `cmake --install … --prefix ../out` (nexo-media.exe + DLLs)
+out/
+# Downloaded dependencies (LiveKit SDK bundle, see livekit-sdk.lock)
+third_party/

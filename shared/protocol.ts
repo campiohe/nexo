@@ -83,6 +83,18 @@ export interface VoiceCredentials {
   room: string
 }
 
+/**
+ * Credentials for the native stream participant (Windows native share, docs/SPEC-BETA.md §7).
+ * `identity` is `streamIdentity(userId)` from shared/stream.ts; the token can only publish
+ * screen_share / screen_share_audio and never subscribes.
+ */
+export interface StreamCredentials {
+  url: string
+  token: string
+  room: string
+  identity: string
+}
+
 export interface ClientToServerEvents {
   'channel:create': (p: { name: string; type: ChannelType }, ack: Ack<Channel>) => void
   'channel:rename': (p: { channelId: string; name: string }, ack: Ack<Channel>) => void
@@ -93,6 +105,8 @@ export interface ClientToServerEvents {
   'message:history': (p: { channelId: string; before?: number }, ack: Ack<Message[]>) => void
   typing: (p: { channelId: string }) => void
   'voice:token': (p: { channelId: string }, ack: Ack<VoiceCredentials>) => void
+  /** Only while the caller's voice state (from this socket) is in `channelId`. */
+  'voice:streamToken': (p: { channelId: string }, ack: Ack<StreamCredentials>) => void
   'voice:state': (p: VoiceStatePatch) => void
   'profile:update': (p: { color: string }, ack: Ack<User>) => void
 }

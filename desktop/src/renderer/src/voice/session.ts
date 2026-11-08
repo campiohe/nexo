@@ -21,6 +21,7 @@ import {
   type TrackPublishOptions,
   type VideoEncoding,
 } from 'livekit-client'
+import { isStreamIdentity, streamIdentity } from '@shared/stream'
 import { emit, onConnected, request } from '@renderer/net/socket'
 import { toast } from '@renderer/lib/toast'
 import { useApp } from '@renderer/store/app'
@@ -38,11 +39,23 @@ import { useInputPrefs } from './prefs'
 import { usePtt } from './ptt'
 import { clampUserVolume, persistUserVolumes, useUserVolumes } from './userVolumes'
 import {
+  ownerIdentity,
   rebuildParticipantsNow,
   resetParticipants,
   scheduleParticipantsRebuild,
+  streamHolder,
   useParticipants,
 } from './participants'
+import {
+  bindNativeShare,
+  nativeCapabilitiesFor,
+  nativeShareActive,
+  primeNativeShare,
+  releaseNativeShare,
+  startNativeShare,
+  stopNativeShare,
+} from './nativeShare'
+import { createCaptureLowDetector } from './shareHealth'
 
 export type VoiceStatus = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'error'
 
@@ -61,7 +74,12 @@ export interface StartShareOptions {
   sourceId: string | null
   presetId: SharePreset['id']
   withAudio: boolean
+  /** Native engine, screen sources: keep Nexo's own windows out of the capture. Default true. */
+  hideNexo?: boolean
 }
+
+/** Which engine streams the active share (docs/SPEC-BETA.md §8.3). */
+export type ShareEngine = 'native' | 'chromium'
 
 /** Sender-side numbers for the active screen share, refreshed every couple of seconds. */
 export interface ShareStats {
@@ -74,6 +92,10 @@ export interface ShareStats {
   /** WebRTC `qualityLimitationReason`: 'none' | 'cpu' | 'bandwidth' | 'other'. */
   limitation: string
   encoder: string | null
+  /** Native engine: sent (or else target) bitrate in bits per second. */
+  bitrate?: number
+  /** Native engine: no new frame for over a second (e.g. the shared window is minimized). */
+  stalled?: boolean
 }
 
 export interface VoiceSessionState {
@@ -89,6 +111,8 @@ export interface VoiceSessionState {
   shareStarting: boolean
   /** Preset of the active share (null when not sharing). */
   sharePresetId: SharePreset['id'] | null
+  /** Engine of the active share (null when not sharing). */
+  shareEngine: ShareEngine | null
   /** Live sender stats of the active share (null when not sharing / not measured yet). */
   shareStats: ShareStats | null
   /**
@@ -215,6 +239,7 @@ export const useVoice = create<VoiceSessionState>()((set, get) => ({
   sharing: false,
   shareStarting: false,
   sharePresetId: null,
+  shareEngine: null,
   shareStats: null,
   shareCaptureLow: false,
   audioBlocked: false,
@@ -229,7 +254,7 @@ export const useVoice = create<VoiceSessionState>()((set, get) => ({
     if (room || s.channelId) await teardown(false)
 
     const seq = ++joinSeq
-    set({ status: 'connecting', channelId, error: null, camera: false, sharing: false, shareStarting: false, sharePresetId: null, shareStats: null, shareCaptureLow: false })
+    set({ status: 'connecting', channelId, error: null, camera: false, sharing: false, shareStarting: false, sharePresetId: null, shareEngine: null, shareStats: null, shareCaptureLow: false })
 
     let r: Room | null = null
     try {
@@ -271,6 +296,8 @@ export const useVoice = create<VoiceSessionState>()((set, get) => ({
       rebuildParticipantsNow(r)
       r.startAudio().catch(() => {})
       announce()
+      // Windows: start the capture helper now so "Go Live" doesn't wait for its capabilities.
+      primeNativeShare()
 
       // Publishes the mic (muted while the PTT key isn't held) unless the user is muted.
       await applyMic()
@@ -345,88 +372,19 @@ export const useVoice = create<VoiceSessionState>()((set, get) => ({
   async startShare(opts) {
     const r = room
     if (!r || get().shareStarting) return
-    if (share) await stopShareInternal(false)
+    if (share || nativeShareActive()) await stopShareInternal(false)
+    if (room !== r) return
 
     const preset = getSharePreset(opts.presetId)
-    const bridge = getBridge()
-    const withAudio = opts.withAudio && (bridge ? bridge.supportsSystemAudio : true)
     set({ shareStarting: true, error: null, pickerOpen: false })
 
-    let stream: MediaStream
-    try {
-      // Electron main answers getDisplayMedia with the source chosen here.
-      if (bridge) await bridge.capture.selectSource(opts.sourceId, withAudio)
-      stream = await navigator.mediaDevices.getDisplayMedia(displayMediaOptions(preset, withAudio, !bridge))
-    } catch (e) {
-      set({ shareStarting: false, ...(isUserCancel(e) ? {} : { error: mediaErrorMessage(e, 'Screen share') }) })
-      return
-    }
-    if (room !== r) {
-      stream.getTracks().forEach((t) => t.stop())
-      set({ shareStarting: false })
-      return
-    }
-
-    const videoMst = stream.getVideoTracks()[0]
-    if (!videoMst) {
-      stream.getTracks().forEach((t) => t.stop())
-      set({ shareStarting: false, error: 'Screen share: no video track was captured' })
-      return
-    }
-    // Encoder hint: 'motion' keeps frame rate for games, 'detail' keeps text crisp.
-    videoMst.contentHint = preset.contentHint
-    // Fallback in case the display-media handler ignored the constraints passed above.
-    await videoMst.applyConstraints(videoConstraints(preset)).catch(() => {})
-
-    const audioMst = stream.getAudioTracks()[0] ?? null
-    const video = new LocalVideoTrack(videoMst, undefined, true)
-    const audio = audioMst ? new LocalAudioTrack(audioMst, undefined, true) : null
-    share = { stream, videoMst, video, audio }
-    // User pressed the OS / browser "Stop sharing" button.
-    videoMst.addEventListener('ended', onShareEnded)
-
-    try {
-      await publishScreenVideo(r, video, preset)
-    } catch (e) {
-      if (room !== r || share?.video !== video) return // left or stopped meanwhile
-      await stopShareInternal(false)
-      set({ shareStarting: false, error: `Screen share: ${errorMessage(e, 'publishing failed')}` })
-      return
-    }
-    if (share?.video !== video) {
-      // Stopped (e.g. OS "Stop sharing") while publishing: make sure nothing stays published.
-      await r.localParticipant.unpublishTrack(video, true).catch(() => undefined)
-      return
-    }
-
-    if (audio) {
-      try {
-        await r.localParticipant.publishTrack(audio, {
-          source: Track.Source.ScreenShareAudio,
-          name: 'screen-audio',
-          audioPreset: AudioPresets.musicHighQualityStereo,
-          dtx: false,
-          red: false,
-          forceStereo: true,
-        })
-      } catch (e) {
-        // Keep the video going; the stream is just silent.
-        console.warn('[voice] stream audio publish failed', e)
-        set({ error: `Stream audio: ${errorMessage(e, 'publishing failed')}` })
-        audio.stop()
-        if (share?.video === video) share.audio = null
-      }
-    }
-    if (share?.video !== video) {
-      await r.localParticipant.unpublishTrack(video, true).catch(() => undefined)
-      if (audio) await r.localParticipant.unpublishTrack(audio, true).catch(() => undefined)
-      return
-    }
-
-    set({ sharing: true, shareStarting: false, sharePresetId: preset.id, shareStats: null, shareCaptureLow: false })
-    rememberShare(opts)
-    startShareStats(share, preset)
-    announce()
+    // Native engine on Windows when the setting asks for it and the helper has a hardware encoder. The
+    // capabilities were fetched when joining, so this normally doesn't wait.
+    const caps = await nativeCapabilitiesFor(opts)
+    // Left voice, or stopShare() was called meanwhile.
+    if (room !== r || !get().shareStarting) return
+    if (caps) await startNativeShare(r, opts, preset, caps)
+    else await startChromiumShare(r, opts, preset)
   },
 
   async stopShare() {
@@ -528,6 +486,15 @@ try {
 }
 syncTray()
 
+// The native engine (nativeShare.ts) reports into this store and falls back to the Chromium engine.
+bindNativeShare({
+  voice: useVoice,
+  room: () => room,
+  announce,
+  rememberShare,
+  startChromium: startChromiumShare,
+})
+
 // ---------------------------------------------------------------------------------------------
 // Room wiring
 // ---------------------------------------------------------------------------------------------
@@ -545,14 +512,19 @@ function wireRoom(r: Room): void {
       rebuild()
     })
     .on(RoomEvent.TrackUnpublished, (pub, p) => {
-      // The streamer stopped sharing (they're still here): drop our "watching" opt-in.
-      if (pub.source === Track.Source.ScreenShare && r.remoteParticipants.get(p.identity) === p) {
-        unwatch(p.identity)
+      // The streamer stopped sharing (they're still here): drop our "watching" opt-in. A `#stream`
+      // participant only carries the stream, so its unpublish (or disconnect: LiveKit unpublishes
+      // everything first) always ends it, unless the owner streams by itself meanwhile (Chromium fallback).
+      const endsStream = isStreamIdentity(p.identity) || r.remoteParticipants.get(p.identity) === p
+      if (pub.source === Track.Source.ScreenShare && endsStream) {
+        const owner = ownerIdentity(p.identity)
+        if (!streamHolder(r, owner)) unwatch(owner)
       }
       rebuild()
     })
     .on(RoomEvent.TrackSubscribed, (track, _pub, p) => {
-      if (track instanceof RemoteAudioTrack) attachAudio(track, p.identity)
+      // Keyed by the owner, so stream volume follows whichever participant carries the stream audio.
+      if (track instanceof RemoteAudioTrack) attachAudio(track, ownerIdentity(p.identity))
       rebuild()
     })
     .on(RoomEvent.TrackUnsubscribed, (track) => {
@@ -622,6 +594,8 @@ async function handleUnexpectedDisconnect(reason: DisconnectReason | undefined):
   room = null
   joinSeq++
   r?.removeAllListeners()
+  // The helper's stream participant has its own connection: it would keep streaming without us.
+  releaseNativeShare()
   cleanupLocalMedia()
   resetParticipants()
   useVoice.setState({
@@ -631,6 +605,7 @@ async function handleUnexpectedDisconnect(reason: DisconnectReason | undefined):
     sharing: false,
     shareStarting: false,
     sharePresetId: null,
+    shareEngine: null,
     shareStats: null,
     shareCaptureLow: false,
     pickerOpen: false,
@@ -644,6 +619,8 @@ async function teardown(announceLeave: boolean): Promise<void> {
   const r = room
   room = null
   const wasInVoice = !!useVoice.getState().channelId
+  // Stops a native share (also mid-start) and shuts the helper down; it's started again on the next join.
+  releaseNativeShare()
   if (share && r) {
     // Unpublish explicitly so viewers see the stream end immediately.
     await stopShareInternal(false, r)
@@ -661,6 +638,7 @@ async function teardown(announceLeave: boolean): Promise<void> {
     sharing: false,
     shareStarting: false,
     sharePresetId: null,
+    shareEngine: null,
     shareStats: null,
     shareCaptureLow: false,
     pickerOpen: false,
@@ -694,14 +672,19 @@ function cleanupLocalMedia(): void {
 // Subscriptions (mic + camera always, screen share only while watching)
 // ---------------------------------------------------------------------------------------------
 
+/** `identity` is the publishing participant's; streams are watched by the owner's identity. */
 function wantsSubscription(source: Track.Source, identity: string): boolean {
   switch (source) {
     case Track.Source.Microphone:
     case Track.Source.Camera:
       return true
     case Track.Source.ScreenShare:
-    case Track.Source.ScreenShareAudio:
-      return !!useParticipants.getState().watching[identity]
+    case Track.Source.ScreenShareAudio: {
+      const owner = ownerIdentity(identity)
+      // Never our own `#stream` participant: that would download our own upload.
+      if (owner !== identity && owner === room?.localParticipant.identity) return false
+      return !!useParticipants.getState().watching[owner]
+    }
     default:
       return false
   }
@@ -720,23 +703,29 @@ function syncAllSubscriptions(r: Room): void {
   r.remoteParticipants.forEach((p) => syncParticipantSubscriptions(p))
 }
 
-/** Opt in to a participant's stream (subscribes to their screen share + stream audio). */
+/** The owner and its `#stream` participant: an alpha client streams itself, a beta one through the latter. */
+function syncOwnerSubscriptions(r: Room, owner: string): void {
+  for (const id of [owner, streamIdentity(owner)]) {
+    const p = r.remoteParticipants.get(id)
+    if (p) syncParticipantSubscriptions(p)
+  }
+}
+
+/** Opt in to a participant's stream (subscribes to their screen share + stream audio). Owner identity. */
 export function watchStream(identity: string): void {
   useParticipants.setState((s) => ({ watching: { ...s.watching, [identity]: true } }))
   const r = room
   if (!r) return
-  const p = r.remoteParticipants.get(identity)
-  if (p) syncParticipantSubscriptions(p)
+  syncOwnerSubscriptions(r, identity)
   scheduleParticipantsRebuild(r)
 }
 
-/** Stop watching (unsubscribes so no bandwidth is used). */
+/** Stop watching (unsubscribes so no bandwidth is used). Owner identity. */
 export function stopWatching(identity: string): void {
   unwatch(identity)
   const r = room
   if (!r) return
-  const p = r.remoteParticipants.get(identity)
-  if (p) syncParticipantSubscriptions(p)
+  syncOwnerSubscriptions(r, identity)
   scheduleParticipantsRebuild(r)
 }
 
@@ -888,7 +877,7 @@ useDevicePrefs.subscribe((s, prev) => {
   if (s.audiooutput !== prev.audiooutput) applyBoostSink()
 })
 
-/** Per-stream audio volume (0..1) for a participant's ScreenShareAudio; default 1. */
+/** Per-stream audio volume (0..1) for a participant's ScreenShareAudio; default 1. Owner identity. */
 export function setStreamVolume(identity: string, volume: number): void {
   const v = Math.min(1, Math.max(0, volume))
   useParticipants.setState((s) => ({ streamVolumes: { ...s.streamVolumes, [identity]: v } }))
@@ -1305,6 +1294,91 @@ async function publishScreenVideo(r: Room, video: LocalVideoTrack, preset: Share
   await r.localParticipant.publishTrack(video, { ...base, videoCodec: 'vp8', backupCodec: false })
 }
 
+/**
+ * The Chromium engine (the alpha path, and the native engine's fallback): getDisplayMedia, then publish
+ * with livekit-client. Called with `shareStarting` already set.
+ */
+async function startChromiumShare(r: Room, opts: StartShareOptions, preset: SharePreset): Promise<void> {
+  const bridge = getBridge()
+  const withAudio = opts.withAudio && (bridge ? bridge.supportsSystemAudio : true)
+
+  let stream: MediaStream
+  try {
+    // Electron main answers getDisplayMedia with the source chosen here.
+    if (bridge) await bridge.capture.selectSource(opts.sourceId, withAudio)
+    stream = await navigator.mediaDevices.getDisplayMedia(displayMediaOptions(preset, withAudio, !bridge))
+  } catch (e) {
+    useVoice.setState({ shareStarting: false, ...(isUserCancel(e) ? {} : { error: mediaErrorMessage(e, 'Screen share') }) })
+    return
+  }
+  if (room !== r) {
+    stream.getTracks().forEach((t) => t.stop())
+    useVoice.setState({ shareStarting: false })
+    return
+  }
+
+  const videoMst = stream.getVideoTracks()[0]
+  if (!videoMst) {
+    stream.getTracks().forEach((t) => t.stop())
+    useVoice.setState({ shareStarting: false, error: 'Screen share: no video track was captured' })
+    return
+  }
+  // Encoder hint: 'motion' keeps frame rate for games, 'detail' keeps text crisp.
+  videoMst.contentHint = preset.contentHint
+  // Fallback in case the display-media handler ignored the constraints passed above.
+  await videoMst.applyConstraints(videoConstraints(preset)).catch(() => {})
+
+  const audioMst = stream.getAudioTracks()[0] ?? null
+  const video = new LocalVideoTrack(videoMst, undefined, true)
+  const audio = audioMst ? new LocalAudioTrack(audioMst, undefined, true) : null
+  share = { stream, videoMst, video, audio }
+  // User pressed the OS / browser "Stop sharing" button.
+  videoMst.addEventListener('ended', onShareEnded)
+
+  try {
+    await publishScreenVideo(r, video, preset)
+  } catch (e) {
+    if (room !== r || share?.video !== video) return // left or stopped meanwhile
+    await stopShareInternal(false)
+    useVoice.setState({ shareStarting: false, error: `Screen share: ${errorMessage(e, 'publishing failed')}` })
+    return
+  }
+  if (share?.video !== video) {
+    // Stopped (e.g. OS "Stop sharing") while publishing: make sure nothing stays published.
+    await r.localParticipant.unpublishTrack(video, true).catch(() => undefined)
+    return
+  }
+
+  if (audio) {
+    try {
+      await r.localParticipant.publishTrack(audio, {
+        source: Track.Source.ScreenShareAudio,
+        name: 'screen-audio',
+        audioPreset: AudioPresets.musicHighQualityStereo,
+        dtx: false,
+        red: false,
+        forceStereo: true,
+      })
+    } catch (e) {
+      // Keep the video going; the stream is just silent.
+      console.warn('[voice] stream audio publish failed', e)
+      useVoice.setState({ error: `Stream audio: ${errorMessage(e, 'publishing failed')}` })
+      audio.stop()
+      if (share?.video === video) share.audio = null
+    }
+  }
+  if (share?.video !== video) {
+    await r.localParticipant.unpublishTrack(video, true).catch(() => undefined)
+    if (audio) await r.localParticipant.unpublishTrack(audio, true).catch(() => undefined)
+    return
+  }
+
+  useVoice.setState({ sharing: true, shareStarting: false, sharePresetId: preset.id, shareEngine: 'chromium', shareStats: null, shareCaptureLow: false })
+  rememberShare(opts)
+  startShareStats(share, preset)
+  announce()
+}
+
 // ---- "Restart last stream" (Toggle screen share hotkey) ----
 
 const LAST_SHARE_KEY = 'nexo.lastShare'
@@ -1315,6 +1389,8 @@ interface LastShare {
   sourceName: string
   presetId: SharePreset['id']
   withAudio: boolean
+  /** Absent in shares remembered before the beta (default on). */
+  hideNexo?: boolean
 }
 
 function readLastShare(): LastShare | null {
@@ -1322,6 +1398,7 @@ function readLastShare(): LastShare | null {
     const v = JSON.parse(localStorage.getItem(LAST_SHARE_KEY) ?? 'null') as Partial<LastShare> | null
     if (!v || typeof v.sourceId !== 'string' || typeof v.sourceName !== 'string' || typeof v.withAudio !== 'boolean') return null
     if (!SHARE_PRESETS.some((p) => p.id === v.presetId)) return null
+    if (typeof v.hideNexo !== 'boolean') delete v.hideNexo
     return v as LastShare
   } catch {
     return null
@@ -1338,7 +1415,13 @@ function rememberShare(opts: StartShareOptions): void {
     .then((sources) => {
       const src = sources.find((s) => s.id === sourceId)
       if (!src) return
-      const last: LastShare = { sourceId, sourceName: src.name, presetId: opts.presetId, withAudio: opts.withAudio }
+      const last: LastShare = {
+        sourceId,
+        sourceName: src.name,
+        presetId: opts.presetId,
+        withAudio: opts.withAudio,
+        hideNexo: opts.hideNexo ?? true,
+      }
       localStorage.setItem(LAST_SHARE_KEY, JSON.stringify(last))
     })
     .catch(() => undefined)
@@ -1359,7 +1442,10 @@ export async function restartLastShare(): Promise<boolean> {
     sources.find((s) => s.id === last.sourceId && (s.kind === 'screen' || s.name === last.sourceName)) ??
     sources.find((s) => s.kind === 'window' && s.name === last.sourceName)
   if (!src) return false
-  await useVoice.getState().startShare({ sourceId: src.id, presetId: last.presetId, withAudio: last.withAudio })
+  // Same engine choice as a picker share; startShare() resolves once it's live (or failed).
+  await useVoice
+    .getState()
+    .startShare({ sourceId: src.id, presetId: last.presetId, withAudio: last.withAudio, hideNexo: last.hideNexo ?? true })
   if (useVoice.getState().sharing) toast(`Streaming ${src.name}`, 'success')
   return true
 }
@@ -1367,9 +1453,6 @@ export async function restartLastShare(): Promise<boolean> {
 // ---- Sender stats + "capture is starved" detection ----
 
 const SHARE_STATS_INTERVAL_MS = 2000
-/** Consecutive low samples (≈ 8 s) before warning, and good samples before clearing the warning. */
-const CAPTURE_LOW_SAMPLES = 4
-const CAPTURE_OK_SAMPLES = 3
 let shareStatsTimer: number | undefined
 
 function stopShareStats(): void {
@@ -1404,14 +1487,12 @@ async function readShareStats(video: LocalVideoTrack): Promise<ShareStats | null
 
 /**
  * Polls the share's sender stats. Flags `shareCaptureLow` when the capture keeps delivering under half
- * the preset's frame rate on a motion preset. On Windows that is almost always a game with an uncapped
- * frame rate: it floods the GPU queue and screen capture gets starved (≈60 → 3–8 fps), while capping
- * the game (V-Sync or any FPS limit) restores it. Raising Nexo's CPU or GPU priority doesn't help.
+ * the preset's frame rate on a motion preset (see shareHealth.ts). Raising Nexo's CPU or GPU priority
+ * doesn't help; capping the game does.
  */
 function startShareStats(active: ActiveShare, preset: SharePreset): void {
   stopShareStats()
-  let low = 0
-  let ok = 0
+  const low = createCaptureLowDetector(preset, SHARE_STATS_INTERVAL_MS)
   let busy = false
   shareStatsTimer = window.setInterval(() => {
     if (share !== active) return stopShareStats()
@@ -1420,18 +1501,9 @@ function startShareStats(active: ActiveShare, preset: SharePreset): void {
     readShareStats(active.video)
       .then((stats) => {
         if (share !== active || !stats) return
-        let warn = useVoice.getState().shareCaptureLow
-        if (preset.contentHint === 'motion' && stats.captureFps < preset.fps / 2) {
-          ok = 0
-          if (++low >= CAPTURE_LOW_SAMPLES && !warn) {
-            warn = true
-            console.warn('[voice] screen capture starved', stats)
-          }
-        } else {
-          low = 0
-          ok = stats.captureFps >= preset.fps * 0.75 ? ok + 1 : 0
-          if (ok >= CAPTURE_OK_SAMPLES) warn = false
-        }
+        const was = useVoice.getState().shareCaptureLow
+        const warn = low.sample(stats.captureFps, was)
+        if (warn && !was) console.warn('[voice] screen capture starved', stats)
         useVoice.setState({ shareStats: stats, shareCaptureLow: warn })
       })
       .catch(() => undefined)
@@ -1446,6 +1518,8 @@ function onShareEnded(): void {
 }
 
 async function stopShareInternal(announceChange: boolean, r: Room | null = room): Promise<void> {
+  // Native share (also while it's still starting): stop() to the helper, which unpublishes the stream.
+  if (nativeShareActive()) await stopNativeShare(announceChange)
   const s = share
   share = null
   stopShareStats()
@@ -1464,7 +1538,7 @@ async function stopShareInternal(announceChange: boolean, r: Room | null = room)
     if (self) unwatch(self)
   }
   const wasSharing = useVoice.getState().sharing
-  useVoice.setState({ sharing: false, shareStarting: false, sharePresetId: null, shareStats: null, shareCaptureLow: false })
+  useVoice.setState({ sharing: false, shareStarting: false, sharePresetId: null, shareEngine: null, shareStats: null, shareCaptureLow: false })
   if (announceChange && wasSharing) announce()
   if (room) scheduleParticipantsRebuild(room)
 }
@@ -1476,6 +1550,7 @@ async function stopShareInternal(announceChange: boolean, r: Room | null = room)
 window.addEventListener('beforeunload', () => {
   if (!room) return
   announceLeft()
+  releaseNativeShare()
   const r = room
   room = null
   cleanupLocalMedia()

@@ -1,0 +1,8 @@
+# LiveKit C++ client SDK, prebuilt Windows x64 bundle (docs/SPEC-BETA.md §4.8, §9.2).
+# CMake downloads `url`, checks `sha256` and extracts it into native/third_party/ (see nexo-media/cmake/LiveKitSdk.cmake).
+# To bump: change all four lines together, rebuild, and re-run the M0 checks (SPEC-BETA §12).
+version=1.13.1
+url=https://github.com/livekit/client-sdk-cpp/releases/download/v1.13.1/livekit-sdk-windows-x64-1.13.1.zip
+sha256=6696ee87c78b958bdbf70e5eb39bf85e1c7528ca2a707e6c13b042c8e4360b9d
+# Top-level folder inside the zip
+dir=livekit-sdk-windows-x64-1.13.1

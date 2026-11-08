@@ -20,7 +20,8 @@ jobs:
   build:
     name: Build (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    # The Windows job also builds the native helper.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -62,6 +63,53 @@ jobs:
 
       - name: Build desktop app
         run: npm run build -w desktop
+
+      # Native share helper nexo-media.exe (docs/SPEC-BETA.md §9.4), Windows only: build, unit-test and
+      # install it into native/out, which electron-builder.yml ships as <install>/resources/native.
+      - name: MSVC environment (native helper)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      # pwsh, not bash: Git Bash's /usr/bin/link would shadow MSVC's link.exe.
+      - name: Build native helper
+        if: runner.os == 'Windows'
+        shell: pwsh
+        working-directory: native/nexo-media
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          cmake --preset windows-release
+          cmake --build --preset windows-release
+          ctest --preset windows-release
+          cmake --install build/windows-release --prefix ../out
+
+      # The exe must start (all DLLs present). The selftest itself may fail on a runner without a GPU
+      # encoder, so only a crash before any output, or a hang, fails the job.
+      - name: Check native helper
+        if: runner.os == 'Windows'
+        run: |
+          if [[ ! -f native/out/nexo-media.exe ]]; then
+            echo "::error::native/out/nexo-media.exe is missing"
+            exit 1
+          fi
+          ls -la native/out
+          code=0
+          out="$(timeout 60 native/out/nexo-media.exe --selftest 2>selftest.err)" || code=$?
+          echo "$out"
+          cat selftest.err
+          if [[ $code == 124 ]]; then
+            echo "::error::nexo-media.exe --selftest hung"
+            exit 1
+          fi
+          if [[ -z "$out" ]]; then
+            echo "::error::nexo-media.exe --selftest printed nothing (exit $code): it did not start (missing DLL?)"
+            exit 1
+          fi
+          if [[ $code != 0 ]]; then
+            echo "::warning::nexo-media.exe --selftest exited with $code (expected on a runner without a hardware encoder)"
+          fi
 
       # Builds the installer plus its auto-update metadata (publish config in electron-builder.yml).
       # Uploading is left to the release job.

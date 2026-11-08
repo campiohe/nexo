@@ -11,6 +11,9 @@ import {
   type HotkeyEvent,
   type HotkeyStatus,
   type KeybindCapture,
+  type NativeShareCapabilities,
+  type NativeShareError,
+  type NativeShareEvent,
   type NexoBridge,
   type PttBinding,
   type PttStatus,
@@ -19,6 +22,7 @@ import {
   type UpdateState,
   UPDATE_STATUSES,
 } from './api'
+import type { NativeShareInvokeResult } from '../main/native-media/ipc-result'
 
 function arg(name: string): string | undefined {
   const prefix = `--nexo-${name}=`
@@ -67,6 +71,55 @@ async function invokeUpdateState(channel: string): Promise<UpdateState> {
   return state
 }
 
+// ── Native share ────────────────────────────────────────────────────────────────────────────────────────
+
+type Obj = Record<string, unknown>
+const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !Array.isArray(v)
+
+const NATIVE_SHARE_STATES = ['idle', 'starting', 'connecting', 'live', 'reconnecting', 'stopped']
+const NATIVE_SHARE_END_REASONS = ['source-closed', 'stopped', 'device-lost', 'error', 'crashed']
+
+function isNativeShareError(v: unknown): v is NativeShareError {
+  return isObj(v) && typeof v.code === 'string' && typeof v.message === 'string' && typeof v.fallback === 'boolean'
+}
+
+function isNativeShareEvent(v: unknown): v is NativeShareEvent {
+  if (!isObj(v)) return false
+  switch (v.type) {
+    case 'state':
+      return NATIVE_SHARE_STATES.includes(v.state as string)
+    case 'stats':
+      return isObj(v.stats) && typeof v.stats.captureFps === 'number' && typeof v.stats.stalled === 'boolean'
+    case 'ended':
+      return NATIVE_SHARE_END_REASONS.includes(v.reason as string)
+    case 'error':
+      return isNativeShareError(v.error)
+    default:
+      return false
+  }
+}
+
+/**
+ * The rejection value of nativeShare calls: a plain object, not an Error. contextBridge copies only an Error's
+ * message into the page (custom properties are dropped), while a plain object keeps `code` and `fallback`.
+ */
+function nativeShareRejection(error: NativeShareError): NativeShareError & { name: 'NativeShareError' } {
+  return { name: 'NativeShareError', code: error.code, message: error.message, fallback: error.fallback }
+}
+
+/** Main answers start/update/stop/release with a NativeShareInvokeResult; failures become rejections here. */
+async function invokeNativeShare(channel: string, ...args: unknown[]): Promise<void> {
+  let result: NativeShareInvokeResult | undefined
+  try {
+    result = await ipcRenderer.invoke(channel, ...args)
+  } catch (err) {
+    throw nativeShareRejection({ code: 'internal', message: err instanceof Error ? err.message : String(err), fallback: false })
+  }
+  if (isObj(result) && result.ok === true) return
+  if (isObj(result) && result.ok === false && isNativeShareError(result.error)) throw nativeShareRejection(result.error)
+  throw nativeShareRejection({ code: 'internal', message: 'invalid reply from main', fallback: false })
+}
+
 const bridge: NexoBridge = {
   platform,
   supportsSystemAudio: arg('system-audio') === '1',
@@ -76,6 +129,16 @@ const bridge: NexoBridge = {
     listSources: (): Promise<CaptureSource[]> => ipcRenderer.invoke(IPC.listSources),
     selectSource: (id: string | null, withAudio: boolean): Promise<void> =>
       ipcRenderer.invoke(IPC.selectSource, id, withAudio),
+  },
+
+  nativeShare: {
+    capabilities: (): Promise<NativeShareCapabilities> => ipcRenderer.invoke(IPC.nativeShareCapabilities),
+    start: (opts) => invokeNativeShare(IPC.nativeShareStart, opts),
+    update: (patch) => invokeNativeShare(IPC.nativeShareUpdate, patch),
+    stop: () => invokeNativeShare(IPC.nativeShareStop),
+    release: () => invokeNativeShare(IPC.nativeShareRelease),
+    onEvent: (cb: (event: NativeShareEvent) => void): (() => void) =>
+      subscribe(IPC.nativeShareEvent, isNativeShareEvent, cb),
   },
 
   secrets: {

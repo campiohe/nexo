@@ -14,8 +14,17 @@ import { ConnectionQuality } from 'livekit-client'
 import type { User } from '@shared/protocol'
 import { useApp } from '@renderer/store/app'
 import { Avatar } from '@renderer/components/Avatar'
-import { resumeAudio, setStreamVolume, stopWatching, useUserVolume, useVoice, watchStream } from '../../voice/session'
+import {
+  getSharePreset,
+  resumeAudio,
+  setStreamVolume,
+  stopWatching,
+  useUserVolume,
+  useVoice,
+  watchStream,
+} from '../../voice/session'
 import { useParticipants, type ParticipantView } from '../../voice/participants'
+import { useNativeShare } from '../../voice/nativeShare'
 import { CameraButton, DeafenButton, LeaveButton, MuteButton, ShareButton } from './ControlButtons'
 import { SharePickerHost } from './SharePicker'
 import { VideoTrackView, useVideoStats } from './VideoTrackView'
@@ -114,6 +123,9 @@ function Stage() {
   const list = useParticipants((s) => s.list)
   const watching = useParticipants((s) => s.watching)
   const volumes = useParticipants((s) => s.streamVolumes)
+  // Our own native stream is published by the helper's `#stream` participant, which we never subscribe
+  // to: its tile is the "You're live" card, driven by the share state instead of the room.
+  const selfNative = useVoice((s) => s.sharing && s.shareEngine === 'native')
   const users = useApp((s) => s.users)
   const [focusKey, setFocusKey] = useState<string | null>(null)
   const [volumeMenu, setVolumeMenu] = useState<{ userId: string; x: number; y: number } | null>(null)
@@ -122,7 +134,9 @@ function Stage() {
   const closeVolumeMenu = useCallback(() => setVolumeMenu(null), [])
 
   const tiles: TileSpec[] = [
-    ...list.filter((p) => p.isStreaming).map((p) => ({ key: `stream:${p.identity}`, kind: 'stream' as const, view: p })),
+    ...list
+      .filter((p) => p.isStreaming || (p.isLocal && selfNative))
+      .map((p) => ({ key: `stream:${p.identity}`, kind: 'stream' as const, view: p })),
     ...list.map((p) => ({ key: `user:${p.identity}`, kind: 'user' as const, view: p })),
   ]
   const focused = focusKey ? tiles.find((t) => t.key === focusKey) ?? null : null
@@ -145,6 +159,9 @@ function Stage() {
     const user = users[t.view.identity]
     const isFocused = focusKey === t.key
     const toggleFocus = () => setFocusKey(isFocused ? null : t.key)
+    if (t.kind === 'stream' && t.view.isLocal && selfNative) {
+      return <LiveCard key={t.key} view={t.view} user={user} mode={mode} />
+    }
     if (t.kind === 'stream') {
       return (
         <StreamTile
@@ -347,6 +364,7 @@ const UserTile = memo(function UserTile({ view, user, mode, focused, onToggleFoc
   const name = nameOf(view, user)
   const color = colorOf(view, user)
   const selfMuted = useVoice((s) => view.isLocal && s.muted)
+  const selfNativeLive = useVoice((s) => view.isLocal && s.sharing && s.shareEngine === 'native')
   const deafenedSelf = useVoice((s) => view.isLocal && s.deafened)
   const serverState = useApp((s) => s.voice.find((v) => v.userId === view.identity))
   const deafened = (serverState?.deafened ?? false) || deafenedSelf
@@ -401,7 +419,7 @@ const UserTile = memo(function UserTile({ view, user, mode, focused, onToggleFoc
             {mutedForMe ? <VolumeOffIcon size={13} /> : <VolumeIcon size={13} />}
           </span>
         )}
-        {view.isStreaming && <span className="vx-live-badge is-small">LIVE</span>}
+        {(view.isStreaming || selfNativeLive) && <span className="vx-live-badge is-small">LIVE</span>}
         {poor && (
           <span className="vx-label-icon is-warn" title="Poor connection">
             <AlertIcon size={13} />
@@ -409,6 +427,80 @@ const UserTile = memo(function UserTile({ view, user, mode, focused, onToggleFoc
         )}
       </div>
     </TileShell>
+  )
+})
+
+function mbps(bps: number): string {
+  return `${(bps / 1_000_000).toFixed(bps < 10_000_000 ? 1 : 0)} Mbps`
+}
+
+interface LiveCardProps {
+  view: ParticipantView
+  user: User | undefined
+  mode: 'grid' | 'focus' | 'strip'
+}
+
+/**
+ * Our own native share (SPEC-BETA §8.3): no self-preview, which would mean downloading our own upload.
+ * Shows what the helper reports instead.
+ */
+const LiveCard = memo(function LiveCard({ view, user, mode }: LiveCardProps) {
+  const color = colorOf(view, user)
+  const presetId = useVoice((s) => s.sharePresetId)
+  const stats = useVoice((s) => s.shareStats)
+  // The card only shows once live, so 'connecting' here means main is resuming after a helper crash.
+  const reconnecting = useNativeShare((s) => s.state === 'reconnecting' || s.state === 'connecting')
+  const preset = presetId ? getSharePreset(presetId) : null
+  const compact = mode === 'strip'
+
+  return (
+    <div
+      role="listitem"
+      aria-label="Your stream"
+      className={`vx-tile is-${mode} vx-stream is-unwatched vx-livecard`}
+      style={{ ['--tile-color' as string]: color }}
+    >
+      <div className="vx-unwatched">
+        <span className="vx-unwatched-title">
+          <span className="vx-live-badge">LIVE</span> You're live
+        </span>
+        {!compact && preset && (
+          <span className="vx-livecard-preset">
+            {preset.label} · {preset.height}p{preset.fps}
+          </span>
+        )}
+        {!compact &&
+          (stats ? (
+            <span
+              className="vx-livecard-stats"
+              title={`Capturing ${stats.captureFps} fps, sending ${stats.sendFps} fps${
+                stats.width ? ` at ${stats.width}×${stats.height}` : ''
+              }`}
+            >
+              {stats.sendFps} fps{stats.bitrate ? ` · ${mbps(stats.bitrate)}` : ''}
+              {stats.encoder ? ` · ${stats.encoder}` : ''}
+            </span>
+          ) : (
+            <span className="vx-livecard-stats">Measuring…</span>
+          ))}
+        {reconnecting ? (
+          <span className="vx-livecard-notice">
+            <span className="vx-spinner" /> Reconnecting…
+          </span>
+        ) : (
+          stats?.stalled && (
+            <span className="vx-livecard-notice" title="Viewers keep seeing the last frame until it updates again.">
+              <AlertIcon size={13} /> Window minimized / no new frames
+            </span>
+          )
+        )}
+        {!compact && (
+          <button className="vx-btn" onClick={() => void useVoice.getState().stopShare()}>
+            Stop streaming
+          </button>
+        )}
+      </div>
+    </div>
   )
 })
 

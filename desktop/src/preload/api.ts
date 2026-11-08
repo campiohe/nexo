@@ -143,7 +143,112 @@ export interface AppPrefs {
    * Applied at startup, so a change needs a restart. Default true; ignored on other platforms.
    */
   fastCapture: boolean
+  /**
+   * Windows: which engine streams game/screen shares (docs/SPEC-BETA.md §8.4).
+   * - native: the nexo-media helper (WGC + hardware H.264 + LiveKit C++ SDK), when available
+   * - chromium: getDisplayMedia + livekit-client (the alpha path; `fastCapture` applies)
+   * Default 'native'. Ignored on other platforms (always chromium).
+   */
+  captureEngine: CaptureEngine
 }
+
+export type CaptureEngine = 'native' | 'chromium'
+
+// ── Native share (Windows, docs/SPEC-BETA.md) ──────────────────────────────────────────────────────────
+
+/** `motion` (games: keep fps) or `detail` (text: keep quality, drop fps). Same values as SharePreset.contentHint. */
+export type NativeShareContentHint = 'motion' | 'detail'
+
+export interface NativeSharePreset {
+  width: number
+  height: number
+  fps: number
+  /** Bits per second. */
+  maxBitrate: number
+  contentHint: NativeShareContentHint
+}
+
+export interface NativeShareCapabilities {
+  /** True when a native share can start (Windows, helper runs, hardware H.264 encoder found). */
+  available: boolean
+  /** Why not, user-readable (e.g. "No hardware H.264 encoder on this GPU"). */
+  reason?: string
+  version?: string
+  osBuild?: number
+  /** e.g. "NVIDIA GeForce RTX 4070" */
+  adapter?: string
+  /** e.g. "NVIDIA H.264 Encoder MFT" */
+  encoder?: string
+  features?: {
+    borderless: boolean
+    minUpdateInterval: boolean
+    cursorToggle: boolean
+    processLoopback: boolean
+  }
+}
+
+export interface NativeShareStartOptions {
+  /** desktopCapturer source id from capture.listSources() ("window:…" or "screen:…"). Main translates it. */
+  sourceId: string
+  preset: NativeSharePreset
+  /** Capture the mouse cursor. */
+  cursor: boolean
+  /** Stream audio: app audio for a window, system audio without Nexo for a screen. */
+  withAudio: boolean
+  /** Screen sources only: exclude Nexo's windows from the capture while sharing. */
+  hideNexo: boolean
+  /** From the server's `voice:streamToken`. Only travels renderer → main → helper stdin. */
+  livekit: { url: string; token: string }
+}
+
+export type NativeShareState = 'idle' | 'starting' | 'connecting' | 'live' | 'reconnecting' | 'stopped'
+
+export interface NativeShareStats {
+  captureFps: number
+  encodeFps: number
+  targetBitrate: number
+  sentBitrate?: number
+  keyframes: number
+  droppedFrames: number
+  /** No new frame for > 1 s (e.g. minimized window). */
+  stalled: boolean
+  encoder: string
+  width: number
+  height: number
+}
+
+export type NativeShareEndReason = 'source-closed' | 'stopped' | 'device-lost' | 'error' | 'crashed'
+
+export type NativeShareErrorCode =
+  /** Helper exe missing, failed to spawn, or not Windows. */
+  | 'helper-unavailable'
+  /** Helper exited unexpectedly (main restarts it once per SPEC-BETA §4.1). */
+  | 'helper-crashed'
+  /** No hardware H.264 encoder, session limit reached, or encoder creation failed. */
+  | 'encoder-unavailable'
+  /** Source gone / invalid, or WGC failed to start. */
+  | 'capture-failed'
+  | 'livekit-connect'
+  /** Stream audio failed; video keeps going. */
+  | 'audio-failed'
+  /** A share is already running. */
+  | 'busy'
+  /** Malformed message or protocol version mismatch. */
+  | 'protocol'
+  | 'internal'
+
+export interface NativeShareError {
+  code: NativeShareErrorCode
+  message: string
+  /** True when the renderer should retry the share on the chromium engine. */
+  fallback: boolean
+}
+
+export type NativeShareEvent =
+  | { type: 'state'; state: NativeShareState }
+  | { type: 'stats'; stats: NativeShareStats }
+  | { type: 'ended'; reason: NativeShareEndReason }
+  | { type: 'error'; error: NativeShareError }
 
 export type TrayAction = 'toggle-mute' | 'toggle-deafen' | 'leave-voice'
 
@@ -200,6 +305,33 @@ export interface NexoBridge {
      * Pass id = null when usesSystemPicker is true.
      */
     selectSource(id: string | null, withAudio: boolean): Promise<void>
+  }
+
+  /**
+   * Native game/screen share through the nexo-media helper (Windows; docs/SPEC-BETA.md §8). On other
+   * platforms capabilities() resolves `{ available: false }` and the other calls reject.
+   */
+  nativeShare: {
+    /**
+     * Starts the helper if needed and returns its capabilities (cached for the app session). Never rejects:
+     * resolves `{ available: false, reason }` when native sharing can't be used.
+     */
+    capabilities(): Promise<NativeShareCapabilities>
+    /**
+     * Resolves once the helper accepted the share (state then goes connecting → live). Rejects with a plain
+     * object `{ name: 'NativeShareError', code, message, fallback }` (Electron drops custom Error properties
+     * across IPC); a rejected start emits only `state: 'idle'`, never `ended`. update/stop/release reject the
+     * same way.
+     */
+    start(opts: NativeShareStartOptions): Promise<void>
+    /** Live changes: bitrate/fps/contentHint, cursor. A size change needs stop + start. */
+    update(patch: { preset?: Partial<NativeSharePreset>; cursor?: boolean }): Promise<void>
+    /** Stop the active share (no-op when none). */
+    stop(): Promise<void>
+    /** Stop any share and shut the helper down (leaving voice). */
+    release(): Promise<void>
+    /** Every state/stats/ended/error event; the returned function unsubscribes. */
+    onEvent(cb: (event: NativeShareEvent) => void): () => void
   }
 
   /** Small encrypted key/value store (Electron safeStorage when available). Used for the device token. */
@@ -290,4 +422,10 @@ export const IPC = {
   updatesCheck: 'nexo:updates:check',
   updatesInstall: 'nexo:updates:install',
   updatesState: 'nexo:updates:state', // main → renderer (UpdateState)
+  nativeShareCapabilities: 'nexo:native-share:capabilities',
+  nativeShareStart: 'nexo:native-share:start',
+  nativeShareUpdate: 'nexo:native-share:update',
+  nativeShareStop: 'nexo:native-share:stop',
+  nativeShareRelease: 'nexo:native-share:release',
+  nativeShareEvent: 'nexo:native-share:event', // main → renderer (NativeShareEvent)
 } as const

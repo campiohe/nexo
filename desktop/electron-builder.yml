@@ -58,6 +58,14 @@ win:
     - '!node_modules/!(uiohook-napi|node-gyp-build){,/**}'
     - '!node_modules/uiohook-napi/{binding.gyp,libuiohook,src}{,/**}'
     - '!node_modules/uiohook-napi/prebuilds/!(win32-${arch}){,/**}'
+  # The native share helper (docs/SPEC-BETA.md §9.4): nexo-media.exe plus its DLLs, built into native/out by
+  # the release workflow (or scripts/native-build.sh). Lands in <install>/resources/native/, outside the asar,
+  # where src/main/native-media/index.ts looks for it. Windows only, so it lives here and not at the top level
+  # (and if a top-level extraResources is ever added, this list replaces it for Windows: repeat its entries).
+  extraResources:
+    - from: ../native/out
+      to: native
+      filter: ['**/*']
   icon: resources/icon.png
 nsis:
   oneClick: false

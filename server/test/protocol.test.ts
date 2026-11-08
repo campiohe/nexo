@@ -15,6 +15,7 @@ import type {
   HandshakeAuth,
   Message,
   ServerToClientEvents,
+  StreamCredentials,
   User,
   VoiceCredentials,
   VoiceState,
@@ -489,6 +490,62 @@ describe('Nexo protocol', () => {
     assert.equal(await requestErr(alice.socket, 'voice:token', {}), 'Voice channel not found')
   })
 
+  test('voice:streamToken mints a publish-only screen-share token while in that voice channel', async () => {
+    const aliceId = alice.boot.me.id
+    // Not in voice yet.
+    assert.equal(
+      await requestErr(alice.socket, 'voice:streamToken', { channelId: lounge.id }),
+      'Join the voice channel before streaming',
+    )
+    assert.equal(await requestErr(alice.socket, 'voice:streamToken', { channelId: general.id }), 'Voice channel not found')
+    assert.equal(await requestErr(alice.socket, 'voice:streamToken', {}), 'Voice channel not found')
+
+    const joined = nextEvent(bob.socket, 'voice:states', (s) => findVoice(s, aliceId)?.channelId === lounge.id)
+    send(alice.socket, 'voice:state', voicePatch(lounge.id))
+    await joined
+
+    const creds = await requestOk<StreamCredentials>(alice.socket, 'voice:streamToken', { channelId: lounge.id })
+    assert.equal(creds.room, `voice-${lounge.id}`)
+    assert.equal(creds.identity, `${aliceId}#stream`)
+    assert.equal(creds.url, 'ws://127.0.0.1:7880')
+    const claims = await new TokenVerifier(LK_KEY, LK_SECRET).verify(creds.token)
+    assert.equal(claims.sub, `${aliceId}#stream`)
+    assert.equal(claims.name, 'Alice')
+    assert.equal(claims.video?.room, `voice-${lounge.id}`)
+    assert.equal(claims.video?.roomJoin, true)
+    assert.equal(claims.video?.canPublish, true)
+    assert.equal(claims.video?.canSubscribe, false)
+    assert.equal(claims.video?.canPublishData, false)
+    assert.deepEqual(
+      [...((claims.video?.canPublishSources ?? []) as unknown[])].map(String).sort(),
+      ['screen_share', 'screen_share_audio'],
+    )
+
+    // Another voice channel than the one Alice is in.
+    const other = await requestOk<Channel>(bob.socket, 'channel:create', { name: 'Other', type: 'voice' })
+    assert.equal(
+      await requestErr(alice.socket, 'voice:streamToken', { channelId: other.id }),
+      'Join the voice channel before streaming',
+    )
+    // Another socket of the same user doesn't own the voice session.
+    const second = await connect(url, { token: alice.token })
+    assert.equal(
+      await requestErr(second.socket, 'voice:streamToken', { channelId: lounge.id }),
+      'Join the voice channel before streaming',
+    )
+    second.socket.close()
+    // Bob is not in voice.
+    assert.equal(
+      await requestErr(bob.socket, 'voice:streamToken', { channelId: lounge.id }),
+      'Join the voice channel before streaming',
+    )
+
+    await requestOk<null>(bob.socket, 'channel:delete', { channelId: other.id })
+    const left = nextEvent(bob.socket, 'voice:states', (s) => !findVoice(s, aliceId))
+    send(alice.socket, 'voice:state', voicePatch(null))
+    await left
+  })
+
   // ----- profile -----
 
   test('profile:update broadcasts and refreshes every socket of the user', async () => {
@@ -512,7 +569,7 @@ describe('Nexo protocol', () => {
 
   test('malformed payloads never crash the server', async () => {
     const raw = alice.socket as unknown as { emit(e: string, ...a: unknown[]): void }
-    for (const event of ['channel:create', 'channel:rename', 'channel:delete', 'message:send', 'message:delete', 'message:history', 'voice:token', 'profile:update']) {
+    for (const event of ['channel:create', 'channel:rename', 'channel:delete', 'message:send', 'message:delete', 'message:history', 'voice:token', 'voice:streamToken', 'profile:update']) {
       raw.emit(event) // no payload, no ack
       raw.emit(event, 'string-payload')
       raw.emit(event, { channelId: { $ne: 1 }, messageId: [1], name: {}, content: [], color: 5 })

@@ -1,4 +1,5 @@
-// Owner: workstream B. Electron main process: window, tray, global hotkeys, security, capture, secrets, updates.
+// Owner: workstream B. Electron main process: window, tray, global hotkeys, security, capture, native share,
+// secrets, updates.
 import { app, BrowserWindow, ipcMain, Menu, type MenuItemConstructorOptions } from 'electron'
 import { join, resolve } from 'node:path'
 import icon from '../../resources/icon.png?asset'
@@ -7,6 +8,7 @@ import { installCapture } from './capture'
 import { devMode, isDev, platform, preloadArguments } from './platform'
 import { getPrefs, installPrefs } from './prefs'
 import { installHotkeys } from './hotkeys'
+import { installNativeShare, releaseNativeShare } from './native-media'
 import { installSecrets } from './secrets'
 import { installSecurity, isAppUrl, openExternalSafe, rendererEntry } from './security'
 import { destroyTray, hasTray, installTray, maybeShowTrayHint, setTrayUpdateReady } from './tray'
@@ -79,7 +81,11 @@ function createMainWindow(): BrowserWindow {
   })
   win.on('closed', () => {
     if (mainWindow === win) mainWindow = null
+    releaseNativeShare()
   })
+  // A native share belongs to the renderer that started it: a reload or a renderer crash ends it.
+  win.webContents.on('did-navigate', releaseNativeShare)
+  win.webContents.on('render-process-gone', releaseNativeShare)
 
   // DevTools: F12 / Ctrl+Shift+I (Cmd+Alt+I on macOS), unpackaged runs or --nexo-dev only.
   win.webContents.on('before-input-event', (event, input) => {
@@ -196,6 +202,7 @@ if (!app.requestSingleInstanceLock()) {
     installSecrets()
     installPrefs()
     installHotkeys({ getWindow: () => mainWindow, focusWindow: raiseMainWindow })
+    installNativeShare({ getWindow: () => mainWindow })
     ipcMain.on(IPC.openExternal, (event, url: unknown) => {
       if (isAppUrl(event.senderFrame?.url)) openExternalSafe(url)
     })

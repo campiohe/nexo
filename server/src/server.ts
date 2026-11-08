@@ -2,7 +2,7 @@ import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { Server, type Socket } from 'socket.io'
-import { AccessToken } from 'livekit-server-sdk'
+import { AccessToken, TrackSource } from 'livekit-server-sdk'
 import type {
   Ack,
   ChannelType,
@@ -12,6 +12,7 @@ import type {
   VoiceState,
 } from '../../shared/protocol.ts'
 import { MAX_ATTACHMENTS_PER_MESSAGE, MAX_MESSAGE_LENGTH } from '../../shared/protocol.ts'
+import { streamIdentity } from '../../shared/stream.ts'
 import { loadConfig, type Config } from './config.ts'
 import { isUniqueViolation, openDb } from './db.ts'
 import { createAvatarRoutes } from './avatars.ts'
@@ -400,6 +401,36 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
       })
       at.addGrant({ room, roomJoin: true, canPublish: true, canSubscribe: true, canPublishData: true })
       ok(ack, { url: livekitUrlFor(socket), token: await at.toJwt(), room })
+    }))
+
+    // The native share helper (Windows) joins as a second, publish-only participant `<userId>#stream`
+    // (docs/SPEC-BETA.md §7). Only for the voice channel this socket is currently in, so a stream can't
+    // appear in a room its owner isn't in.
+    socket.on('voice:streamToken', guard('voice:streamToken', async (p, ack) => {
+      const channel = isObj(p) && isStr(p.channelId) ? channels.get(p.channelId) : undefined
+      if (!channel || channel.type !== 'voice') return fail(ack, 'Voice channel not found')
+      const current = voiceStates.get(userId)
+      if (current?.channelId !== channel.id || current.socketId !== socket.id) {
+        return fail(ack, 'Join the voice channel before streaming')
+      }
+      const user = me()
+      const room = `voice-${channel.id}`
+      const identity = streamIdentity(user.id)
+      const at = new AccessToken(config.livekit.apiKey, config.livekit.apiSecret, {
+        identity,
+        name: user.name,
+        metadata: JSON.stringify({ color: user.color }),
+        ttl: LIMITS.tokenTtl,
+      })
+      at.addGrant({
+        room,
+        roomJoin: true,
+        canPublish: true,
+        canSubscribe: false,
+        canPublishData: false,
+        canPublishSources: [TrackSource.SCREEN_SHARE, TrackSource.SCREEN_SHARE_AUDIO],
+      })
+      ok(ack, { url: livekitUrlFor(socket), token: await at.toJwt(), room, identity })
     }))
 
     socket.on('voice:state', guard('voice:state', (p) => {

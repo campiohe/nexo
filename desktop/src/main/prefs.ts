@@ -2,7 +2,7 @@
 import { app, ipcMain, type IpcMainInvokeEvent } from 'electron'
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { IPC, type AppPrefs } from '../preload/api'
+import { IPC, type AppPrefs, type CaptureEngine } from '../preload/api'
 import { isAppUrl } from './security'
 
 interface PrefsFile extends AppPrefs {
@@ -10,8 +10,11 @@ interface PrefsFile extends AppPrefs {
   trayHintShown: boolean
 }
 
-const DEFAULTS: PrefsFile = { closeToTray: true, fastCapture: true, trayHintShown: false }
+const DEFAULTS: PrefsFile = { closeToTray: true, fastCapture: true, captureEngine: 'native', trayHintShown: false }
 const BOOLEAN_PREFS = ['closeToTray', 'fastCapture'] as const satisfies readonly (keyof AppPrefs)[]
+const CAPTURE_ENGINES: readonly CaptureEngine[] = ['native', 'chromium']
+
+const isCaptureEngine = (v: unknown): v is CaptureEngine => CAPTURE_ENGINES.includes(v as CaptureEngine)
 
 let cache: PrefsFile | null = null
 
@@ -23,6 +26,7 @@ function load(): PrefsFile {
   try {
     const raw = JSON.parse(readFileSync(filePath(), 'utf8')) as Record<string, unknown>
     for (const key of BOOLEAN_PREFS) if (typeof raw[key] === 'boolean') data[key] = raw[key]
+    if (isCaptureEngine(raw.captureEngine)) data.captureEngine = raw.captureEngine
     if (typeof raw.trayHintShown === 'boolean') data.trayHintShown = raw.trayHintShown
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'ENOENT') console.warn('[nexo] could not read prefs, using defaults:', err)
@@ -43,8 +47,8 @@ function save(data: PrefsFile): void {
 }
 
 export function getPrefs(): AppPrefs {
-  const { closeToTray, fastCapture } = load()
-  return { closeToTray, fastCapture }
+  const { closeToTray, fastCapture, captureEngine } = load()
+  return { closeToTray, fastCapture, captureEngine }
 }
 
 /** True the first time it's called per install (then remembered in prefs.json). */
@@ -63,6 +67,9 @@ function parsePatch(patch: unknown): Partial<AppPrefs> {
     if ((BOOLEAN_PREFS as readonly string[]).includes(key)) {
       if (typeof value !== 'boolean') throw new TypeError(`${key} must be a boolean`)
       out[key as (typeof BOOLEAN_PREFS)[number]] = value
+    } else if (key === 'captureEngine') {
+      if (!isCaptureEngine(value)) throw new TypeError('captureEngine must be "native" or "chromium"')
+      out.captureEngine = value
     } else {
       throw new TypeError(`unknown pref: ${key.slice(0, 64)}`)
     }
