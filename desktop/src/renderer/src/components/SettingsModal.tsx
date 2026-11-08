@@ -351,11 +351,11 @@ const CAPTURE_ENGINES: { id: CaptureEngine; label: string }[] = [
 ]
 
 /** What the native capture helper found on this PC (Windows). Starts the helper if it isn't running. */
-function useNativeCapabilities(enabled: boolean): NativeShareCapabilities | null {
+function useNativeCapabilities(): NativeShareCapabilities | null {
   const [caps, setCaps] = useState<NativeShareCapabilities | null>(null)
   useEffect(() => {
     const native = window.nexo.nativeShare
-    if (!enabled || !native) return
+    if (!native) return
     let alive = true
     native
       .capabilities()
@@ -370,7 +370,7 @@ function useNativeCapabilities(enabled: boolean): NativeShareCapabilities | null
     return () => {
       alive = false
     }
-  }, [enabled])
+  }, [])
   return caps
 }
 
@@ -406,8 +406,10 @@ function AppSection() {
   }, [])
 
   const [restartNeeded, setRestartNeeded] = useState(false)
+  // Main reports the native engine unavailable off Windows, unless the fake helper is on (NEXO_MEDIA_FAKE=1).
   const isWindows = window.nexo.platform === 'win32'
-  const nativeCaps = useNativeCapabilities(isWindows)
+  const nativeCaps = useNativeCapabilities()
+  const showEngine = isWindows || !!nativeCaps?.available
   // Missing in prefs written before the beta: the default is native (preload/api.ts).
   const engine: CaptureEngine = prefs?.captureEngine ?? 'native'
 
@@ -453,7 +455,7 @@ function AppSection() {
               onChange={(e) => void setPref({ closeToTray: e.target.checked })}
             />
           </label>
-          {isWindows && (
+          {showEngine && (
             <div className="toggle-row" style={{ cursor: 'default' }}>
               <span className="toggle-text">
                 <span id="capture-engine-label">Capture engine</span>

@@ -90,14 +90,18 @@ export function VoiceControls() {
           {shareStats && (
             <span
               className={`vx-panel-fps ${captureLow ? 'is-warn' : ''}`}
-              title={`Capturing ${shareStats.captureFps} fps, sending ${shareStats.sendFps} fps${
+              title={`${
+                shareStats.idle
+                  ? "Your screen isn't changing, so there are no new frames to capture. Viewers see changes as soon as they happen. "
+                  : ''
+              }Capturing ${shareStats.captureFps} fps, sending ${shareStats.sendFps} fps${
                 shareStats.width ? ` at ${shareStats.width}×${shareStats.height}` : ''
               }${shareStats.encoder ? ` (${shareStats.encoder})` : ''}${
                 shareStats.limitation !== 'none' ? `, limited by ${shareStats.limitation}` : ''
               }`}
             >
               {captureLow && <AlertIcon size={12} />}
-              {shareStats.captureFps} fps
+              {shareStats.idle ? 'idle' : `${shareStats.captureFps} fps`}
             </span>
           )}
         </div>

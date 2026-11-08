@@ -157,12 +157,15 @@ class MfEncoder::Core : public std::enable_shared_from_this<MfEncoder::Core> {
   void onEvent(IMFAsyncResult* result);
   std::optional<Input> allocateInput();
   Submit encode(const Input& input, int64_t timestampUs, bool keyframe);
-  void applyRates(const EncoderRates& rates) {
+  bool applyRates(const EncoderRates& rates) {
     std::lock_guard lock(mutex_);
-    if (!stopped_ && !failed_) setRates(rates, false);
+    return !stopped_ && !failed_ && setRates(rates, false);
   }
-  void setRates(const EncoderRates& rates, bool initial); ///< caller holds mutex_ (or is init)
+  /// False when a mid-stream rate-control mode change didn't take. Caller holds mutex_ (or is init).
+  bool setRates(const EncoderRates& rates, bool initial);
   void shutdown();
+
+  double fps() const { return config_.fps; }
 
   std::string name;
   std::string vendor;
@@ -254,6 +257,16 @@ void MfEncoder::Core::init(const H264EncoderInfo& info) {
     log::debug("encoder: B-frames=0 not applied ({}), relying on low-latency mode", describeHresult(hr));
   }
   initAllocator();
+  {
+    VARIANT v;
+    VariantInit(&v);
+    if (SUCCEEDED(codecApi_->GetValue(&CODECAPI_AVEncCommonRateControlMode, &v))) {
+      const UINT32 wanted = config_.rates.mode == RateMode::Cbr ? eAVEncCommonRateControlMode_CBR
+                                                                 : eAVEncCommonRateControlMode_PeakConstrainedVBR;
+      log::info("encoder: rate control mode {} requested, the MFT reports {}", wanted, v.ulVal);
+    }
+    VariantClear(&v);
+  }
 
   generator_ = transform_.as<IMFMediaEventGenerator>();
   auto cb = winrt::make_self<EventCallback>();
@@ -278,12 +291,30 @@ void MfEncoder::Core::configureCodecApi() {
   setRates(config_.rates, true);
 }
 
-void MfEncoder::Core::setRates(const EncoderRates& r, bool initial) {
+bool MfEncoder::Core::setRates(const EncoderRates& r, bool initial) {
   auto* api = codecApi_.get();
+  bool modeApplied = true;
   if (initial || !rates_ || rates_->mode != r.mode) {
     const UINT32 mode = r.mode == RateMode::Cbr ? eAVEncCommonRateControlMode_CBR : eAVEncCommonRateControlMode_PeakConstrainedVBR;
     const HRESULT hr = setU32(api, CODECAPI_AVEncCommonRateControlMode, mode);
     if (FAILED(hr)) log::warn("encoder: rate control mode {} not applied: {}", mode, describeHresult(hr));
+    if (!initial) {
+      // A mid-stream switch (update: motion ↔ detail). Some MFTs only honor the mode at init, so read it back
+      // instead of trusting the HRESULT.
+      VARIANT v;
+      VariantInit(&v);
+      const HRESULT read = api->GetValue(&CODECAPI_AVEncCommonRateControlMode, &v);
+      if (SUCCEEDED(read)) {
+        modeApplied = v.ulVal == mode;
+        log::info("encoder: rate control mode set to {} mid-stream, the MFT now reports {} ({})", mode, v.ulVal,
+                  modeApplied ? "applied" : "NOT applied");
+      } else {
+        modeApplied = SUCCEEDED(hr);
+        log::info("encoder: rate control mode set to {} mid-stream ({}), read-back unsupported: {}", mode,
+                  SUCCEEDED(hr) ? "accepted" : "refused", describeHresult(read));
+      }
+      VariantClear(&v);
+    }
   }
   HRESULT hr = setU32(api, CODECAPI_AVEncCommonMeanBitRate, clampU32(r.meanBitrate));
   if (FAILED(hr)) log::warn("encoder: mean bitrate not applied: {}", describeHresult(hr));
@@ -300,6 +331,7 @@ void MfEncoder::Core::setRates(const EncoderRates& r, bool initial) {
     }
   }
   rates_ = r;
+  return modeApplied;
 }
 
 void MfEncoder::Core::setOutputType() {
@@ -333,6 +365,21 @@ void MfEncoder::Core::setOutputType() {
 }
 
 void MfEncoder::Core::setInputType() {
+  if (EventSink::instance().minLevel() <= ipc::LogLevel::Debug) {
+    // Which input formats this MFT takes (an RGB input would let a 1:1 share skip the video processor).
+    std::string offered;
+    for (DWORD i = 0;; ++i) {
+      winrt::com_ptr<IMFMediaType> type;
+      if (FAILED(transform_->GetInputAvailableType(inputId_, i, type.put()))) break;
+      GUID subtype{};
+      type->GetGUID(MF_MT_SUBTYPE, &subtype);
+      char fourcc[5] = {static_cast<char>(subtype.Data1 & 0xFF), static_cast<char>((subtype.Data1 >> 8) & 0xFF),
+                        static_cast<char>((subtype.Data1 >> 16) & 0xFF), static_cast<char>((subtype.Data1 >> 24) & 0xFF), 0};
+      offered += std::format("{}{} (0x{:08X})", offered.empty() ? "" : ", ", subtype.Data1 < 0x100 ? "d3dfmt" : fourcc,
+                             static_cast<uint32_t>(subtype.Data1));
+    }
+    log::debug("encoder: {} input types: {}", name, offered);
+  }
   for (DWORD i = 0;; ++i) {
     winrt::com_ptr<IMFMediaType> type;
     const HRESULT hr = transform_->GetInputAvailableType(inputId_, i, type.put());
@@ -604,11 +651,12 @@ MfEncoder::Submit MfEncoder::encode(const Input& input, int64_t timestampUs, boo
   return core_->encode(input, timestampUs, keyframe);
 }
 
-void MfEncoder::setRates(const EncoderRates& rates) {
-  core_->applyRates(rates);
+bool MfEncoder::setRates(const EncoderRates& rates) {
+  return core_->applyRates(rates);
 }
 
 const std::string& MfEncoder::name() const { return core_->name; }
+double MfEncoder::fps() const { return core_->fps(); }
 const std::string& MfEncoder::vendor() const { return core_->vendor; }
 uint64_t MfEncoder::keyframes() const { return core_->keyframes.load(); }
 uint64_t MfEncoder::outputBytes() const { return core_->bytes.load(); }

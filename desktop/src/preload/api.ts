@@ -244,11 +244,16 @@ export interface NativeShareError {
   fallback: boolean
 }
 
+/**
+ * Every event carries the `shareId` of the share it belongs to: main numbers each start() it accepts (1, 2, …
+ * for the app session) and tags all of that share's events, from `state: 'starting'` to the final
+ * `state: 'idle'`. start() resolves with the same id, so the renderer can drop events of earlier shares.
+ */
 export type NativeShareEvent =
-  | { type: 'state'; state: NativeShareState }
-  | { type: 'stats'; stats: NativeShareStats }
-  | { type: 'ended'; reason: NativeShareEndReason }
-  | { type: 'error'; error: NativeShareError }
+  | { type: 'state'; shareId: number; state: NativeShareState }
+  | { type: 'stats'; shareId: number; stats: NativeShareStats }
+  | { type: 'ended'; shareId: number; reason: NativeShareEndReason }
+  | { type: 'error'; shareId: number; error: NativeShareError }
 
 export type TrayAction = 'toggle-mute' | 'toggle-deafen' | 'leave-voice'
 
@@ -318,12 +323,13 @@ export interface NexoBridge {
      */
     capabilities(): Promise<NativeShareCapabilities>
     /**
-     * Resolves once the helper accepted the share (state then goes connecting → live). Rejects with a plain
-     * object `{ name: 'NativeShareError', code, message, fallback }` (Electron drops custom Error properties
-     * across IPC); a rejected start emits only `state: 'idle'`, never `ended`. update/stop/release reject the
-     * same way.
+     * Resolves once the helper accepted the share (state then goes connecting → live), with the `shareId`
+     * its events carry. Rejects with a plain object `{ name: 'NativeShareError', code, message, fallback }`
+     * (Electron drops custom Error properties across IPC); a rejected start emits only `state: 'starting'` and
+     * `state: 'idle'` (with an id start() never returned), never `ended`. update/stop/release reject the same
+     * way.
      */
-    start(opts: NativeShareStartOptions): Promise<void>
+    start(opts: NativeShareStartOptions): Promise<{ shareId: number }>
     /** Live changes: bitrate/fps/contentHint, cursor. A size change needs stop + start. */
     update(patch: { preset?: Partial<NativeSharePreset>; cursor?: boolean }): Promise<void>
     /** Stop the active share (no-op when none). */

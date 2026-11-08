@@ -31,6 +31,37 @@ PacerConfig pacerConfig(const ipc::Preset& preset, Size output) {
   return c;
 }
 
+int envInt(const char* name, int fallback) {
+  const auto v = envString(name);
+  if (v.empty()) return fallback;
+  try {
+    return std::stoi(v);
+  } catch (...) {
+    return fallback;
+  }
+}
+
+/// Which process loopback the share's audio mode means (SPEC-BETA §4.7 table).
+std::optional<AudioCaptureConfig> resolveAudio(const ShareSpec& spec) {
+  if (spec.audio == ipc::AudioMode::Off) return std::nullopt;
+  if (spec.audio == ipc::AudioMode::App) {
+    DWORD pid = 0;
+    if (spec.kind == ShareSpec::Kind::Window) GetWindowThreadProcessId(spec.hwnd, &pid);
+    if (spec.kind == ShareSpec::Kind::TestPattern) pid = spec.audioPid;
+    if (pid != 0) return AudioCaptureConfig{LoopbackMode::IncludeProcessTree, pid};
+    // A monitor has no owning app. Rejecting would leave the share silent for a UI that just asked for audio,
+    // so it gets what a screen share gets: everything but Nexo.
+    log::info("audio: 'app' on a source without a window means 'system-but-nexo'");
+  }
+  uint32_t exclude = spec.excludePid;
+  if (exclude == 0) {
+    // Without Electron's PID, exclude ourselves (we play nothing): system audio, Nexo's sounds included.
+    log::warn("audio: no excludePid given, Nexo's own audio will be in the stream");
+    exclude = GetCurrentProcessId();
+  }
+  return AudioCaptureConfig{LoopbackMode::ExcludeProcessTree, exclude};
+}
+
 std::string describeSpec(const ShareSpec& s) {
   switch (s.kind) {
     case ShareSpec::Kind::Window: return std::format("window {}", reinterpret_cast<uintptr_t>(s.hwnd));
@@ -41,7 +72,37 @@ std::string describeSpec(const ShareSpec& s) {
   return "?";
 }
 
+/// One LiveKit session per process. Two `<user>#stream` connections with the same identity make the server
+/// kick the older one, so a share whose connect was abandoned keeps the gate until that connect has returned
+/// and disconnected, and the next share waits for it. A semaphore, not a mutex: the abandoned connect's thread
+/// releases it, not the thread that took it.
+HANDLE liveKitGate() {
+  static const winrt::handle gate(CreateSemaphoreW(nullptr, 1, 1, nullptr));
+  return gate.get();
+}
+
+std::shared_ptr<void> takeLiveKitGate() {
+  return std::shared_ptr<void>(liveKitGate(), [](void* h) { ReleaseSemaphore(static_cast<HANDLE>(h), 1, nullptr); });
+}
+
+/// The connect thread's result, shared with a share that may have stopped waiting for it.
+struct ConnectJob {
+  std::mutex mutex;
+  winrt::handle done{CreateEventW(nullptr, TRUE, FALSE, nullptr)};
+  bool finished = false;
+  bool abandoned = false;
+  bool ok = false;
+  ipc::ErrorCode code = ipc::ErrorCode::LivekitConnect;
+  std::string error;
+};
+
 } // namespace
+
+bool waitLiveKitIdle(std::chrono::milliseconds timeout) {
+  if (WaitForSingleObject(liveKitGate(), static_cast<DWORD>(timeout.count())) != WAIT_OBJECT_0) return false;
+  ReleaseSemaphore(liveKitGate(), 1, nullptr);
+  return true;
+}
 
 std::unique_ptr<Share> Share::prepare(const ShareSpec& spec) {
   auto share = std::make_unique<Share>(Private{});
@@ -52,71 +113,6 @@ std::unique_ptr<Share> Share::prepare(const ShareSpec& spec) {
 
   if (envFlag("NEXO_MEDIA_DISABLE_HW")) {
     throw ShareError(ipc::ErrorCode::EncoderUnavailable, "hardware encoding disabled (NEXO_MEDIA_DISABLE_HW=1)");
-  }
-
-  // Adapter: high-performance first, and it must have a hardware H.264 MFT (SPEC-BETA §4.3).
-  std::optional<AdapterDesc> adapter;
-  try {
-    for (const auto& a : listAdapters()) {
-      if (!listH264Encoders(&a.luid).empty()) {
-        adapter = a;
-        break;
-      }
-    }
-  } catch (const std::exception& e) {
-    throw ShareError(ipc::ErrorCode::EncoderUnavailable, std::string("GPU enumeration failed: ") + e.what());
-  }
-  if (!adapter) throw ShareError(ipc::ErrorCode::EncoderUnavailable, "no GPU with a hardware H.264 encoder");
-
-  try {
-    share->device_ = D3DDevice::create(*adapter);
-  } catch (const std::exception& e) {
-    throw ShareError(ipc::ErrorCode::EncoderUnavailable, std::string("D3D11 device: ") + e.what());
-  }
-  winrt::com_ptr<ID3D11Device> d3d;
-  d3d.copy_from(share->device_->device());
-  share->ring_ = std::make_unique<FrameRing>(std::move(d3d));
-
-  // Source
-  try {
-    switch (spec.kind) {
-      case ShareSpec::Kind::Window: {
-        share->source_ = std::make_unique<WgcCapture>(share->device_, *share->ring_, WgcCapture::Target{spec.hwnd, nullptr},
-                                                      spec.cursor, spec.preset.fps);
-        break;
-      }
-      case ShareSpec::Kind::Monitor: {
-        // Physical coordinates: the process is per-monitor DPI aware (main.cpp), as is Electron's dipToScreenRect.
-        const RECT r{spec.monitorRect.x, spec.monitorRect.y, spec.monitorRect.x + spec.monitorRect.width,
-                     spec.monitorRect.y + spec.monitorRect.height};
-        HMONITOR monitor = MonitorFromRect(&r, MONITOR_DEFAULTTONULL);
-        if (!monitor) throw ShareError(ipc::ErrorCode::CaptureFailed, "no monitor at the given rectangle");
-        share->source_ = std::make_unique<WgcCapture>(share->device_, *share->ring_, WgcCapture::Target{nullptr, monitor},
-                                                      spec.cursor, spec.preset.fps);
-        break;
-      }
-      case ShareSpec::Kind::TestPattern:
-        share->source_ = std::make_unique<TestPatternSource>(share->device_, *share->ring_, spec.patternSize, spec.preset.fps);
-        break;
-    }
-  } catch (const ShareError&) {
-    throw;
-  } catch (const winrt::hresult_error& e) {
-    throw ShareError(ipc::ErrorCode::CaptureFailed, "capture: " + describeHresult(e.code()));
-  } catch (const std::exception& e) {
-    throw ShareError(ipc::ErrorCode::CaptureFailed, std::string("capture: ") + e.what());
-  }
-
-  // Output size is fixed for the whole share (EncodedVideoSource has a fixed size, SPEC-BETA §4.4).
-  share->output_ = pickOutputSize(share->source_->initialSize(), {spec.preset.width, spec.preset.height});
-  share->pacer_ = std::make_unique<Pacer>(pacerConfig(spec.preset, share->output_));
-
-  try {
-    share->converter_ = std::make_unique<VideoConverter>(share->device_, share->output_,
-                                                          spec.preset.contentHint == ipc::ContentHint::Detail);
-  } catch (const std::exception& e) {
-    // No GPU conversion means no native path: let the renderer fall back like for a missing encoder.
-    throw ShareError(ipc::ErrorCode::EncoderUnavailable, std::string("video processor: ") + e.what());
   }
 
   Share* self = share.get();
@@ -135,26 +131,216 @@ std::unique_ptr<Share> Share::prepare(const ShareSpec& spec) {
     share->publisher_ = createNullPublisher(std::move(callbacks));
   }
 
-  EncoderConfig ec;
-  ec.size = share->output_;
-  ec.fps = spec.preset.fps;
-  ec.rates = share->pacer_->encoderRates();
-  ec.profile = h264ProfileFromEnv();
-  share->encoder_ = MfEncoder::create(
-      share->device_, ec, [self](EncodedFrame&& f) { self->onEncoded(std::move(f)); },
-      [self](const std::string& message) { self->fail(ipc::ErrorCode::EncoderUnavailable, message); });
-  share->pacer_->takeRateChange(); // the encoder starts with these rates
+  share->buildPipeline(true);
+
+  share->audioConfig_ = resolveAudio(spec);
+  if (spec.dumpWav && share->audioConfig_) {
+    share->wav_ = std::make_unique<WavWriter>(*spec.dumpWav, WasapiCapture::kSampleRate, static_cast<uint16_t>(WasapiCapture::kChannels));
+    if (!share->wav_->ok()) log::warn("share: cannot open {} for the audio dump", spec.dumpWav->string());
+  }
 
   if (spec.dumpH264) {
     share->dump_.open(*spec.dumpH264, std::ios::binary | std::ios::trunc);
     if (!share->dump_) log::warn("share: cannot open {} for the H.264 dump", spec.dumpH264->string());
   }
 
+  share->testDeviceLostAfterUs_ = static_cast<int64_t>(std::max(0, envInt("NEXO_MEDIA_TEST_DEVICE_LOST_AFTER_MS", 0))) * 1000;
+  share->testRebuildFailures_ = std::max(0, envInt("NEXO_MEDIA_TEST_DEVICE_REBUILD_FAILS", 0));
+
   share->stopEvent_.attach(CreateEventW(nullptr, TRUE, FALSE, nullptr));
   if (!share->stopEvent_) throw ShareError(ipc::ErrorCode::Internal, "CreateEvent failed");
   log::info("share: ready, output {}x{} from {} ({}x{})", share->output_.width, share->output_.height, share->source_->describe(),
             share->source_->initialSize().width, share->source_->initialSize().height);
   return share;
+}
+
+void Share::buildPipeline(bool initial) {
+  if (!initial && testRebuildFailures_ > 0) {
+    --testRebuildFailures_;
+    throw std::runtime_error("simulated rebuild failure (NEXO_MEDIA_TEST_DEVICE_REBUILD_FAILS)");
+  }
+
+  // Adapter: high-performance first, and it must have a hardware H.264 MFT (SPEC-BETA §4.3). Enumerated again
+  // on a rebuild: after a driver restart the adapter's LUID can change.
+  std::optional<AdapterDesc> adapter;
+  try {
+    for (const auto& a : listAdapters()) {
+      if (!listH264Encoders(&a.luid).empty()) {
+        adapter = a;
+        break;
+      }
+    }
+  } catch (const std::exception& e) {
+    throw ShareError(ipc::ErrorCode::EncoderUnavailable, std::string("GPU enumeration failed: ") + e.what());
+  }
+  if (!adapter) throw ShareError(ipc::ErrorCode::EncoderUnavailable, "no GPU with a hardware H.264 encoder");
+
+  try {
+    device_ = D3DDevice::create(*adapter);
+  } catch (const std::exception& e) {
+    throw ShareError(ipc::ErrorCode::EncoderUnavailable, std::string("D3D11 device: ") + e.what());
+  }
+  winrt::com_ptr<ID3D11Device> d3d;
+  d3d.copy_from(device_->device());
+  ring_ = std::make_unique<FrameRing>(std::move(d3d));
+
+  // Source
+  const double fps = initial ? spec_.preset.fps : lastFps_;
+  try {
+    switch (spec_.kind) {
+      case ShareSpec::Kind::Window:
+        source_ = std::make_unique<WgcCapture>(device_, *ring_, WgcCapture::Target{spec_.hwnd, nullptr}, spec_.cursor, fps);
+        break;
+      case ShareSpec::Kind::Monitor: {
+        // Physical coordinates: the process is per-monitor DPI aware (main.cpp), as is Electron's dipToScreenRect.
+        const RECT r{spec_.monitorRect.x, spec_.monitorRect.y, spec_.monitorRect.x + spec_.monitorRect.width,
+                     spec_.monitorRect.y + spec_.monitorRect.height};
+        HMONITOR monitor = MonitorFromRect(&r, MONITOR_DEFAULTTONULL);
+        if (!monitor) throw ShareError(ipc::ErrorCode::CaptureFailed, "no monitor at the given rectangle");
+        source_ = std::make_unique<WgcCapture>(device_, *ring_, WgcCapture::Target{nullptr, monitor}, spec_.cursor, fps);
+        break;
+      }
+      case ShareSpec::Kind::TestPattern:
+        source_ = std::make_unique<TestPatternSource>(device_, *ring_, spec_.patternSize, fps);
+        break;
+    }
+  } catch (const ShareError&) {
+    throw;
+  } catch (const winrt::hresult_error& e) {
+    throw ShareError(ipc::ErrorCode::CaptureFailed, "capture: " + describeHresult(e.code()));
+  } catch (const std::exception& e) {
+    throw ShareError(ipc::ErrorCode::CaptureFailed, std::string("capture: ") + e.what());
+  }
+
+  ipc::ContentHint hint;
+  EncoderConfig ec;
+  {
+    std::lock_guard lock(pacerMutex_);
+    if (initial) {
+      // Output size is fixed for the whole share (EncodedVideoSource has a fixed size, SPEC-BETA §4.4), so a
+      // rebuild keeps it even if the source size changed meanwhile: the converter letterboxes.
+      output_ = pickOutputSize(source_->initialSize(), {spec_.preset.width, spec_.preset.height});
+      pacer_ = std::make_unique<Pacer>(pacerConfig(spec_.preset, output_));
+    }
+    hint = spec_.preset.contentHint;
+    ec.size = output_;
+    ec.fps = spec_.preset.fps;
+    ec.rates = pacer_->encoderRates();
+    pacer_->takeRateChange(); // the encoder starts with these rates
+  }
+
+  try {
+    converter_ = std::make_unique<VideoConverter>(device_, output_, hint == ipc::ContentHint::Detail);
+    converterDetail_ = hint == ipc::ContentHint::Detail;
+  } catch (const std::exception& e) {
+    // No GPU conversion means no native path: let the renderer fall back like for a missing encoder.
+    throw ShareError(ipc::ErrorCode::EncoderUnavailable, std::string("video processor: ") + e.what());
+  }
+
+  encoder_ = createEncoder(ec.rates, ec.fps);
+  lastMode_ = ec.rates.mode;
+}
+
+std::unique_ptr<MfEncoder> Share::createEncoder(const EncoderRates& rates, double fps) {
+  EncoderConfig ec;
+  ec.size = output_;
+  ec.fps = fps;
+  ec.rates = rates;
+  ec.profile = h264ProfileFromEnv();
+  Share* self = this;
+  return MfEncoder::create(
+      device_, ec, [self](EncodedFrame&& f) { self->onEncoded(std::move(f)); },
+      [self, weak = std::weak_ptr<D3DDevice>(device_)](const std::string& message) {
+        // A failure caused by a lost device is the encode loop's to handle (rebuild), not the end of the share.
+        if (auto device = weak.lock(); device && FAILED(device->removedReason())) {
+          log::warn("{} (the GPU device is lost)", message);
+          return;
+        }
+        self->fail(ipc::ErrorCode::EncoderUnavailable, message);
+      });
+}
+
+void Share::rebuildEncoder(const char* why) {
+  const int64_t t0 = qpcMicros();
+  EncoderRates rates;
+  double fps = 0;
+  {
+    std::lock_guard lock(pacerMutex_);
+    rates = pacer_->encoderRates();
+    pacer_->takeRateChange();
+    fps = spec_.preset.fps;
+  }
+  encoder_->shutdown();
+  keyframesBase_ += encoder_->keyframes();
+  encoder_.reset();
+  lastOutFrames_ = 0;
+  lastOutBytes_ = 0;
+  // Throws ShareError(encoder-unavailable): run() turns it into the share's error.
+  encoder_ = createEncoder(rates, fps);
+  lastMode_ = rates.mode;
+  {
+    std::lock_guard lock(pacerMutex_);
+    pacer_->forceKeyframe(); // a new encoder starts a new stream
+  }
+  log::info("encoder: recreated ({}) in {} ms: {} {} fps, mean {} kbps", why, (qpcMicros() - t0) / 1000,
+            rates.mode == RateMode::Cbr ? "CBR" : "PCVBR", fps, rates.meanBitrate / 1000);
+}
+
+void Share::teardownPipeline() {
+  // Same order as teardown(): nothing pushes into the ring or the encoder while they go away.
+  if (source_) source_->stop();
+  if (encoder_) {
+    encoder_->shutdown();
+    keyframesBase_ += encoder_->keyframes();
+  }
+  encoder_.reset();
+  converter_.reset();
+  source_.reset();
+  ring_.reset();
+  device_.reset();
+  // The next ring and encoder count from zero again.
+  lastPushed_ = 0;
+  lastOutFrames_ = 0;
+  lastOutBytes_ = 0;
+}
+
+bool Share::deviceLost() const {
+  return device_ && FAILED(device_->removedReason());
+}
+
+Share::Recovery Share::recoverDevice(HRESULT reason) {
+  const int64_t t0 = qpcMicros();
+  log::error("share: GPU device lost ({}), rebuilding the pipeline; the track stays published", describeHresult(reason));
+  if (!lossPolicy_.onLoss(t0)) {
+    log::error("share: the GPU device was lost {} times within a minute, giving up", lossPolicy_.losses());
+    endWith(ipc::EndReason::DeviceLost);
+    return Recovery::Ended;
+  }
+  for (;;) {
+    try {
+      teardownPipeline();
+      buildPipeline(false);
+      source_->start();
+      {
+        std::lock_guard lock(pacerMutex_);
+        pacer_->forceKeyframe(); // a new encoder, a new stream: viewers need an IDR before anything else
+      }
+      const int attempt = lossPolicy_.attempts() + 1;
+      lossPolicy_.onRebuilt();
+      log::info("share: pipeline rebuilt on {} in {} ms (attempt {})", device_->adapter().name, (qpcMicros() - t0) / 1000,
+                attempt);
+      return Recovery::Recovered;
+    } catch (const std::exception& e) {
+      log::error("share: rebuild after device loss failed: {}", e.what());
+      const auto delay = lossPolicy_.onRebuildFailed();
+      if (!delay) {
+        log::error("share: the rebuild failed twice, ending the share (device-lost)");
+        endWith(ipc::EndReason::DeviceLost);
+        return Recovery::Ended;
+      }
+      if (WaitForSingleObject(stopEvent_.get(), static_cast<DWORD>(*delay / 1000)) == WAIT_OBJECT_0) return Recovery::Ended;
+    }
+  }
 }
 
 Share::~Share() {
@@ -175,11 +361,13 @@ void Share::endWith(ipc::EndReason reason) {
   if (stopEvent_) SetEvent(stopEvent_.get());
 }
 
+bool Share::ending() const {
+  std::lock_guard lock(endMutex_);
+  return endReason_.has_value();
+}
+
 void Share::fail(ipc::ErrorCode code, const std::string& message, ipc::EndReason reason) {
-  {
-    std::lock_guard lock(endMutex_);
-    if (endReason_) return; // already ending: one error per share is enough
-  }
+  if (ending()) return; // already ending: one error per share is enough
   log::error("share: {}", message);
   emit(ipc::encodeError(code, message));
   endWith(reason);
@@ -209,10 +397,12 @@ void Share::update(const std::optional<ipc::PresetPatch>& patch, std::optional<b
     if (patch->fps) p.fps = *patch->fps;
     if (patch->maxBitrate) p.maxBitrate = *patch->maxBitrate;
     if (patch->contentHint) p.contentHint = *patch->contentHint;
+    // The encode thread picks the new rates (and the converter's scaler for the hint) up on its next tick.
     pacer_->reconfigure(pacerConfig(p, output_));
     log::info("share: preset updated to {} fps, {} kbps, {}", p.fps, p.maxBitrate / 1000, ipc::toString(p.contentHint));
   }
-  if (cursor) source_->setCursor(*cursor);
+  // The encode thread owns source_ (it replaces it after a device loss), so it applies the change.
+  if (cursor) pendingCursor_.store(*cursor ? 1 : 0);
 }
 
 void Share::onEncoded(EncodedFrame&& frame) {
@@ -223,38 +413,104 @@ void Share::onEncoded(EncodedFrame&& frame) {
   if (!publisher_->sendVideo(std::move(frame))) rejected_.fetch_add(1);
 }
 
+bool Share::connectPublisher() {
+  // 1. The gate: wait for any previous (abandoned) session to be gone, unless we're stopped first.
+  const int64_t t0 = qpcMicros();
+  const HANDLE gate[] = {stopEvent_.get(), liveKitGate()};
+  if (WaitForMultipleObjects(2, gate, FALSE, INFINITE) == WAIT_OBJECT_0) return false;
+  liveKitTicket_ = takeLiveKitGate();
+  if (const auto waited = (qpcMicros() - t0) / 1000; waited > 50) {
+    log::info("share: waited {} ms for the previous LiveKit session to close", waited);
+  }
+
+  // 2. Connect on its own thread: Room::connect can block for ~30 s against an unreachable server and has no
+  // cancel, and a `stop` must not wait for that.
+  auto job = std::make_shared<ConnectJob>();
+  std::string url = spec_.livekit ? spec_.livekit->url : std::string();
+  std::string token = spec_.livekit ? spec_.livekit->token : std::string();
+  std::thread([job, publisher = publisher_, ticket = liveKitTicket_, url = std::move(url), token = std::move(token)] {
+    SetThreadDescription(GetCurrentThread(), L"nexo connect");
+    winrt::init_apartment(winrt::apartment_type::multi_threaded);
+    bool ok = false;
+    ipc::ErrorCode code = ipc::ErrorCode::LivekitConnect;
+    std::string error;
+    try {
+      publisher->connect(url, token);
+      ok = true;
+    } catch (const ShareError& e) {
+      code = e.code();
+      error = e.what();
+    } catch (const std::exception& e) {
+      error = e.what();
+    }
+    bool abandoned = false;
+    {
+      std::lock_guard lock(job->mutex);
+      job->finished = true;
+      job->ok = ok;
+      job->code = code;
+      job->error = std::move(error);
+      abandoned = job->abandoned;
+    }
+    SetEvent(job->done.get());
+    if (abandoned) {
+      // Nobody is waiting: leave the room (if we got in) before the gate opens for the next share.
+      log::info("share: the abandoned LiveKit connect returned ({}), closing it", ok ? "connected" : "failed");
+      publisher->close();
+    }
+    winrt::uninit_apartment();
+    // `ticket` is released here, after close(): the next share connects only now.
+  }).detach();
+
+  const HANDLE waits[] = {stopEvent_.get(), job->done.get()};
+  WaitForMultipleObjects(2, waits, FALSE, INFINITE);
+  std::lock_guard lock(job->mutex);
+  if (!job->finished) {
+    // Stopped while connecting: hand the publisher (and the gate) to the connect thread and end now.
+    job->abandoned = true;
+    publisher_->detachCallbacks();
+    publisher_.reset();
+    liveKitTicket_.reset();
+    log::info("share: stopped during the LiveKit connect; the connect is abandoned");
+    return false;
+  }
+  if (!job->ok) {
+    fail(job->code, job->error);
+    return false;
+  }
+  return !ending();
+}
+
 void Share::run() {
   SetThreadDescription(GetCurrentThread(), L"nexo share");
   winrt::init_apartment(winrt::apartment_type::multi_threaded);
   emit(ipc::encodeState(ipc::State::Connecting));
-  bool connected = false;
-  try {
-    if (spec_.livekit) publisher_->connect(spec_.livekit->url, spec_.livekit->token);
-    else publisher_->connect({}, {});
-    connected = true;
-    VideoTrackConfig track;
-    track.width = output_.width;
-    track.height = output_.height;
-    track.fps = spec_.preset.fps;
-    track.maxBitrate = spec_.preset.maxBitrate;
-    track.hint = spec_.preset.contentHint;
-    publisher_->publishVideo(track);
-  } catch (const ShareError& e) {
-    fail(e.code(), e.what());
-  } catch (const std::exception& e) {
-    fail(connected ? ipc::ErrorCode::Internal : ipc::ErrorCode::LivekitConnect, e.what());
+  bool published = false;
+  if (connectPublisher()) {
+    try {
+      VideoTrackConfig track;
+      track.width = output_.width;
+      track.height = output_.height;
+      track.fps = spec_.preset.fps;
+      track.maxBitrate = spec_.preset.maxBitrate;
+      track.hint = spec_.preset.contentHint;
+      publisher_->publishVideo(track);
+      published = true;
+    } catch (const ShareError& e) {
+      fail(e.code(), e.what());
+    } catch (const std::exception& e) {
+      fail(ipc::ErrorCode::Internal, e.what());
+    }
   }
 
-  bool stoppedEarly = false;
-  {
-    std::lock_guard lock(endMutex_);
-    stoppedEarly = endReason_.has_value();
-  }
-  if (!stoppedEarly) {
+  if (published && !ending()) {
     emit(ipc::encodeState(ipc::State::Live));
     try {
       source_->start();
+      startAudio();
       encodeLoop();
+    } catch (const ShareError& e) {
+      fail(e.code(), e.what());
     } catch (const winrt::hresult_error& e) {
       fail(ipc::ErrorCode::CaptureFailed, "capture: " + describeHresult(e.code()));
     } catch (const std::exception& e) {
@@ -264,8 +520,8 @@ void Share::run() {
 
   teardown();
   const auto reason = endReason();
-  log::info("share: ended ({}), {} keyframes, {} dropped, {} encoder-busy, {} pool-empty, {} rejected by the SDK",
-            ipc::toString(reason), encoder_ ? encoder_->keyframes() : 0, dropped_, busy_, poolEmpty_, rejected_.load());
+  log::info("share: ended ({}), {} keyframes, {} dropped, {} encoder-busy, {} pool-empty, {} rejected by the SDK, {} device losses",
+            ipc::toString(reason), keyframesBase_, dropped_, busy_, poolEmpty_, rejected_.load(), lossPolicy_.losses());
   emit(ipc::encodeState(ipc::State::Stopped));
   emit(ipc::encodeEnded(reason));
   {
@@ -277,18 +533,56 @@ void Share::run() {
 }
 
 void Share::teardown() {
-  // Order matters: no new frames, then no new encoder output, then the publisher the output went to.
-  if (source_) source_->stop();
-  if (encoder_) encoder_->shutdown();
+  // Order matters: no new frames, then no new encoder output or audio, then the publisher they went to.
+  if (audio_) audio_->stop();
+  teardownPipeline();
   if (publisher_) publisher_->close();
+  liveKitTicket_.reset();
   if (dump_.is_open()) dump_.close();
+  if (wav_) wav_->close();
+}
+
+void Share::audioFailed(const std::string& message) {
+  // Audio is an extra: the video keeps going and the share doesn't end (SPEC-BETA §4.7, protocol `error`).
+  if (audioFailed_.exchange(true)) return;
+  log::error("share: stream audio failed: {}", message);
+  emit(ipc::encodeError(ipc::ErrorCode::AudioFailed, message));
+}
+
+void Share::startAudio() {
+  if (!audioConfig_) return;
+  if (!WasapiCapture::supported(osBuildNumber())) {
+    audioFailed("stream audio needs Windows 10 2004 or later (process loopback, build 19041+)");
+    return;
+  }
+  try {
+    const auto t0 = qpcMicros();
+    auto capture = std::make_unique<WasapiCapture>(*audioConfig_);
+    // Open before publishing, so a capture that can't start doesn't leave a silent track behind.
+    capture->open();
+    publisher_->publishAudio();
+    capture->start(
+        [this](std::span<const int16_t> frame) {
+          if (wav_) wav_->write(frame);
+          publisher_->sendAudio(frame);
+        },
+        [this](const std::string& message) { audioFailed("stream audio stopped: " + message); });
+    audio_ = std::move(capture);
+    log::info("share: stream audio started in {} ms ({})", (qpcMicros() - t0) / 1000, audio_->describe());
+  } catch (const ShareError& e) {
+    audioFailed(e.what());
+  } catch (const std::exception& e) {
+    audioFailed(std::string("stream audio: ") + e.what());
+  }
 }
 
 void Share::handleFeedback(int64_t nowUs) {
   const auto fb = publisher_->takeFeedback();
   std::optional<EncoderRates> change;
   double fps = 0;
+  double presetFps = 0;
   uint64_t target = 0;
+  bool detail = false;
   {
     std::lock_guard lock(pacerMutex_);
     if (fb.keyframeRequested) pacer_->requestKeyframe();
@@ -296,6 +590,8 @@ void Share::handleFeedback(int64_t nowUs) {
     change = pacer_->takeRateChange();
     fps = pacer_->fps();
     target = pacer_->targetBitrate();
+    detail = pacer_->config().hint == ipc::ContentHint::Detail;
+    presetFps = pacer_->config().presetFps;
   }
   if (fb.keyframeRequested) {
     keyframeRequests_.fetch_add(1);
@@ -309,10 +605,31 @@ void Share::handleFeedback(int64_t nowUs) {
                 fb.framerateFps.value_or(0), target / 1000, fps);
     }
   }
+  const char* recreate = nullptr;
   if (change) {
-    encoder_->setRates(*change);
+    const bool modeChange = lastMode_ != change->mode;
+    if (modeChange) {
+      log::info("encoder: rate control {} -> {} (mean {} kbps, peak {} kbps{})",
+                lastMode_ == RateMode::Cbr ? "CBR" : "PCVBR", change->mode == RateMode::Cbr ? "CBR" : "PCVBR",
+                change->meanBitrate / 1000, change->peakBitrate / 1000,
+                change->maxQp ? std::format(", max QP {}", *change->maxQp) : std::string());
+      lastMode_ = change->mode;
+    }
+    if (!encoder_->setRates(*change) && modeChange) recreate = "the MFT kept its rate-control mode";
     log::debug("encoder: rates {} mean {} kbps peak {} kbps", change->mode == RateMode::Cbr ? "CBR" : "PCVBR",
                change->meanBitrate / 1000, change->peakBitrate / 1000);
+  }
+  // The MFT's media type carries the frame rate it budgets bits for; a preset fps change needs a new type.
+  if (!recreate && presetFps != encoder_->fps()) recreate = "preset frame rate changed";
+  if (recreate) rebuildEncoder(recreate);
+  if (detail != converterDetail_) {
+    // motion ↔ detail mid-share: the converter's scaler follows the hint (SPEC-BETA §4.9).
+    converter_->setDetail(detail);
+    converterDetail_ = detail;
+  }
+  if (const int cursor = pendingCursor_.exchange(-1); cursor >= 0) {
+    spec_.cursor = cursor == 1; // a rebuilt source starts with it too
+    source_->setCursor(spec_.cursor);
   }
   if (fps != lastFps_) {
     if (lastFps_ != 0) log::info("pacer: encode rate {} -> {} fps", lastFps_, fps);
@@ -339,7 +656,7 @@ void Share::emitStats(int64_t nowUs) {
     std::lock_guard lock(pacerMutex_);
     s.targetBitrate = pacer_->targetBitrate();
   }
-  s.keyframes = encoder_->keyframes();
+  s.keyframes = keyframesBase_ + encoder_->keyframes();
   s.droppedFrames = dropped_;
   s.stalled = source_->stalled(nowUs);
   s.encoder = encoder_->name();
@@ -363,9 +680,18 @@ void Share::encodeLoop() {
   int64_t tat = 0;
   int64_t retryAt = 0; // back-off after the encoder said busy, so a pending frame doesn't spin the loop
   int64_t now = qpcMicros();
+  const int64_t testLossAt = testDeviceLostAfterUs_ > 0 ? now + testDeviceLostAfterUs_ : 0;
   statsAtUs_ = now + 1'000'000;
   lastStatsUs_ = now;
   lastFps_ = spec_.preset.fps;
+
+  // After a rebuild the ring counts from 1 again; the next frame is new whatever its sequence number.
+  auto recover = [&](HRESULT reason) {
+    if (recoverDevice(reason) == Recovery::Ended) return false;
+    lastSeq = 0;
+    retryAt = 0;
+    return true;
+  };
 
   for (;;) {
     int64_t interval = 0;
@@ -402,11 +728,13 @@ void Share::encodeLoop() {
       endWith(ipc::EndReason::SourceClosed);
       break;
     }
+    if (testLossAt && now >= testLossAt && lossPolicy_.losses() == 0) {
+      log::warn("share: simulating a GPU device loss (NEXO_MEDIA_TEST_DEVICE_LOST_AFTER_MS)");
+      device_->simulateRemoval();
+    }
     if (const HRESULT removed = device_->removedReason(); FAILED(removed)) {
-      // Rebuilding the device while keeping the track published is M3 (SPEC-BETA §4.3).
-      log::error("share: GPU device lost: {}", describeHresult(removed));
-      endWith(ipc::EndReason::DeviceLost);
-      break;
+      if (!recover(removed)) break;
+      continue;
     }
 
     handleFeedback(now);
@@ -424,37 +752,49 @@ void Share::encodeLoop() {
       if (decision.encode && decision.repeat && !decision.keyframe && source_->stalled(now)) decision.encode = false;
       if (!decision.encode) {
         if (frame) ring_->release();
-      } else if (auto input = encoder_->allocateInput(); !input) {
-        ring_->release();
-        ++poolEmpty_; // every input surface is still inside the encoder: retry shortly
-        retryAt = now + 1'000;
       } else {
+        MfEncoder::Submit submit = MfEncoder::Submit::Failed;
+        int64_t ts = 0;
+        std::optional<MfEncoder::Input> input;
         try {
-          converter_->convert(frame->texture, frame->size, input->texture.get(), input->slice);
-        } catch (...) {
+          input = encoder_->allocateInput();
+          if (input) {
+            converter_->convert(frame->texture, frame->size, input->texture.get(), input->slice);
+            ts = isNew ? frame->timestampUs : now;
+            ts = std::max(ts, lastTs + 1); // encoder and RTP want increasing timestamps; repeats use "now"
+          }
+        } catch (const std::exception&) {
           ring_->release();
-          throw;
+          if (!deviceLost()) throw;
+          if (!recover(device_->removedReason())) break;
+          continue;
         }
         ring_->release();
-        int64_t ts = isNew ? frame->timestampUs : now;
-        ts = std::max(ts, lastTs + 1); // encoder and RTP want increasing timestamps; repeats use "now"
-        const auto submit = encoder_->encode(*input, ts, decision.keyframe);
-        if (submit == MfEncoder::Submit::Accepted) {
-          lastTs = ts;
-          tat = std::max(tat, now) + interval;
-          {
-            std::lock_guard lock(pacerMutex_);
-            pacer_->onSubmitted(now, decision.keyframe);
-          }
-          if (isNew) {
-            if (lastSeq != 0 && frame->seq > lastSeq + 1) dropped_ += frame->seq - lastSeq - 1; // superseded
-            lastSeq = frame->seq;
-          }
-        } else if (submit == MfEncoder::Submit::Busy) {
-          ++busy_; // the frame stays "new" and is retried (or superseded) shortly
+        if (!input) {
+          ++poolEmpty_; // every input surface is still inside the encoder: retry shortly
           retryAt = now + 1'000;
         } else {
-          break; // the encoder reported the failure through fail()
+          submit = encoder_->encode(*input, ts, decision.keyframe);
+          if (submit == MfEncoder::Submit::Accepted) {
+            lastTs = ts;
+            tat = std::max(tat, now) + interval;
+            {
+              std::lock_guard lock(pacerMutex_);
+              pacer_->onSubmitted(now, decision.keyframe);
+            }
+            if (isNew) {
+              if (lastSeq != 0 && frame->seq > lastSeq + 1) dropped_ += frame->seq - lastSeq - 1; // superseded
+              lastSeq = frame->seq;
+            }
+          } else if (submit == MfEncoder::Submit::Busy) {
+            ++busy_; // the frame stays "new" and is retried (or superseded) shortly
+            retryAt = now + 1'000;
+          } else if (deviceLost()) {
+            if (!recover(device_->removedReason())) break;
+            continue;
+          } else {
+            break; // the encoder reported the failure through fail()
+          }
         }
       }
     }

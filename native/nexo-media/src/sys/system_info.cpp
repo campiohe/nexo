@@ -2,6 +2,7 @@
 
 #include <windows.h>
 
+#include "audio/wasapi_capture.hpp"
 #include "common/log.hpp"
 #include "common/win_error.hpp"
 
@@ -28,11 +29,16 @@ void readOsVersion(SystemReport& r) {
 
 } // namespace
 
+uint32_t osBuildNumber() {
+  SystemReport r;
+  readOsVersion(r);
+  return r.osBuild;
+}
+
 SystemReport probeSystem() {
   SystemReport r;
   readOsVersion(r);
-  // AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK: "Minimum supported client: Windows 10 Build 20348".
-  r.processLoopbackOs = r.osBuild >= 20348;
+  r.processLoopbackOs = WasapiCapture::supported(r.osBuild);
   r.hwDisabled = envFlag("NEXO_MEDIA_DISABLE_HW");
   try {
     r.wgc = queryWgcFeatures();
@@ -74,9 +80,8 @@ ipc::Capabilities toCapabilities(const SystemReport& report) {
   caps.features.borderless = report.wgc.borderless;
   caps.features.minUpdateInterval = report.wgc.minUpdateInterval;
   caps.features.cursorToggle = report.wgc.cursorToggle;
-  // Stream audio is M2: until the helper captures it, don't advertise it (the UI would offer a checkbox that
-  // does nothing). The OS-level support is in the selftest diagnostics.
-  caps.features.processLoopback = false;
+  // Stream audio (SPEC-BETA §4.7): the OS has process loopback and this helper implements it.
+  caps.features.processLoopback = report.processLoopbackOs;
   return caps;
 }
 
@@ -107,7 +112,7 @@ nlohmann::json selftestJson(const SystemReport& report) {
         {"minUpdateInterval", report.wgc.minUpdateInterval},
         {"includeSecondaryWindows", report.wgc.secondaryWindows}}},
       {"processLoopbackOs", report.processLoopbackOs},
-      {"audioImplemented", false},
+      {"audioImplemented", true},
       {"livekit",
 #if defined(NEXO_WITH_LIVEKIT)
        true

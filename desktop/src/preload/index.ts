@@ -79,12 +79,16 @@ const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !
 const NATIVE_SHARE_STATES = ['idle', 'starting', 'connecting', 'live', 'reconnecting', 'stopped']
 const NATIVE_SHARE_END_REASONS = ['source-closed', 'stopped', 'device-lost', 'error', 'crashed']
 
+function isShareId(v: unknown): v is number {
+  return typeof v === 'number' && Number.isSafeInteger(v) && v > 0
+}
+
 function isNativeShareError(v: unknown): v is NativeShareError {
   return isObj(v) && typeof v.code === 'string' && typeof v.message === 'string' && typeof v.fallback === 'boolean'
 }
 
 function isNativeShareEvent(v: unknown): v is NativeShareEvent {
-  if (!isObj(v)) return false
+  if (!isObj(v) || !isShareId(v.shareId)) return false
   switch (v.type) {
     case 'state':
       return NATIVE_SHARE_STATES.includes(v.state as string)
@@ -108,16 +112,24 @@ function nativeShareRejection(error: NativeShareError): NativeShareError & { nam
 }
 
 /** Main answers start/update/stop/release with a NativeShareInvokeResult; failures become rejections here. */
-async function invokeNativeShare(channel: string, ...args: unknown[]): Promise<void> {
+async function invokeNativeShare(channel: string, ...args: unknown[]): Promise<NativeShareInvokeResult & { ok: true }> {
   let result: NativeShareInvokeResult | undefined
   try {
     result = await ipcRenderer.invoke(channel, ...args)
   } catch (err) {
     throw nativeShareRejection({ code: 'internal', message: err instanceof Error ? err.message : String(err), fallback: false })
   }
-  if (isObj(result) && result.ok === true) return
+  if (isObj(result) && result.ok === true) return result
   if (isObj(result) && result.ok === false && isNativeShareError(result.error)) throw nativeShareRejection(result.error)
   throw nativeShareRejection({ code: 'internal', message: 'invalid reply from main', fallback: false })
+}
+
+async function startNativeShare(opts: unknown): Promise<{ shareId: number }> {
+  const result = await invokeNativeShare(IPC.nativeShareStart, opts)
+  if (!isShareId(result.shareId)) {
+    throw nativeShareRejection({ code: 'internal', message: 'invalid reply from main (no share id)', fallback: false })
+  }
+  return { shareId: result.shareId }
 }
 
 const bridge: NexoBridge = {
@@ -133,10 +145,10 @@ const bridge: NexoBridge = {
 
   nativeShare: {
     capabilities: (): Promise<NativeShareCapabilities> => ipcRenderer.invoke(IPC.nativeShareCapabilities),
-    start: (opts) => invokeNativeShare(IPC.nativeShareStart, opts),
-    update: (patch) => invokeNativeShare(IPC.nativeShareUpdate, patch),
-    stop: () => invokeNativeShare(IPC.nativeShareStop),
-    release: () => invokeNativeShare(IPC.nativeShareRelease),
+    start: (opts) => startNativeShare(opts),
+    update: async (patch) => void (await invokeNativeShare(IPC.nativeShareUpdate, patch)),
+    stop: async () => void (await invokeNativeShare(IPC.nativeShareStop)),
+    release: async () => void (await invokeNativeShare(IPC.nativeShareRelease)),
     onEvent: (cb: (event: NativeShareEvent) => void): (() => void) =>
       subscribe(IPC.nativeShareEvent, isNativeShareEvent, cb),
   },

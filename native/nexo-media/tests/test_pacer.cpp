@@ -153,3 +153,15 @@ TEST_CASE("pacer", "reconfigure lowers the cap immediately") {
   CHECK_EQ(p.fps(), 30.0);
   CHECK_EQ(p.tickIntervalUs(), int64_t{33'333});
 }
+
+TEST_CASE("pacer", "forceKeyframe bypasses the 500 ms keyframe limit") {
+  Pacer p(motion1080p60());
+  auto d = p.onTick(0, true, true);
+  p.onSubmitted(0, d.keyframe);
+  CHECK(d.keyframe);
+  p.forceKeyframe();
+  d = p.onTick(16 * ms, true, true);
+  CHECK(d.encode && d.keyframe); // 16 ms after the last IDR, but forced
+  p.onSubmitted(16 * ms, d.keyframe);
+  CHECK(!p.keyframePending());
+}

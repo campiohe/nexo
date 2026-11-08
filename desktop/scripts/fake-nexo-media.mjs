@@ -6,23 +6,37 @@
 // (ELECTRON_RUN_AS_NODE=1), so no separate Node install is needed (Windows via scripts/win-run.sh, WSLg,
 // Linux, macOS). Plain Node works too:  node desktop/scripts/fake-nexo-media.mjs
 //
-// FAKE_NEXO_MEDIA selects a failure:
+// FAKE_NEXO_MEDIA selects a failure (several can be combined with commas, e.g. `no-audio,idle`):
 //   encoder-unavailable  `start` fails with encoder-unavailable
 //   crash                the process exits with code 1 three seconds after going live
 //   source-closed        the share ends with `source-closed` five seconds after going live
 //   stall                stats report `stalled: true`
+//   idle                 stats report 0–1 capture fps (an idle monitor), not stalled
+//   livekit-connect      the share fails while connecting: `error livekit-connect`, then it ends with `error`
+//   encoder-lost         the encoder fails three seconds after going live: `error encoder-unavailable`, then
+//                        it ends with `error` (main marks it fallback: the renderer retries on Chromium)
+//   device-lost          the share ends with `device-lost` (no `error`) three seconds after going live, as the
+//                        real helper does after two failed in-place device rebuilds
+//   audio-failed         a share with audio reports `error audio-failed` two seconds after going live; the
+//                        video keeps going
+//   no-audio             capabilities report processLoopback: false (and an old Windows 10, osBuild 18363)
+//
+// Like the real helper: `result` of `start` before any event of that share; a share ends with `state stopped`
+// then exactly one `ended`; a runtime failure sends its `error` before those. `update` without a share is ok.
 //
 // It exits on `shutdown`, on stdin EOF, and when the --parent-pid process is gone.
 import { createInterface } from 'node:readline'
 
 const PROTOCOL = 1
 const MODE = process.env.FAKE_NEXO_MEDIA ?? ''
+const MODES = new Set(MODE.split(',').map((m) => m.trim()).filter(Boolean))
+const has = (mode) => MODES.has(mode)
 const ENCODER = 'Fake H.264 Encoder MFT'
 
 const parentArg = process.argv.find((a) => a.startsWith('--parent-pid='))
 const parentPid = parentArg ? Number(parentArg.slice('--parent-pid='.length)) : NaN
 
-/** @type {null | { preset: any, cursor: boolean, timers: NodeJS.Timeout[], keyframes: number, startedAt: number }} */
+/** @type {null | { preset: any, cursor: boolean, audio: string, timers: NodeJS.Timeout[], keyframes: number, startedAt: number }} */
 let share = null
 
 function send(event, then) {
@@ -45,10 +59,10 @@ function capabilities() {
   return {
     version: '0.0.0-fake',
     protocol: PROTOCOL,
-    osBuild: 26100,
+    osBuild: has('no-audio') ? 18363 : 26100,
     adapter: { name: 'Fake GPU 9000', vendor: 'Fake', luid: '0x00000000:0x0000beef' },
     encoder: { name: ENCODER, vendor: 'Fake' },
-    features: { borderless: true, minUpdateInterval: true, cursorToggle: true, processLoopback: true },
+    features: { borderless: true, minUpdateInterval: true, cursorToggle: true, processLoopback: !has('no-audio') },
   }
 }
 
@@ -64,11 +78,19 @@ function endShare(reason) {
   send({ type: 'ended', reason })
 }
 
+/** A runtime failure: the error first, then the share ends with `error`. */
+function failShare(code, message) {
+  log('error', `share: ${message}`)
+  send({ type: 'error', code, message })
+  endShare('error')
+}
+
 function sendStats() {
   if (!share) return
   const { preset } = share
-  const stalled = MODE === 'stall'
-  const fps = stalled ? 0 : preset.fps
+  const stalled = has('stall')
+  const idle = has('idle')
+  const fps = stalled ? 0 : idle ? Math.round(Math.random()) : preset.fps
   share.keyframes += Math.random() < 0.2 ? 1 : 0
   send({
     type: 'stats',
@@ -98,24 +120,39 @@ function describeSource(source) {
 
 function start(cmd) {
   if (share) return fail(cmd.id, 'busy', 'A share is already running')
-  if (MODE === 'encoder-unavailable') return fail(cmd.id, 'encoder-unavailable', 'Fake: no hardware H.264 encoder')
+  if (has('encoder-unavailable')) return fail(cmd.id, 'encoder-unavailable', 'Fake: no hardware H.264 encoder')
   const { source, preset, livekit } = cmd
   if (!source || !preset || !livekit || typeof livekit.url !== 'string' || typeof livekit.token !== 'string')
     return fail(cmd.id, 'protocol', 'start: missing source, preset or livekit')
 
   // Never print the token, only that one arrived.
   log('info', `start ${describeSource(source)} ${preset.width}x${preset.height}@${preset.fps} ${preset.contentHint} audio=${cmd.audio} url=${livekit.url} token=<${livekit.token.length} chars>`)
-  share = { preset: { ...preset }, cursor: !!cmd.cursor, timers: [], keyframes: 1, startedAt: Date.now() }
+  share = { preset: { ...preset }, cursor: !!cmd.cursor, audio: cmd.audio, timers: [], keyframes: 1, startedAt: Date.now() }
   const s = share
   result(cmd.id, true)
   send({ type: 'state', state: 'connecting' })
   s.timers.push(
     setTimeout(() => {
       if (share !== s) return
+      if (has('livekit-connect')) return failShare('livekit-connect', 'Fake: could not connect to wss://fake (timed out)')
       send({ type: 'state', state: 'live' })
       sendStats()
       s.timers.push(setInterval(sendStats, 1000))
-      if (MODE === 'crash') {
+      const after = (ms, fn) => s.timers.push(setTimeout(() => share === s && fn(), ms))
+      if (has('audio-failed') && s.audio !== 'off') {
+        after(2000, () => {
+          log('warn', 'audio: simulating a loopback failure, video keeps going')
+          send({ type: 'error', code: 'audio-failed', message: 'Fake: process loopback stopped delivering audio' })
+        })
+      }
+      if (has('encoder-lost')) after(3000, () => failShare('encoder-unavailable', 'Fake: the encoder stopped accepting frames'))
+      if (has('device-lost')) {
+        after(3000, () => {
+          log('warn', 'device: simulating a lost D3D11 device; two rebuilds failed')
+          endShare('device-lost')
+        })
+      }
+      if (has('crash')) {
         s.timers.push(
           setTimeout(() => {
             log('error', 'simulating a crash')
@@ -123,7 +160,7 @@ function start(cmd) {
           }, 3000),
         )
       }
-      if (MODE === 'source-closed') s.timers.push(setTimeout(() => share === s && endShare('source-closed'), 5000))
+      if (has('source-closed')) after(5000, () => endShare('source-closed'))
     }, 300),
   )
 }

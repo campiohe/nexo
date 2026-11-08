@@ -172,10 +172,10 @@ function parseUpdate(v: unknown): UpdateRequest {
 
 let supervisor: NativeShareSupervisor | null = null
 
-async function settle(fn: () => Promise<void>): Promise<NativeShareInvokeResult> {
+async function settle(fn: () => Promise<void | { shareId: number }>): Promise<NativeShareInvokeResult> {
   try {
-    await fn()
-    return { ok: true }
+    const out = await fn()
+    return out ? { ok: true, shareId: out.shareId } : { ok: true }
   } catch (err) {
     const error = toNativeShareError(err)
     if (error.code === 'internal') console.warn('[nexo] native share:', error.message)
@@ -215,7 +215,7 @@ export function installNativeShare(deps: NativeShareDeps): void {
       // The renderer never sends HWNDs or PIDs (SPEC-BETA §8.1): main translates and fills them in.
       const kind = sourceKind(o.sourceId)
       const source = await toHelperSource(o.sourceId)
-      await sup.start({
+      return sup.start({
         source,
         preset: o.preset,
         cursor: o.cursor,

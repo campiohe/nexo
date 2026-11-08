@@ -72,9 +72,6 @@ class Controller {
       return true;
     }
     EventSink::instance().addSecret(c.livekit.token);
-    if (c.audio != ipc::AudioMode::Off) {
-      log::warn("audio '{}' requested: stream audio is not implemented yet (M2), sharing video only", ipc::toString(c.audio));
-    }
     ShareSpec spec;
     if (auto* w = std::get_if<ipc::WindowSource>(&c.source)) {
       spec.kind = ShareSpec::Kind::Window;
@@ -85,6 +82,9 @@ class Controller {
     }
     spec.preset = c.preset;
     spec.cursor = c.cursor;
+    spec.audio = c.audio;
+    spec.excludePid = c.excludePid;
+    if (auto wav = envString("NEXO_MEDIA_DUMP_AUDIO"); !wav.empty()) spec.dumpWav = toWide(wav);
     if (envFlag("NEXO_MEDIA_DRY_RUN")) {
       log::warn("NEXO_MEDIA_DRY_RUN=1: not connecting to LiveKit, frames are discarded");
     } else {

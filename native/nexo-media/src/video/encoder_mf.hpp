@@ -76,8 +76,11 @@ class MfEncoder {
   /// Busy: the MFT hasn't asked for input yet (the frame is dropped; latest frame wins).
   Submit encode(const Input& input, int64_t timestampUs, bool keyframe);
 
-  /// Live bitrate / rate-control changes (ICodecAPI).
-  void setRates(const EncoderRates& rates);
+  /// Live bitrate / rate-control changes (ICodecAPI). False when a rate-control *mode* change didn't take: the
+  /// NVIDIA MFT accepts CBR → peak-constrained VBR mid-stream but keeps encoding CBR. The caller then has to
+  /// recreate the encoder.
+  bool setRates(const EncoderRates& rates);
+  double fps() const;
 
   const std::string& name() const;
   const std::string& vendor() const;

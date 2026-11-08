@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom'
 import { create } from 'zustand'
 import type { CaptureSource } from '../../../../preload/api'
 import { DEFAULT_SHARE_PRESET, SHARE_PRESETS, getBridge, useVoice, type SharePreset } from '../../voice/session'
-import { refreshNativeEngine, useNativeAudioSupported, useNativeEngineLikely } from '../../voice/nativeShare'
+import { refreshNativeEngine, useNativeAudioUnsupportedReason, useNativeEngineLikely } from '../../voice/nativeShare'
 import { CloseIcon, EyeOffIcon, RefreshIcon, ScreenIcon, VolumeIcon, WindowIcon } from './icons'
 import './voice.css'
 
@@ -84,11 +84,13 @@ export function SharePickerHost() {
 export function SharePicker({ onClose }: { onClose(): void }) {
   const bridge = getBridge()
   const systemPicker = !bridge || bridge.usesSystemPicker
-  // Windows native engine (decided again in startShare; this only drives the labels). Until the helper's
-  // capabilities arrive the picker shows the Chromium options rather than waiting for them.
-  const native = useNativeEngineLikely() && !systemPicker
-  const nativeAudio = useNativeAudioSupported()
-  const audioSupported = native ? nativeAudio : bridge ? bridge.supportsSystemAudio : true
+  // Native engine (decided again in startShare; this only drives the labels). Until the helper's capabilities
+  // arrive the picker shows the Chromium options rather than waiting for them.
+  const nativeLikely = useNativeEngineLikely() && !systemPicker
+  // Set when the helper can't capture audio: a share with audio then streams with Chromium, which can.
+  const nativeNoAudio = useNativeAudioUnsupportedReason()
+  const nativeAudio = nativeLikely && !nativeNoAudio
+  const audioSupported = nativeAudio || (bridge ? bridge.supportsSystemAudio : true)
 
   const [tab, setTab] = useState<'screen' | 'window'>('screen')
   const [sources, setSources] = useState<CaptureSource[]>([])
@@ -160,6 +162,7 @@ export function SharePicker({ onClose }: { onClose(): void }) {
   }
 
   const audio = withAudio && audioSupported
+  const native = nativeLikely && (!audio || nativeAudio)
   const canGo = !starting && (systemPicker || !!selectedId)
   const goLive = () => {
     if (!canGo) return
@@ -285,12 +288,12 @@ export function SharePicker({ onClose }: { onClose(): void }) {
             <span className="vx-check-text">
               <span className="vx-check-label">
                 <VolumeIcon size={15} />{' '}
-                {!native ? 'Share audio' : selectedKind === 'window' ? 'App audio' : 'System audio (without Nexo)'}
+                {!nativeAudio ? 'Share audio' : selectedKind === 'window' ? 'App audio' : 'System audio (without Nexo)'}
               </span>
               {!audioSupported ? (
                 <span className="vx-check-hint">
-                  {native
-                    ? "This version of Windows can't capture app audio — viewers will get video only."
+                  {nativeLikely && nativeNoAudio
+                    ? `${nativeNoAudio} — viewers will get video only.`
                     : bridge?.platform === 'linux'
                       ? "System audio capture isn't available on Linux yet — viewers will get video only."
                       : "System audio capture isn't supported on this system — viewers will get video only."}
@@ -303,6 +306,7 @@ export function SharePicker({ onClose }: { onClose(): void }) {
                 </span>
               ) : audio ? (
                 <span className="vx-check-hint is-warn">
+                  {nativeLikely && nativeNoAudio ? `${nativeNoAudio} natively, so this stream uses Chromium capture. ` : ''}
                   Viewers will hear everything your default output device plays — including this call. To keep
                   voices out of the stream, pick a different speaker for Nexo in Settings → Audio &amp; video.
                 </span>

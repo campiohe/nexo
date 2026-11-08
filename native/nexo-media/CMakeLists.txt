@@ -55,8 +55,10 @@ target_link_options(nexo_options INTERFACE /DEBUG:FULL /OPT:REF /OPT:ICF)
 # ── Pure logic (no Windows media APIs): unit-testable ──────────────────────────────────────────────────
 
 add_library(nexo_core STATIC
+  src/audio/audio_framer.cpp
   src/common/redact.cpp
   src/ipc/protocol.cpp
+  src/share/device_loss.cpp
   src/video/annexb.cpp
   src/video/output_size.cpp
   src/video/pacer.cpp)
@@ -65,7 +67,9 @@ target_link_libraries(nexo_core PUBLIC nexo_options nlohmann_json::nlohmann_json
 # ── Windows capture / convert / encode pipeline ────────────────────────────────────────────────────────
 
 add_library(nexo_win STATIC
+  src/audio/wasapi_capture.cpp
   src/common/log.cpp
+  src/common/wic.cpp
   src/common/win_error.cpp
   src/d3d/device.cpp
   src/capture/frame_ring.cpp
@@ -73,12 +77,14 @@ add_library(nexo_win STATIC
   src/capture/test_pattern.cpp
   src/video/convert.cpp
   src/video/encoder_mf.cpp
+  src/video/scaler_cs.cpp
   src/sys/system_info.cpp
   src/publish/null_publisher.cpp
   src/share/share.cpp
-  src/ipc/server.cpp)
+  src/ipc/server.cpp
+  src/tools/scaler_compare.cpp)
 target_link_libraries(nexo_win PUBLIC nexo_core
-  d3d11 dxgi mfplat mf mfuuid strmiids windowsapp)
+  d3d11 dxgi mfplat mf mfuuid strmiids windowsapp mmdevapi avrt d3dcompiler windowscodecs)
 
 if(NEXO_WITH_LIVEKIT)
   # publish/: the only code that sees the SDK, so SDK upgrades stay contained (SPEC-BETA §4.8).
@@ -96,9 +102,16 @@ if(NEXO_WITH_LIVEKIT)
     VERBATIM)
 endif()
 
+# ── Tools ──────────────────────────────────────────────────────────────────────────────────────────────
+
+# gpu-burn: a stand-in for an uncapped GPU-bound game, for the GPU-priority benchmark
+# (docs/benchmarks/beta-m3-gpu-priority.md). Installed next to the helper; it only draws a window.
+add_executable(gpu-burn ../tools/gpu-burn/gpu_burn.cpp)
+target_link_libraries(gpu-burn PRIVATE nexo_options d3d11 dxgi d3dcompiler windowsapp)
+
 # ── Install: everything flat in the prefix (native/out), ready for electron-builder extraResources ─────
 
-install(TARGETS nexo-media RUNTIME DESTINATION .)
+install(TARGETS nexo-media gpu-burn RUNTIME DESTINATION .)
 if(NEXO_WITH_LIVEKIT)
   install(FILES ${LIVEKIT_SDK_RUNTIME_DLLS} DESTINATION .)
 endif()
@@ -114,11 +127,13 @@ if(NEXO_BUILD_TESTS)
   add_executable(nexo-media-tests
     tests/test_main.cpp
     tests/test_annexb.cpp
+    tests/test_audio.cpp
+    tests/test_device_loss.cpp
     tests/test_output_size.cpp
     tests/test_pacer.cpp
     tests/test_protocol.cpp)
   target_link_libraries(nexo-media-tests PRIVATE nexo_core)
-  foreach(_suite annexb output_size pacer protocol)
+  foreach(_suite annexb audio device_loss output_size pacer protocol)
     add_test(NAME unit.${_suite} COMMAND nexo-media-tests ${_suite})
   endforeach()
   # Smoke test of the real exe: must print capabilities and exit 0 even on a GPU-less CI runner.

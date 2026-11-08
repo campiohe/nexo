@@ -7,6 +7,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 
 #include "ipc/protocol.hpp"
@@ -46,8 +47,16 @@ class Publisher {
   virtual bool sendVideo(EncodedFrame&& frame) = 0;
   /// Keyframe requests and rate-control targets accumulated since the last call (any thread).
   virtual PublishFeedback takeFeedback() = 0;
+  /// Publishes the stream audio track: ScreenShareAudio "screen-audio", 48 kHz stereo (SPEC-BETA §4.7).
+  /// Call after connect(). Throws ShareError(audio-failed).
+  virtual void publishAudio() = 0;
+  /// One 10 ms frame, interleaved int16, 48 kHz stereo. Called from the audio thread only. False = rejected.
+  virtual bool sendAudio(std::span<const int16_t> frame) = 0;
   /// Unpublish + disconnect. Idempotent, blocking.
   virtual void close() = 0;
+  /// Stops calling the callbacks (blocks until a callback in progress returns). For a share that is going
+  /// away while this publisher lives on (an abandoned connect).
+  virtual void detachCallbacks() = 0;
   virtual std::string describe() const = 0;
 };
 

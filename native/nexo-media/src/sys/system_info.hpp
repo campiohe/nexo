@@ -27,7 +27,7 @@ struct SystemReport {
   uint32_t osMinor = 0;
   std::vector<AdapterReport> adapters;
   WgcFeatures wgc;
-  /// The OS supports WASAPI process loopback (build 20348+). Not implemented by the helper until M2.
+  /// The OS supports WASAPI process loopback (build 19041+, see WasapiCapture::supported).
   bool processLoopbackOs = false;
   bool hwDisabled = false; ///< NEXO_MEDIA_DISABLE_HW=1
   std::vector<std::string> problems;
@@ -35,6 +35,8 @@ struct SystemReport {
 
 /// Needs COM (MTA) and MFStartup.
 SystemReport probeSystem();
+/// Windows build number (RtlGetVersion: GetVersionEx lies without a manifest). Cheap.
+uint32_t osBuildNumber();
 
 struct AdapterChoice {
   AdapterDesc adapter;

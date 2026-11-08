@@ -86,14 +86,25 @@ std::shared_ptr<D3DDevice> D3DDevice::create(const AdapterDesc& wanted) {
   return self;
 }
 
+bool priorityLever(PriorityLever lever) {
+  const char* name = nullptr;
+  bool fallback = false;
+  switch (lever) {
+    case PriorityLever::GpuThreadPriority: name = "NEXO_MEDIA_GPU_PRIORITY"; fallback = kGpuThreadPriorityDefault; break;
+    case PriorityLever::GpuSchedulingHigh: name = "NEXO_MEDIA_GPU_SCHED_HIGH"; fallback = kGpuSchedulingHighDefault; break;
+    case PriorityLever::AboveNormal: name = "NEXO_MEDIA_ABOVE_NORMAL"; fallback = kAboveNormalDefault; break;
+  }
+  const auto v = envString(name);
+  return v.empty() ? fallback : envFlag(name);
+}
+
 void D3DDevice::applyPriorityLevers() {
-  // M3 experiment (SPEC-BETA §4.3): raise our GPU thread priority so capture/convert/encode aren't starved by
-  // a GPU-bound game. Off by default until measured.
-  if (envFlag("NEXO_MEDIA_GPU_PRIORITY")) {
+  // SPEC-BETA §4.3: raise our GPU thread priority so capture/convert/encode aren't starved by a GPU-bound game.
+  if (priorityLever(PriorityLever::GpuThreadPriority)) {
     auto dxgiDevice = device_.as<IDXGIDevice>();
     const HRESULT hr = dxgiDevice->SetGPUThreadPriority(7);
     if (SUCCEEDED(hr)) {
-      log::info("GPU thread priority set to 7 (NEXO_MEDIA_GPU_PRIORITY)");
+      log::info("GPU thread priority set to 7 (NEXO_MEDIA_GPU_PRIORITY=0 turns it off)");
     } else {
       log::warn("SetGPUThreadPriority(7) failed: {}", describeHresult(hr));
     }
@@ -103,19 +114,19 @@ void D3DDevice::applyPriorityLevers() {
 void applyProcessPriorityLevers() {
   // D3DKMTSetProcessSchedulingPriorityClass lives in gdi32 and its header ships with the WDK, so it's
   // resolved at runtime. HIGH = 4 in D3DKMT_SCHEDULINGPRIORITYCLASS; REALTIME needs admin (out of scope).
-  if (envFlag("NEXO_MEDIA_GPU_SCHED_HIGH")) {
+  if (priorityLever(PriorityLever::GpuSchedulingHigh)) {
     using Fn = LONG(APIENTRY*)(HANDLE, int);
     auto fn = reinterpret_cast<Fn>(GetProcAddress(GetModuleHandleW(L"gdi32.dll"), "D3DKMTSetProcessSchedulingPriorityClass"));
     const LONG status = fn ? fn(GetCurrentProcess(), 4) : -1;
     if (status == 0) {
-      log::info("GPU scheduling priority class set to HIGH (NEXO_MEDIA_GPU_SCHED_HIGH)");
+      log::info("GPU scheduling priority class set to HIGH (NEXO_MEDIA_GPU_SCHED_HIGH=0 turns it off)");
     } else {
       log::warn("D3DKMTSetProcessSchedulingPriorityClass(HIGH) failed: NTSTATUS 0x{:08X}", static_cast<uint32_t>(status));
     }
   }
-  if (envFlag("NEXO_MEDIA_ABOVE_NORMAL")) {
+  if (priorityLever(PriorityLever::AboveNormal)) {
     if (SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS)) {
-      log::info("process priority class ABOVE_NORMAL (NEXO_MEDIA_ABOVE_NORMAL)");
+      log::info("process priority class ABOVE_NORMAL (NEXO_MEDIA_ABOVE_NORMAL=0 turns it off)");
     } else {
       log::warn("SetPriorityClass(ABOVE_NORMAL) failed: {}", describeHresult(HRESULT_FROM_WIN32(GetLastError())));
     }

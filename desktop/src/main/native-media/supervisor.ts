@@ -5,11 +5,19 @@
 // through SupervisorDeps by ./index.ts. That keeps this file drivable from a plain Node script against
 // desktop/scripts/fake-nexo-media.mjs.
 //
+// Every share main accepts gets the next `shareId` (1, 2, … for the app session); start() resolves with it and
+// every bridge event of that share carries it, so the renderer can tell a late event of an earlier share apart.
+//
+// Helper events are attributed to the share only once the helper answered its `start` (the helper writes that
+// result before any event of the new share, SPEC-BETA §6). Anything before it is the tail of an earlier share
+// (e.g. a `stop` that timed out on the helper side) and is dropped.
+//
 // Bridge events (NativeShareEvent) for one share, in order:
 //   state 'starting'                         main accepted the request (before the helper answered)
 //   state 'connecting' | 'live' | …          forwarded from the helper (+ stats at 1 Hz while active)
 //   state 'reconnecting'                     also sent by main while it restarts a crashed helper
-//   error {…}                                async failures; they don't end the share by themselves
+//   error {…}                                async failures; they don't end the share by themselves. A failure
+//                                            that ends the share comes right before its `ended`
 //   ended {reason}                           exactly once per share that the helper accepted
 //   state 'idle'                             last event of every share, including a failed start
 // A failed start() rejects (no `error`/`ended` events, only `state: 'idle'`).
@@ -70,6 +78,8 @@ export interface SupervisorDeps {
 }
 
 interface Share {
+  /** NativeShareEvent.shareId */
+  id: number
   req: StartRequest
   /** setHideNexo(true) was applied for this share. */
   hideNexo: boolean
@@ -93,6 +103,7 @@ export class NativeShareSupervisor {
   private disabledReason: string | null = null
   private lastCrashAt: number | null = null
   private share: Share | null = null
+  private nextShareId = 1
   /** Tokens sent to the helper recently, scrubbed from anything it prints. */
   private tokens: string[] = []
   private readonly log: Logger
@@ -118,17 +129,24 @@ export class NativeShareSupervisor {
     return this.caps ? toBridgeCapabilities(this.caps, true) : unavailableCapabilities('nexo-media did not report its capabilities')
   }
 
-  /** Resolves once the helper accepted the share. Rejects with a NativeShareFailure. */
-  async start(req: StartRequest): Promise<void> {
+  /** Resolves once the helper accepted the share, with the id its events carry. Rejects with a NativeShareFailure. */
+  async start(req: StartRequest): Promise<{ shareId: number }> {
     if (this.share) throw new NativeShareFailure('busy', 'A native share is already running')
     if (!this.deps.osSupported)
       throw new NativeShareFailure('helper-unavailable', this.deps.osReason ?? 'Native capture is not available here')
     if (this.disabledReason) throw new NativeShareFailure('helper-unavailable', this.disabledReason)
 
-    const share: Share = { req: cloneRequest(req), hideNexo: false, accepted: false, stopping: false, busy: Promise.resolve() }
+    const share: Share = {
+      id: this.nextShareId++,
+      req: cloneRequest(req),
+      hideNexo: false,
+      accepted: false,
+      stopping: false,
+      busy: Promise.resolve(),
+    }
     this.share = share
     this.rememberToken(req.livekit.token)
-    this.deps.emit({ type: 'state', state: 'starting' })
+    this.emit(share, { type: 'state', state: 'starting' })
     if (req.hideNexo && req.source.kind === 'monitor') {
       share.hideNexo = true
       this.applyHideNexo(true)
@@ -139,6 +157,7 @@ export class NativeShareSupervisor {
       () => {},
     )
     await run
+    return { shareId: share.id }
   }
 
   /** Live bitrate/fps/contentHint/cursor changes. No-op without an active share. */
@@ -175,7 +194,7 @@ export class NativeShareSupervisor {
     if (!share.accepted) {
       // Stopped before the helper took it (runStart bailed out): nothing to stop, nothing ended.
       this.clearShare(share)
-      this.deps.emit({ type: 'state', state: 'idle' })
+      this.emit(share, { type: 'state', state: 'idle' })
       return
     }
     const proc = this.proc
@@ -304,7 +323,8 @@ export class NativeShareSupervisor {
 
   private onEvent(proc: HelperProcess, event: AsyncHelperEvent): void {
     if (proc !== this.proc) return
-    const share = this.share
+    // Not answered `start` yet: a share event now belongs to an earlier share (see the header).
+    const share = this.share?.accepted ? this.share : null
     switch (event.type) {
       case 'log': {
         if (event.level === 'debug' && !this.deps.debug) return
@@ -316,10 +336,11 @@ export class NativeShareSupervisor {
         return
       }
       case 'state':
-        if (share) this.deps.emit({ type: 'state', state: event.state })
+        if (share) this.emit(share, { type: 'state', state: event.state })
+        else this.log.debug(`[nexo-media] state ${event.state} without an active share`)
         return
       case 'stats':
-        if (share) this.deps.emit({ type: 'stats', stats: toBridgeStats(event.stats) })
+        if (share) this.emit(share, { type: 'stats', stats: toBridgeStats(event.stats) })
         return
       case 'ended':
         if (share) this.endShare(share, event.reason)
@@ -327,7 +348,7 @@ export class NativeShareSupervisor {
         return
       case 'error': {
         const message = redactText(event.message, this.tokens)
-        if (share) this.deps.emit({ type: 'error', error: { code: event.code, message, fallback: fallbackFor(event.code) } })
+        if (share) this.emit(share, { type: 'error', error: { code: event.code, message, fallback: fallbackFor(event.code) } })
         else this.log.warn(`[nexo-media] error without an active share: ${event.code}: ${message}`)
         return
       }
@@ -346,8 +367,12 @@ export class NativeShareSupervisor {
           const reason = this.caps ? toBridgeCapabilities(this.caps, true).reason : undefined
           throw new NativeShareFailure('encoder-unavailable', reason ?? 'No hardware H.264 encoder')
         }
-        await proc.send(startCommand(share.req))
-        if (this.share === share) share.accepted = true
+        // Marked from the result line itself: the share's first events can follow it in the same stdout chunk.
+        await proc.send(startCommand(share.req), {
+          onOk: () => {
+            if (this.share === share) share.accepted = true
+          },
+        })
         return
       } catch (err) {
         const failure =
@@ -371,7 +396,7 @@ export class NativeShareSupervisor {
   /** First crash while live: restart the helper and re-send the (latest) start. */
   private async resume(share: Share): Promise<void> {
     this.log.warn('[nexo-media] restarting the helper and resuming the share')
-    this.deps.emit({ type: 'state', state: 'reconnecting' })
+    this.emit(share, { type: 'state', state: 'reconnecting' })
     try {
       const proc = await this.ensureHelper()
       if (this.share !== share || share.stopping) return
@@ -393,8 +418,8 @@ export class NativeShareSupervisor {
   private endShare(share: Share, reason: NativeShareEndReason): void {
     if (this.share !== share) return
     this.clearShare(share)
-    this.deps.emit({ type: 'ended', reason })
-    this.deps.emit({ type: 'state', state: 'idle' })
+    this.emit(share, { type: 'ended', reason })
+    this.emit(share, { type: 'state', state: 'idle' })
   }
 
   /** Failure end. A share the helper never accepted only gets `idle`: its start() rejection carries the error. */
@@ -402,10 +427,14 @@ export class NativeShareSupervisor {
     if (this.share !== share) return
     this.clearShare(share)
     if (share.accepted) {
-      this.deps.emit({ type: 'error', error: failure.toJSON() })
-      this.deps.emit({ type: 'ended', reason })
+      this.emit(share, { type: 'error', error: failure.toJSON() })
+      this.emit(share, { type: 'ended', reason })
     }
-    this.deps.emit({ type: 'state', state: 'idle' })
+    this.emit(share, { type: 'state', state: 'idle' })
+  }
+
+  private emit(share: Share, event: DistributiveOmit<NativeShareEvent, 'shareId'>): void {
+    this.deps.emit({ ...event, shareId: share.id } as NativeShareEvent)
   }
 
   private clearShare(share: Share): void {
@@ -428,6 +457,8 @@ export class NativeShareSupervisor {
     this.tokens = [token, ...this.tokens.filter((t) => t !== token)].slice(0, MAX_REMEMBERED_TOKENS)
   }
 }
+
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never
 
 function startCommand(req: StartRequest) {
   return {

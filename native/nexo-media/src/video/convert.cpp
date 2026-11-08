@@ -1,19 +1,28 @@
 #include "video/convert.hpp"
 
+#include <format>
+
 #include "common/log.hpp"
 #include "common/win_error.hpp"
 
 namespace nexo {
 
-VideoConverter::VideoConverter(std::shared_ptr<D3DDevice> device, Size output, bool quality)
-    : device_(std::move(device)), output_(output), quality_(quality) {
+VideoConverter::VideoConverter(std::shared_ptr<D3DDevice> device, Size output, bool quality, ScalerKind detailScaler)
+    : device_(std::move(device)), output_(output), quality_(quality), detailScaler_(detailScaler) {
   check(device_->device()->QueryInterface(IID_PPV_ARGS(videoDevice_.put())), "ID3D11VideoDevice");
   check(device_->context()->QueryInterface(IID_PPV_ARGS(videoContext_.put())), "ID3D11VideoContext");
   videoContext_.try_as(videoContext1_);
 }
 
-void VideoConverter::ensureProcessor(Size input) {
-  if (processor_ && processorInput_ == input) return;
+void VideoConverter::setDetail(bool detail) {
+  if (detail == quality_) return;
+  quality_ = detail;
+  processor_ = nullptr; // ensureProcessor() recreates it with the other usage
+  log::info("convert: {} scaling ({})", detail ? "quality (detail)" : "normal (motion)", toString(activeScaler()));
+}
+
+void VideoConverter::ensureProcessor(Size input, DXGI_FORMAT format) {
+  if (processor_ && processorInput_ == input && processorFormat_ == format) return;
   processor_ = nullptr;
   enumerator_ = nullptr;
   inputViews_.clear();
@@ -31,13 +40,16 @@ void VideoConverter::ensureProcessor(Size input) {
   check(videoDevice_->CreateVideoProcessorEnumerator(&desc, enumerator_.put()), "CreateVideoProcessorEnumerator");
 
   UINT flags = 0;
-  check(enumerator_->CheckVideoProcessorFormat(DXGI_FORMAT_B8G8R8A8_UNORM, &flags), "CheckVideoProcessorFormat(BGRA)");
-  if (!(flags & D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_INPUT)) throw HrError(E_NOTIMPL, "video processor: BGRA input unsupported");
+  check(enumerator_->CheckVideoProcessorFormat(format, &flags), "CheckVideoProcessorFormat(input)");
+  if (!(flags & D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_INPUT)) {
+    throw HrError(E_NOTIMPL, std::format("video processor: input format {} unsupported", static_cast<int>(format)));
+  }
   check(enumerator_->CheckVideoProcessorFormat(DXGI_FORMAT_NV12, &flags), "CheckVideoProcessorFormat(NV12)");
   if (!(flags & D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_OUTPUT)) throw HrError(E_NOTIMPL, "video processor: NV12 output unsupported");
 
   check(videoDevice_->CreateVideoProcessor(enumerator_.get(), 0, processor_.put()), "CreateVideoProcessor");
   processorInput_ = input;
+  processorFormat_ = format;
 
   auto* ctx = videoContext_.get();
   auto* vp = processor_.get();
@@ -102,16 +114,37 @@ ID3D11VideoProcessorOutputView* VideoConverter::outputView(ID3D11Texture2D* dst,
 }
 
 void VideoConverter::convert(ID3D11Texture2D* src, Size content, ID3D11Texture2D* dst, UINT dstSlice) {
-  D3D11_TEXTURE2D_DESC sd{};
-  src->GetDesc(&sd);
-  ensureProcessor({sd.Width, sd.Height});
+  const auto box = letterboxRect(content, output_);
+  const bool scaling = static_cast<uint32_t>(box.width()) != content.width || static_cast<uint32_t>(box.height()) != content.height;
+  if (scaling && quality_ && detailScaler_ != ScalerKind::VideoProcessor) {
+    try {
+      if (!compute_) compute_ = std::make_unique<ComputeScaler>(device_, detailScaler_);
+      compute_->scale(src, content, output_, box);
+      // The frame is now letterboxed at the output size: the video processor only converts, 1:1.
+      ensureProcessor(output_, DXGI_FORMAT_R8G8B8A8_UNORM);
+      src = compute_->target();
+      content = output_;
+    } catch (const std::exception& e) {
+      // Never lose the share over the experimental scaler: fall back to the video processor for good.
+      log::warn("convert: {} scaler unavailable, using the video processor: {}", toString(detailScaler_), e.what());
+      detailScaler_ = ScalerKind::VideoProcessor;
+      compute_.reset();
+      processor_ = nullptr;
+      return convert(src, content, dst, dstSlice);
+    }
+  } else {
+    D3D11_TEXTURE2D_DESC sd{};
+    src->GetDesc(&sd);
+    ensureProcessor({sd.Width, sd.Height}, sd.Format);
+  }
 
   auto* ctx = videoContext_.get();
   auto* vp = processor_.get();
   const RECT source{0, 0, static_cast<LONG>(content.width), static_cast<LONG>(content.height)};
   ctx->VideoProcessorSetStreamSourceRect(vp, 0, TRUE, &source);
-  const auto box = letterboxRect(content, output_);
-  const RECT dest{box.left, box.top, box.right, box.bottom};
+  const RECT dest = src == (compute_ ? compute_->target() : nullptr)
+                        ? RECT{0, 0, static_cast<LONG>(output_.width), static_cast<LONG>(output_.height)}
+                        : RECT{box.left, box.top, box.right, box.bottom};
   ctx->VideoProcessorSetStreamDestRect(vp, 0, TRUE, &dest);
 
   D3D11_VIDEO_PROCESSOR_STREAM stream{};

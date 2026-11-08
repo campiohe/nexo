@@ -450,6 +450,7 @@ const LiveCard = memo(function LiveCard({ view, user, mode }: LiveCardProps) {
   const stats = useVoice((s) => s.shareStats)
   // The card only shows once live, so 'connecting' here means main is resuming after a helper crash.
   const reconnecting = useNativeShare((s) => s.state === 'reconnecting' || s.state === 'connecting')
+  const audioFailed = useNativeShare((s) => s.audioFailed)
   const preset = presetId ? getSharePreset(presetId) : null
   const compact = mode === 'strip'
 
@@ -473,11 +474,12 @@ const LiveCard = memo(function LiveCard({ view, user, mode }: LiveCardProps) {
           (stats ? (
             <span
               className="vx-livecard-stats"
-              title={`Capturing ${stats.captureFps} fps, sending ${stats.sendFps} fps${
-                stats.width ? ` at ${stats.width}×${stats.height}` : ''
-              }`}
+              title={`${
+                stats.idle ? "Your screen isn't changing, so there are no new frames to send. Viewers see changes as soon as they happen. " : ''
+              }Capturing ${stats.captureFps} fps, sending ${stats.sendFps} fps${stats.width ? ` at ${stats.width}×${stats.height}` : ''}`}
             >
-              {stats.sendFps} fps{stats.bitrate ? ` · ${mbps(stats.bitrate)}` : ''}
+              {stats.idle ? 'Idle' : `${stats.sendFps} fps`}
+              {stats.bitrate ? ` · ${mbps(stats.bitrate)}` : ''}
               {stats.encoder ? ` · ${stats.encoder}` : ''}
             </span>
           ) : (
@@ -493,6 +495,11 @@ const LiveCard = memo(function LiveCard({ view, user, mode }: LiveCardProps) {
               <AlertIcon size={13} /> Window minimized / no new frames
             </span>
           )
+        )}
+        {audioFailed && (
+          <span className="vx-livecard-notice" title="Stream audio stopped working. Viewers still see your stream.">
+            <AlertIcon size={13} /> No stream audio
+          </span>
         )}
         {!compact && (
           <button className="vx-btn" onClick={() => void useVoice.getState().stopShare()}>

@@ -8,6 +8,7 @@
 #include <winrt/base.h>
 #include <winrt/Windows.Graphics.DirectX.Direct3D11.h>
 
+#include <atomic>
 #include <memory>
 #include <string>
 #include <vector>
@@ -51,7 +52,13 @@ class D3DDevice {
   const AdapterDesc& adapter() const { return adapter_; }
 
   /// S_OK while the device is usable; DXGI_ERROR_DEVICE_REMOVED/RESET/HUNG… after a TDR or driver update.
-  HRESULT removedReason() const { return device_->GetDeviceRemovedReason(); }
+  HRESULT removedReason() const {
+    if (simulatedRemoval_.load()) return DXGI_ERROR_DEVICE_REMOVED;
+    return device_->GetDeviceRemovedReason();
+  }
+  /// Test hook (NEXO_MEDIA_TEST_DEVICE_LOST_AFTER_MS): report the device as removed from now on, so the share
+  /// goes through the same detection and rebuild path as a real TDR (dxcap -forcetdr needs the Graphics Tools).
+  void simulateRemoval() { simulatedRemoval_.store(true); }
 
  private:
   void applyPriorityLevers();
@@ -62,9 +69,19 @@ class D3DDevice {
   winrt::com_ptr<IMFDXGIDeviceManager> manager_;
   UINT managerToken_ = 0;
   winrt::Windows::Graphics::DirectX::Direct3D11::IDirect3DDevice winrtDevice_{nullptr};
+  std::atomic<bool> simulatedRemoval_{false};
 };
 
-/// Process-wide priority levers that don't need a device (SPEC-BETA §4.3, off unless the env flag is set).
+/// SPEC-BETA §4.3 priority levers, each with an env override: NEXO_MEDIA_GPU_PRIORITY, NEXO_MEDIA_GPU_SCHED_HIGH,
+/// NEXO_MEDIA_ABOVE_NORMAL = 0 | 1. All off by default: measured on an RTX 3060 Ti, none of them changes the
+/// frame rate against a GPU-bound foreground game, alone or combined (docs/benchmarks/beta-m3-gpu-priority.md).
+enum class PriorityLever { GpuThreadPriority, GpuSchedulingHigh, AboveNormal };
+inline constexpr bool kGpuThreadPriorityDefault = false;
+inline constexpr bool kGpuSchedulingHighDefault = false;
+inline constexpr bool kAboveNormalDefault = false;
+bool priorityLever(PriorityLever lever);
+
+/// Process-wide priority levers that don't need a device (scheduling class, process priority class).
 void applyProcessPriorityLevers();
 
 } // namespace nexo

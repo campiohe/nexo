@@ -54,8 +54,18 @@ export const COMMAND_TIMEOUTS_MS: Record<HelperCommandType, number> = {
 /** Command ids are unique for the app's lifetime, across helper restarts. */
 let nextCommandId = 1
 
+export interface SendOptions {
+  timeoutMs?: number
+  /**
+   * Called synchronously when the `ok` result is read, before any event on the lines after it is dispatched
+   * (the promise resolves a microtask later, after the rest of that stdout chunk was handled).
+   */
+  onOk?(result: ResultOk): void
+}
+
 interface Pending {
   type: HelperCommandType
+  onOk?(result: ResultOk): void
   resolve(result: ResultOk): void
   reject(err: Error): void
   timer: NodeJS.Timeout
@@ -115,7 +125,8 @@ export class HelperProcess {
   }
 
   /** Sends a command and resolves with its `ok` result; rejects with a NativeShareFailure. */
-  send(body: CommandBody, timeoutMs = COMMAND_TIMEOUTS_MS[body.type]): Promise<ResultOk> {
+  send(body: CommandBody, opts: SendOptions = {}): Promise<ResultOk> {
+    const timeoutMs = opts.timeoutMs ?? COMMAND_TIMEOUTS_MS[body.type]
     if (this.finished) return Promise.reject(new NativeShareFailure('helper-crashed', 'nexo-media is not running'))
     const id = nextCommandId++
     const cmd = { ...body, id } as HelperCommand
@@ -129,7 +140,7 @@ export class HelperProcess {
         this.opts.log.warn(`[nexo-media] ${this.hung}; killing the helper`)
         this.child.kill()
       }, timeoutMs)
-      this.pending.set(id, { type: cmd.type, resolve, reject, timer })
+      this.pending.set(id, { type: cmd.type, onOk: opts.onOk, resolve, reject, timer })
       this.child.stdin.write(encodeCommand(cmd))
     })
   }
@@ -139,7 +150,7 @@ export class HelperProcess {
     if (this.finished) return
     this.expected = true
     const gone = this.waitForExit()
-    this.send({ type: 'shutdown' }, graceMs).catch(() => {})
+    this.send({ type: 'shutdown' }, { timeoutMs: graceMs }).catch(() => {})
     this.child.stdin.end()
     const timer = setTimeout(() => this.child.kill(), graceMs)
     await gone
@@ -182,8 +193,14 @@ export class HelperProcess {
     }
     this.pending.delete(event.id)
     clearTimeout(p.timer)
-    if (event.ok) p.resolve(event)
-    else p.reject(new NativeShareFailure(event.error.code, this.scrub(event.error.message)))
+    if (event.ok) {
+      try {
+        p.onOk?.(event)
+      } catch (err) {
+        this.opts.log.error('[nexo-media] result handler failed:', err)
+      }
+      p.resolve(event)
+    } else p.reject(new NativeShareFailure(event.error.code, this.scrub(event.error.message)))
   }
 
   private finish(code: number | null, signal: NodeJS.Signals | null): void {

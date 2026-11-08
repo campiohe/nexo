@@ -3,4 +3,7 @@
 // them back into a rejection carrying `code` and `fallback`. Shared by main and preload (types only).
 import type { NativeShareError } from '../../preload/api'
 
-export type NativeShareInvokeResult = { ok: true } | { ok: false; error: NativeShareError }
+export type NativeShareInvokeResult =
+  /** `shareId`: start() only, the id main gave the share (NativeShareEvent.shareId). */
+  | { ok: true; shareId?: number }
+  | { ok: false; error: NativeShareError }

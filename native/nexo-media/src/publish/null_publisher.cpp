@@ -37,7 +37,10 @@ class NullPublisher final : public Publisher {
     }
     return fb;
   }
+  void publishAudio() override { log::info("publish: dry run audio track 48 kHz stereo"); }
+  bool sendAudio(std::span<const int16_t>) override { return true; }
   void close() override {}
+  void detachCallbacks() override {}
   std::string describe() const override { return "dry run"; }
 
  private:

@@ -96,6 +96,11 @@ export interface ShareStats {
   bitrate?: number
   /** Native engine: no new frame for over a second (e.g. the shared window is minimized). */
   stalled?: boolean
+  /**
+   * Native engine, screens: nothing on screen is changing, so the capture delivers (almost) no frames. Not a
+   * problem, and `captureFps` reads 0–1: show "idle" instead.
+   */
+  idle?: boolean
 }
 
 export interface VoiceSessionState {
@@ -378,8 +383,8 @@ export const useVoice = create<VoiceSessionState>()((set, get) => ({
     const preset = getSharePreset(opts.presetId)
     set({ shareStarting: true, error: null, pickerOpen: false })
 
-    // Native engine on Windows when the setting asks for it and the helper has a hardware encoder. The
-    // capabilities were fetched when joining, so this normally doesn't wait.
+    // Native engine when the setting asks for it and the helper has a hardware encoder (and can capture the
+    // audio, for a share with audio). The capabilities were fetched when joining, so this normally doesn't wait.
     const caps = await nativeCapabilitiesFor(opts)
     // Left voice, or stopShare() was called meanwhile.
     if (room !== r || !get().shareStarting) return

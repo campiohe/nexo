@@ -1,7 +1,7 @@
-// Native game/screen share on Windows (docs/SPEC-BETA.md §8.3). The nexo-media helper captures, encodes and
-// publishes the stream to LiveKit itself, as a second participant `<userId>#stream`; this module drives it
-// through `window.nexo.nativeShare` and mirrors its state into `useVoice` (sharing, shareStats, …), so the
-// rest of the UI doesn't care which engine is streaming.
+// Native game/screen share (docs/SPEC-BETA.md §8.3): Windows, or any OS with the fake helper. The nexo-media
+// helper captures, encodes and publishes the stream to LiveKit itself, as a second participant
+// `<userId>#stream`; this module drives it through `window.nexo.nativeShare` and mirrors its state into
+// `useVoice` (sharing, shareStats, …), so the rest of the UI doesn't care which engine is streaming.
 //
 // session.ts owns the store and the Chromium engine. It hands them over with `bindNativeShare()` instead of
 // this module importing them, which keeps the two modules free of a runtime import cycle.
@@ -42,30 +42,45 @@ interface NativeShareUi {
   engine: CaptureEngine | null
   /** Helper state of the active native share ('idle' when none). */
   state: NativeShareState
+  /** The active native share lost its stream audio (`audio-failed`); the video keeps going. */
+  audioFailed: boolean
 }
 
-export const useNativeShare = create<NativeShareUi>()(() => ({ capabilities: null, engine: null, state: 'idle' }))
+export const useNativeShare = create<NativeShareUi>()(() => ({
+  capabilities: null,
+  engine: null,
+  state: 'idle',
+  audioFailed: false,
+}))
 
 /** A helper that hangs on `hello` must not keep "Go Live" spinning: Chromium is used for that share. */
 const CAPABILITIES_TIMEOUT_MS = 5000
 /** start() resolved but the stream never went live (and the helper never said why). */
 const LIVE_TIMEOUT_MS = 20_000
-/**
- * Main sends `error` before the `ended` it explains. Should one ever come after it, it still gets a short
- * chance to ask for the fallback.
- */
-const ERROR_AFTER_END_MS = 500
 /** Helper stats arrive at 1 Hz. */
 const STATS_INTERVAL_MS = 1000
+/**
+ * Monitor shares: WGC only delivers a frame when something on screen changes, so an idle desktop captures
+ * 0–1 fps. Below this the share reads "idle" instead of a frame rate that looks broken.
+ */
+const IDLE_CAPTURE_FPS = 2
+/**
+ * AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK works from Windows 10 2004 (build 19041), as OBS's application
+ * audio capture relies on; the helper reports `features.processLoopback` with the same threshold.
+ */
+const PROCESS_LOOPBACK_MIN_BUILD = 19041
 
 function bridge(): NexoBridge | undefined {
   return (window as { nexo?: NexoBridge }).nexo
 }
 
-/** The bridge when this build and OS can run the helper at all. */
+/**
+ * The bridge when the native engine can be asked at all: it needs sources from our own picker. Whether it
+ * actually works here is up to main: capabilities() says unavailable off Windows unless NEXO_MEDIA_FAKE=1.
+ */
 function nativeBridge(): NexoBridge | null {
   const b = bridge()
-  return b && b.platform === 'win32' && !b.usesSystemPicker && b.nativeShare ? b : null
+  return b && !b.usesSystemPicker && b.nativeShare ? b : null
 }
 
 let host: NativeShareHost | null = null
@@ -141,9 +156,21 @@ export function refreshNativeEngine(): void {
   primeNativeShare()
 }
 
+/** Shown once per app session: a share with audio went to Chromium because the helper can't capture it. */
+let audioFallbackToasted = false
+
+/** Why a native share can't stream audio here, or null when it can. */
+export function nativeAudioUnsupportedReason(caps: NativeShareCapabilities | null): string | null {
+  if (!caps?.available || caps.features?.processLoopback === true) return null
+  if (caps.osBuild !== undefined && caps.osBuild < PROCESS_LOOPBACK_MIN_BUILD) return 'Stream audio needs Windows 10 version 2004 or newer'
+  return "This capture helper can't stream audio"
+}
+
 /**
- * Capabilities when this share should use the native engine, else null (Chromium). Native needs Windows,
- * a source from our own picker, the setting on Native and a helper with a hardware encoder.
+ * Capabilities when this share should use the native engine, else null (Chromium). Native needs a source
+ * from our own picker, the setting on Native and a helper that main reports available (Windows with a
+ * hardware encoder, or the fake helper). A share with audio also needs process loopback: without it,
+ * Chromium streams it, since it can capture the audio.
  */
 export async function nativeCapabilitiesFor(opts: StartShareOptions): Promise<NativeShareCapabilities | null> {
   const b = nativeBridge()
@@ -155,7 +182,17 @@ export async function nativeCapabilitiesFor(opts: StartShareOptions): Promise<Na
   })
   const caps = await Promise.race([loadCapabilities(b), timeout])
   window.clearTimeout(timer)
-  return caps?.available ? caps : null
+  if (!caps?.available) return null
+  const noAudio = opts.withAudio ? nativeAudioUnsupportedReason(caps) : null
+  if (noAudio) {
+    console.info(`[native-share] ${noAudio}: using the Chromium engine for this share`)
+    if (!audioFallbackToasted) {
+      audioFallbackToasted = true
+      toast(`${noAudio} with native capture — using Chromium capture for streams with audio`, 'info')
+    }
+    return null
+  }
+  return caps
 }
 
 /** True when a share started now would use the native engine (as far as is known yet). For the picker. */
@@ -165,9 +202,9 @@ export function useNativeEngineLikely(): boolean {
   return !!nativeBridge() && engine === 'native' && available
 }
 
-/** Whether the helper can stream audio here (process loopback). Unknown counts as yes. */
-export function useNativeAudioSupported(): boolean {
-  return useNativeShare((s) => s.capabilities?.features?.processLoopback !== false)
+/** Why the native engine can't stream audio here (a share with audio then uses Chromium), or null. */
+export function useNativeAudioUnsupportedReason(): string | null {
+  return useNativeShare((s) => nativeAudioUnsupportedReason(s.capabilities))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -179,12 +216,15 @@ interface NativeSession {
   opts: StartShareOptions
   preset: SharePreset
   /**
-   * token: asking the server for the stream token (helper events are stale, from an earlier share)
-   * starting: start() sent; events are buffered until it resolves, then replayed
-   * running: events apply
+   * token: asking the server for the stream token (no share of ours exists yet: every event is stale)
+   * starting: start() sent; events are buffered until it resolves with our shareId
+   * running: events with our shareId apply
    * over: stopped or failed
    */
   phase: 'token' | 'starting' | 'running' | 'over'
+  /** From start(); main tags every event of this share with it. */
+  shareId: number | null
+  /** Events received while start() was pending, replayed (ours only) once the id is known. */
   buffered: NativeShareEvent[]
   live: boolean
   /** Window shares only: an idle monitor legitimately delivers no frames, so fps says nothing there. */
@@ -193,15 +233,13 @@ interface NativeSession {
   liveTimer: number | undefined
   /** Ended by release(): the helper is shutting down, no stop() needed. */
   released: boolean
-  /** Last `error` (main sends it right before the `ended` it explains). */
+  /** Last `error`: main and the helper send it right before the `ended` it explains. */
   lastError: NativeShareError | null
   /** Resolves the startShare() call: live, stopped, or failed (after the Chromium retry, if any). */
   settle(): void
 }
 
 let active: NativeSession | null = null
-/** A session whose `ended` came without an explanation yet; see ERROR_AFTER_END_MS. */
-let endedPending: { session: NativeSession; reason: NativeShareEndReason; timer: number } | null = null
 /** Every stop()/release() sent to the helper and not answered yet. A new start() waits for them (main
  *  runs one share at a time and would answer `busy`). */
 let stopping: Promise<void> = Promise.resolve()
@@ -257,6 +295,7 @@ export async function startNativeShare(
     opts,
     preset,
     phase: 'token',
+    shareId: null,
     buffered: [],
     live: false,
     watchCapture: opts.sourceId.startsWith('window:'),
@@ -267,7 +306,7 @@ export async function startNativeShare(
     settle,
   }
   active = session
-  useNativeShare.setState({ state: 'starting' })
+  useNativeShare.setState({ state: 'starting', audioFailed: false })
 
   let creds: { url: string; token: string }
   try {
@@ -283,8 +322,9 @@ export async function startNativeShare(
 
   session.phase = 'starting'
   const isScreen = opts.sourceId.startsWith('screen:')
+  let started: { shareId: number }
   try {
-    await b.nativeShare.start({
+    started = await b.nativeShare.start({
       sourceId: opts.sourceId,
       preset: {
         width: preset.width,
@@ -294,7 +334,8 @@ export async function startNativeShare(
         contentHint: preset.contentHint,
       },
       cursor: true,
-      withAudio: opts.withAudio && caps.features?.processLoopback !== false,
+      // nativeCapabilitiesFor() sends shares with audio to Chromium when the helper can't capture it.
+      withAudio: opts.withAudio && caps.features?.processLoopback === true,
       hideNexo: isScreen && (opts.hideNexo ?? true),
       livekit: { url: creds.url, token: creds.token },
     })
@@ -309,10 +350,12 @@ export async function startNativeShare(
     return
   }
 
+  const { shareId } = started
+  session.shareId = shareId
   session.phase = 'running'
   for (const ev of session.buffered.splice(0)) {
     if (active !== session) break
-    handleEvent(session, ev)
+    if (ev.shareId === shareId) handleEvent(session, ev)
   }
   if (active === session && !session.live) {
     session.liveTimer = window.setTimeout(() => {
@@ -344,25 +387,24 @@ export function releaseNativeShare(): void {
     s.released = true
     finish(s, false)
   }
-  clearEndedPending()
   capsPromise = null
-  useNativeShare.setState({ capabilities: null, state: 'idle' })
+  useNativeShare.setState({ capabilities: null, state: 'idle', audioFailed: false })
   const b = nativeBridge()
   if (b && touched) queueStop(() => b.nativeShare.release())
 }
 
+/**
+ * Events belong to the share whose id they carry. Without a share of ours, or before it asked main for one
+ * (token), they are the tail of an earlier share. While start() is pending our id isn't known yet: they wait.
+ */
 function onEvent(ev: NativeShareEvent): void {
   const s = active
-  if (!s) {
-    lateEvent(ev)
-    return
-  }
-  if (s.phase === 'token') return // from a share that ended before this one asked for its token
+  if (!s) return
   if (s.phase === 'starting') {
     s.buffered.push(ev)
     return
   }
-  if (s.phase === 'running') handleEvent(s, ev)
+  if (s.phase === 'running' && ev.shareId === s.shareId) handleEvent(s, ev)
 }
 
 function handleEvent(s: NativeSession, ev: NativeShareEvent): void {
@@ -376,8 +418,12 @@ function handleEvent(s: NativeSession, ev: NativeShareEvent): void {
       break
     case 'error':
       if (ev.error.code === 'audio-failed') {
-        // The video keeps going; the stream is just silent.
-        toast(`Stream audio: ${ev.error.message}. Streaming video only.`, 'error')
+        // The video keeps going; the stream is just silent. The "You're live" card says so too.
+        console.warn('[native-share] stream audio failed', ev.error)
+        if (!useNativeShare.getState().audioFailed) {
+          useNativeShare.setState({ audioFailed: true })
+          toast(`Stream audio stopped: ${ev.error.message}. Viewers still see your stream, without sound.`, 'error')
+        }
         break
       }
       // Errors don't end a share by themselves: the `ended` that follows does, and this explains it.
@@ -395,50 +441,25 @@ function handleEvent(s: NativeSession, ev: NativeShareEvent): void {
         toast('The shared window was closed, so the stream ended.', 'info')
         break
       }
-      // device-lost / error / crashed
+      if (ev.reason === 'device-lost') {
+        // The helper already rebuilt its GPU device in place and gave up: Chromium captures differently.
+        void fail(s, { code: 'capture-failed', message: 'the graphics device was lost (driver reset or GPU change)', fallback: true })
+        break
+      }
+      // error / crashed: explained by the `error` sent right before.
       if (s.lastError) {
         void fail(s, s.lastError)
         break
       }
       finish(s, true)
-      clearEndedPending()
-      const reason = ev.reason
-      endedPending = {
-        session: s,
-        reason,
-        timer: window.setTimeout(() => {
-          if (endedPending?.session !== s) return
-          endedPending = null
-          report(s, `Screen share ended: ${endReasonText(reason)}`)
-        }, ERROR_AFTER_END_MS),
-      }
+      report(s, `Screen share ended: ${endReasonText(ev.reason)}`)
       break
     }
   }
 }
 
-/** An event with no share active: only the `error` explaining a just-ended share still matters. */
-function lateEvent(ev: NativeShareEvent): void {
-  if (ev.type !== 'error' || !endedPending || ev.error.code === 'audio-failed') return
-  const { session } = endedPending
-  clearEndedPending()
-  void afterFailure(session, ev.error)
-}
-
-function clearEndedPending(): void {
-  if (endedPending) window.clearTimeout(endedPending.timer)
-  endedPending = null
-}
-
 function endReasonText(reason: NativeShareEndReason): string {
-  switch (reason) {
-    case 'device-lost':
-      return 'the graphics driver reset'
-    case 'crashed':
-      return 'the capture helper stopped unexpectedly'
-    default:
-      return 'the capture failed'
-  }
+  return reason === 'crashed' ? 'the capture helper stopped unexpectedly' : 'the capture failed'
 }
 
 function goLive(s: NativeSession): void {
@@ -463,6 +484,8 @@ function applyStats(s: NativeSession, st: NativeShareStats): void {
   const h = host
   if (!h) return
   let warn = false
+  // Static content, not a problem: a monitor only delivers frames when something on it changes.
+  const idle = !s.watchCapture && !st.stalled && st.captureFps < IDLE_CAPTURE_FPS
   if (s.watchCapture && !st.stalled) {
     warn = s.low.sample(st.captureFps, h.voice.getState().shareCaptureLow)
     if (warn && !h.voice.getState().shareCaptureLow) console.warn('[native-share] screen capture starved', st)
@@ -480,6 +503,7 @@ function applyStats(s: NativeSession, st: NativeShareStats): void {
     encoder: st.encoder || null,
     bitrate: st.sentBitrate ?? st.targetBitrate,
     stalled: st.stalled,
+    idle,
   }
   h.voice.setState({ shareStats: stats, shareCaptureLow: warn })
 }
@@ -494,7 +518,7 @@ function finish(s: NativeSession, announceChange: boolean, settle = true): void 
   s.phase = 'over'
   window.clearTimeout(s.liveTimer)
   if (active === s) active = null
-  useNativeShare.setState({ state: 'idle' })
+  useNativeShare.setState({ state: 'idle', audioFailed: false })
   const b = nativeBridge()
   if (b && !s.released) queueStop(() => b.nativeShare.stop())
   const h = host

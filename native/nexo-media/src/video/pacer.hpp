@@ -57,6 +57,12 @@ class Pacer {
   /// refreshes) at 1 fps forever.
   void onRateControl(uint64_t targetBitrateBps, double framerateFps);
   void requestKeyframe() { keyframePending_ = true; }
+  /// The next encoded frame must be an IDR regardless of the 500 ms limit: a rebuilt encoder (device lost)
+  /// starts a new stream that viewers can't decode from the old references.
+  void forceKeyframe() {
+    keyframePending_ = true;
+    lastKeyframeUs_.reset();
+  }
 
   struct Decision {
     bool encode = false;
