@@ -5,6 +5,7 @@ import { MAX_MESSAGE_LENGTH, MESSAGE_PAGE_SIZE } from '@shared/protocol'
 import { connect, disconnect, request } from '../net/socket'
 import { normalizeServerUrl } from '../lib/url'
 import { settings } from './settings'
+import { resetUnread } from './unread'
 
 export type ConnectionStatus = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'error'
 
@@ -164,6 +165,7 @@ export const useApp = create<AppState>()((set, get) => {
     changeServer: () => {
       void leaveVoiceQuietly()
       disconnect()
+      resetUnread()
       set({ ...emptySession(), view: 'onboarding', onboardingNotice: null })
     },
 
@@ -175,6 +177,7 @@ export const useApp = create<AppState>()((set, get) => {
         await settings.setToken(url, null)
         settings.setLastChannel(url, null)
       }
+      resetUnread()
       set({ ...emptySession(), view: 'onboarding', onboardingNotice: null })
     },
 

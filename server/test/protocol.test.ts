@@ -356,6 +356,31 @@ describe('Nexo protocol', () => {
     assert.equal(await requestErr(alice.socket, 'message:delete', { messageId: msg.id }), 'Message not found')
   })
 
+  test('bootstrap lastMessageAt: newest message by someone else, per channel', async () => {
+    const ch = await requestOk<Channel>(alice.socket, 'channel:create', { name: 'unread', type: 'text' })
+    const fromBob = await requestOk<Message>(bob.socket, 'message:send', { channelId: ch.id, content: 'for alice' })
+    const fromAlice = await requestOk<Message>(alice.socket, 'message:send', { channelId: ch.id, content: 'reply' })
+    assert.ok(fromAlice.createdAt > fromBob.createdAt)
+
+    const a = await connect(url, { token: alice.token })
+    // Alice's own (newer) reply doesn't count: the newest message by someone else is Bob's.
+    assert.equal(a.boot.lastMessageAt?.[ch.id], fromBob.createdAt)
+    const b = await connect(url, { token: bob.token })
+    assert.equal(b.boot.lastMessageAt?.[ch.id], fromAlice.createdAt)
+    a.socket.close()
+    b.socket.close()
+
+    // A channel with only your own messages is left out.
+    const solo = await requestOk<Channel>(alice.socket, 'channel:create', { name: 'solo', type: 'text' })
+    await requestOk<Message>(alice.socket, 'message:send', { channelId: solo.id, content: 'just me' })
+    const again = await connect(url, { token: alice.token })
+    assert.equal(again.boot.lastMessageAt?.[solo.id], undefined)
+    again.socket.close()
+
+    await requestOk<null>(alice.socket, 'channel:delete', { channelId: ch.id })
+    await requestOk<null>(alice.socket, 'channel:delete', { channelId: solo.id })
+  })
+
   // ----- typing -----
 
   test('typing is broadcast to others, not echoed to the typer', async () => {

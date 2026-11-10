@@ -299,6 +299,7 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
       online: onlineIds(),
       channels: channels.all(),
       voice: voiceList(),
+      lastMessageAt: messages.lastByOthers(userId),
     })
     // The token is delivered exactly once.
     delete socket.data.newToken

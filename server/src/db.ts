@@ -106,6 +106,9 @@ export function openDb(dataDir: string) {
     msgById: db.prepare(`SELECT ${msgCols} FROM messages WHERE id = ?`),
     msgDelete: db.prepare('DELETE FROM messages WHERE id = ?'),
     msgMaxCreated: db.prepare('SELECT COALESCE(MAX(created_at), 0) AS t FROM messages'),
+    msgLastByOthers: db.prepare(
+      'SELECT channel_id AS channelId, MAX(created_at) AS t FROM messages WHERE user_id != ? GROUP BY channel_id',
+    ),
     msgHistory: db.prepare(
       `SELECT ${msgCols} FROM messages WHERE channel_id = ? AND created_at < ? ORDER BY created_at DESC, id DESC LIMIT ?`,
     ),
@@ -249,6 +252,12 @@ export function openDb(dataDir: string) {
         q.msgDelete.run(id)
         return removed
       })
+    },
+    /** channelId -> createdAt of the newest message not written by `userId` (for unread state). */
+    lastByOthers(userId: string): Record<string, number> {
+      const out: Record<string, number> = {}
+      for (const r of q.msgLastByOthers.all(userId) as unknown as { channelId: string; t: number }[]) out[r.channelId] = r.t
+      return out
     },
     /** Newest page strictly before `before`, returned oldest-first. */
     history(channelId: string, before = Number.MAX_SAFE_INTEGER): Message[] {

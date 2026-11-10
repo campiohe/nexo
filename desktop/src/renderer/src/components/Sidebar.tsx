@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import type { Channel, ChannelType, VoiceState } from '@shared/protocol'
 import { useApp } from '../store/app'
+import { isUnread, useUnread } from '../store/unread'
 import { useUi } from '../store/ui'
 import { useShallow } from 'zustand/react/shallow'
 import { useVoice } from '../voice/session'
@@ -92,6 +93,7 @@ function ChannelRow({ channel }: { channel: Channel }) {
   const renameChannel = useApp((s) => s.renameChannel)
   const deleteChannel = useApp((s) => s.deleteChannel)
   const inThisVoice = useVoice((s) => s.channelId === channel.id)
+  const unread = useUnread((s) => channel.type === 'text' && isUnread(s, channel.id))
   const [renaming, setRenaming] = useState(false)
   const [confirming, setConfirming] = useState(false)
   const Icon = channel.type === 'text' ? HashIcon : SpeakerIcon
@@ -112,7 +114,7 @@ function ChannelRow({ channel }: { channel: Channel }) {
         />
       ) : (
         <div
-          className={`channel-row ${selected ? 'is-selected' : ''} ${inThisVoice ? 'is-connected' : ''}`}
+          className={`channel-row ${selected ? 'is-selected' : ''} ${inThisVoice ? 'is-connected' : ''} ${unread ? 'is-unread' : ''}`}
           onContextMenu={(e) => {
             e.preventDefault()
             setRenaming(true)
@@ -121,6 +123,7 @@ function ChannelRow({ channel }: { channel: Channel }) {
           <button className="channel-main" onClick={() => openChannel(channel)} aria-current={selected ? 'page' : undefined}>
             <Icon size={17} className="channel-icon" />
             <span className="channel-name">{channel.name}</span>
+            {unread && <span className="sr-only">, unread messages</span>}
           </button>
           <span className="channel-actions">
             <button className="icon-btn" onClick={() => setRenaming(true)} aria-label={`Rename ${channel.name}`} title="Rename">
