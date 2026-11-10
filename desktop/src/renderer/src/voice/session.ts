@@ -13,6 +13,7 @@ import {
   Room,
   RoomEvent,
   Track,
+  TrackEvent,
   VideoPresets,
   type LocalTrackPublication,
   type RemoteParticipant,
@@ -184,6 +185,8 @@ interface AudioEntry {
   track: RemoteAudioTrack
   identity: string
   boost: BoostChain | null
+  /** Re-applies the volume when the publisher unmutes (see setElementVolume). */
+  onUnmuted: () => void
 }
 
 /** trackSid -> hidden <audio> element playing a remote audio track. */
@@ -811,6 +814,20 @@ function teardownBoost(entry: AudioEntry): void {
 }
 
 /**
+ * Chromium drops a change to volume 0 made while a remote track is disabled, and LiveKit keeps a
+ * remote track disabled for as long as its publisher is muted (so between push-to-talk presses too).
+ * The element then reports 0, but the previous volume comes back as soon as they unmute: deafen,
+ * "mute for me" and the boost (which silences the element) all leaked that way. Non-zero changes do
+ * stick, so a disabled track is parked at an inaudible level instead, and the real 0 is applied when
+ * the track is enabled again (the entry's onUnmuted).
+ */
+const PARKED_VOLUME = 0.0001
+
+function setElementVolume(track: RemoteAudioTrack, v: number): void {
+  track.setVolume(v === 0 && !track.mediaStreamTrack.enabled ? PARKED_VOLUME : v)
+}
+
+/**
  * 0..1 plays through the <audio> element's own volume (no Web Audio, so echo cancellation and
  * setSinkId behave exactly as before). Above 1 the element is silenced and the track is routed
  * through a GainNode in a shared AudioContext whose output follows the selected speaker.
@@ -836,7 +853,7 @@ function applyTrackVolume(entry: AudioEntry): void {
         entry.boost.gain.gain.setTargetAtTime(v, ctx.currentTime, 0.02)
         // The element keeps playing (Chromium only feeds remote WebRTC audio into Web Audio while
         // it is attached to a media element) but silently.
-        track.setVolume(0)
+        setElementVolume(track, 0)
         return
       }
     }
@@ -846,11 +863,12 @@ function applyTrackVolume(entry: AudioEntry): void {
     return
   }
   teardownBoost(entry)
-  track.setVolume(v)
+  setElementVolume(track, v)
 }
 
 function removeAudioEntry(sid: string, entry: AudioEntry): void {
   teardownBoost(entry)
+  entry.track.off(TrackEvent.Unmuted, entry.onUnmuted)
   entry.track.detach(entry.el)
   entry.el.remove()
   audioElements.delete(sid)
@@ -867,7 +885,9 @@ function attachAudio(track: RemoteAudioTrack, identity: string): void {
   getAudioContainer().appendChild(el)
   // attach() applies the room's speaker (sinkId) to the element.
   track.attach(el)
-  const entry: AudioEntry = { el, track, identity, boost: null }
+  const entry: AudioEntry = { el, track, identity, boost: null, onUnmuted: () => applyTrackVolume(entry) }
+  // On the track itself: the room only relays TrackUnmuted while it is connected.
+  track.on(TrackEvent.Unmuted, entry.onUnmuted)
   audioElements.set(sid, entry)
   applyTrackVolume(entry)
 }
