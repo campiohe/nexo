@@ -4,6 +4,7 @@ import { useUi } from '../store/ui'
 import { Modal } from './Modal'
 import { openChannel } from './Sidebar'
 import { HashIcon, SpeakerIcon } from './icons'
+import { isUnread, useUnread } from '../store/unread'
 
 /** Ctrl+K channel switcher. */
 export function QuickSwitcher() {
@@ -72,6 +73,7 @@ function SwitcherInner() {
             >
               {c.type === 'text' ? <HashIcon size={16} /> : <SpeakerIcon size={16} />}
               <span>{c.name}</span>
+              {c.type === 'text' && <UnreadDot channelId={c.id} />}
               <span className="switcher-kind">{c.type === 'text' ? 'Text' : 'Voice — joins'}</span>
             </button>
           </li>
@@ -80,4 +82,10 @@ function SwitcherInner() {
       </ul>
     </Modal>
   )
+}
+
+function UnreadDot({ channelId }: { channelId: string }) {
+  const unread = useUnread((s) => isUnread(s, channelId))
+  if (!unread) return null
+  return <span className="unread-dot" title="Unread messages" aria-label="Unread messages" role="img" />
 }

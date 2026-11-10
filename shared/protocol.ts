@@ -67,6 +67,12 @@ export interface Bootstrap {
   online: string[]
   channels: Channel[]
   voice: VoiceState[]
+  /**
+   * channelId -> createdAt of the newest message written by someone other than `me` (channels without
+   * one are left out). Clients compare it with what they have read to show unread channels.
+   * Older servers omit it.
+   */
+  lastMessageAt?: Record<string, number>
 }
 
 /** Sent in the socket.io handshake `auth` field. */

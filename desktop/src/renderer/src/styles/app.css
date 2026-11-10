@@ -319,6 +319,20 @@ input, textarea { user-select: text; }
   background: var(--accent);
 }
 .channel-row.is-connected .channel-icon { color: var(--accent); }
+/* Unread: brighter, bolder name and a small pill on the left edge (the selected bar takes that spot). */
+.channel-row.is-unread { color: var(--text-0); }
+.channel-row.is-unread .channel-name { font-weight: 700; }
+.channel-row.is-unread:not(.is-selected)::before {
+  content: '';
+  position: absolute;
+  left: -8px;
+  top: 50%;
+  width: 4px;
+  height: 8px;
+  margin-top: -4px;
+  border-radius: 0 4px 4px 0;
+  background: var(--text-0);
+}
 .channel-main {
   flex: 1;
   min-width: 0;
@@ -369,7 +383,7 @@ input, textarea { user-select: text; }
 .voice-member.is-speaking .avatar { box-shadow: 0 0 0 2px var(--speaking), 0 0 8px color-mix(in srgb, var(--speaking) 45%, transparent); }
 .voice-member.is-speaking .voice-member-name { color: var(--text-0); }
 /* Screen-reader-only "speaking" hint so the highlight isn't color-only. */
-.voice-member-sr { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.sr-only, .voice-member-sr { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .voice-badges { display: inline-flex; align-items: center; gap: 4px; flex: none; color: var(--text-2); }
 .voice-badge { display: inline-grid; place-items: center; }
 .voice-badge.is-off { color: var(--danger); }
@@ -707,6 +721,7 @@ input, textarea { user-select: text; }
 .switcher-item.is-active { background: var(--bg-3); color: var(--text-0); }
 .switcher-item span:nth-child(2) { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .switcher-kind { font-size: 11px; color: var(--text-2); }
+.unread-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--text-0); }
 .switcher-empty { padding: 12px 10px; font-size: 13px; }
 
 /* ---------- toasts ---------- */

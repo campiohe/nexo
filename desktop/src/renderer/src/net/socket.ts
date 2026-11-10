@@ -11,6 +11,7 @@ import type {
 import { MESSAGE_PAGE_SIZE } from '@shared/protocol'
 import { defaultChannelId, mergeMessages, sortChannels, useApp, type ChannelMessages } from '../store/app'
 import { settings } from '../store/settings'
+import { forgetChannel, loadReadState, noteDeleted, noteMessage, resetUnread } from '../store/unread'
 
 export type NexoSocket = Socket<ServerToClientEvents, ClientToServerEvents>
 
@@ -191,6 +192,7 @@ function wire(s: NexoSocket) {
     const typing = { ...st.typing }
     delete typing[channelId]
     useApp.setState({ channels, messages, typing })
+    forgetChannel(channelId)
     if (st.selectedChannelId === channelId) useApp.getState().selectChannel(defaultChannelId(channels, null))
     void import('../voice/session')
       .then(({ useVoice }) => {
@@ -200,6 +202,7 @@ function wire(s: NexoSocket) {
   })
 
   s.on('message:new', (m) => {
+    noteMessage(m, useApp.getState().me?.id)
     useApp.setState((st) => {
       const cm = st.messages[m.channelId]
       const patch: Partial<typeof st> = {}
@@ -219,11 +222,13 @@ function wire(s: NexoSocket) {
   })
 
   s.on('message:deleted', ({ messageId, channelId }) => {
-    useApp.setState((st) => {
-      const cm = st.messages[channelId]
-      if (!cm || !cm.items.some((x) => x.id === messageId)) return {}
-      return { messages: { ...st.messages, [channelId]: { ...cm, items: cm.items.filter((x) => x.id !== messageId) } } }
-    })
+    const st = useApp.getState()
+    const cm = st.messages[channelId]
+    const deleted = cm?.items.find((x) => x.id === messageId)
+    if (!cm || !deleted) return
+    const items = cm.items.filter((x) => x.id !== messageId)
+    useApp.setState({ messages: { ...st.messages, [channelId]: { ...cm, items } } })
+    noteDeleted(channelId, deleted, items, st.me?.id)
   })
 
   s.on('typing', ({ channelId, userId }) => {
@@ -282,6 +287,12 @@ async function handleBootstrap(b: Bootstrap) {
     messages: sameIdentity ? messages : {},
     typing: {},
   })
+  loadReadState(
+    url,
+    b.me.id,
+    b.lastMessageAt,
+    channels.filter((c) => c.type === 'text').map((c) => c.id),
+  )
   useApp.getState().selectChannel(selected)
 
   if (wasBootstrapped || sameIdentity) {
@@ -327,6 +338,7 @@ async function handleUnknownToken() {
   const url = currentUrl
   disconnect()
   await settings.setToken(url, null)
+  resetUnread()
   useApp.setState({
     view: 'onboarding',
     connection: 'idle',
