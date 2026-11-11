@@ -8,6 +8,7 @@ import { useVoice } from '../voice/session'
 import { speakingIdentities, useParticipants } from '../voice/participants'
 import { VoiceControls } from './voice/VoiceControls'
 import { toast } from '../lib/toast'
+import { canManageChannels } from '../lib/permissions'
 import { Avatar } from './Avatar'
 import { ConfirmDialog } from './Modal'
 import { GearIcon, HashIcon, HeadphonesOffIcon, MicOffIcon, NexoMark, PencilIcon, PlusIcon, SpeakerIcon, TrashIcon, VideoIcon } from './icons'
@@ -48,21 +49,29 @@ export function Sidebar() {
 }
 
 function ChannelSection({ type, label, channels }: { type: ChannelType; label: string; channels: Channel[] }) {
-  const [creating, setCreating] = useState(false)
+  const [creatingOpen, setCreating] = useState(false)
   const createChannel = useApp((s) => s.createChannel)
+  const canManage = useApp((s) => canManageChannels(s.me))
+  // Demoted while the form is open: it just goes away (and doesn't come back on a later promotion).
+  const creating = creatingOpen && canManage
+  useEffect(() => {
+    if (!canManage) setCreating(false)
+  }, [canManage])
 
   return (
     <section className="channel-section">
       <div className="section-header">
         <span className="section-label">{label}</span>
-        <button
-          className="icon-btn section-add"
-          onClick={() => setCreating((v) => !v)}
-          aria-label={`Create ${type} channel`}
-          title={`Create ${type} channel`}
-        >
-          <PlusIcon size={16} />
-        </button>
+        {canManage && (
+          <button
+            className="icon-btn section-add"
+            onClick={() => setCreating((v) => !v)}
+            aria-label={`Create ${type} channel`}
+            title={`Create ${type} channel`}
+          >
+            <PlusIcon size={16} />
+          </button>
+        )}
       </div>
       {creating && (
         <InlineNameForm
@@ -94,8 +103,17 @@ function ChannelRow({ channel }: { channel: Channel }) {
   const deleteChannel = useApp((s) => s.deleteChannel)
   const inThisVoice = useVoice((s) => s.channelId === channel.id)
   const unread = useUnread((s) => channel.type === 'text' && isUnread(s, channel.id))
-  const [renaming, setRenaming] = useState(false)
-  const [confirming, setConfirming] = useState(false)
+  const canManage = useApp((s) => canManageChannels(s.me))
+  const [renamingOpen, setRenaming] = useState(false)
+  const [confirmingOpen, setConfirming] = useState(false)
+  // Demoted mid-edit: drop the rename form and the delete confirmation.
+  const renaming = renamingOpen && canManage
+  const confirming = confirmingOpen && canManage
+  useEffect(() => {
+    if (canManage) return
+    setRenaming(false)
+    setConfirming(false)
+  }, [canManage])
   const Icon = channel.type === 'text' ? HashIcon : SpeakerIcon
 
   return (
@@ -115,29 +133,35 @@ function ChannelRow({ channel }: { channel: Channel }) {
       ) : (
         <div
           className={`channel-row ${selected ? 'is-selected' : ''} ${inThisVoice ? 'is-connected' : ''} ${unread ? 'is-unread' : ''}`}
-          onContextMenu={(e) => {
-            e.preventDefault()
-            setRenaming(true)
-          }}
+          onContextMenu={
+            canManage
+              ? (e) => {
+                  e.preventDefault()
+                  setRenaming(true)
+                }
+              : undefined
+          }
         >
           <button className="channel-main" onClick={() => openChannel(channel)} aria-current={selected ? 'page' : undefined}>
             <Icon size={17} className="channel-icon" />
             <span className="channel-name">{channel.name}</span>
             {unread && <span className="sr-only">, unread messages</span>}
           </button>
-          <span className="channel-actions">
-            <button className="icon-btn" onClick={() => setRenaming(true)} aria-label={`Rename ${channel.name}`} title="Rename">
-              <PencilIcon size={14} />
-            </button>
-            <button
-              className="icon-btn danger"
-              onClick={() => setConfirming(true)}
-              aria-label={`Delete ${channel.name}`}
-              title="Delete"
-            >
-              <TrashIcon size={14} />
-            </button>
-          </span>
+          {canManage && (
+            <span className="channel-actions">
+              <button className="icon-btn" onClick={() => setRenaming(true)} aria-label={`Rename ${channel.name}`} title="Rename">
+                <PencilIcon size={14} />
+              </button>
+              <button
+                className="icon-btn danger"
+                onClick={() => setConfirming(true)}
+                aria-label={`Delete ${channel.name}`}
+                title="Delete"
+              >
+                <TrashIcon size={14} />
+              </button>
+            </span>
+          )}
         </div>
       )}
       {channel.type === 'voice' && <VoiceMembers channelId={channel.id} />}

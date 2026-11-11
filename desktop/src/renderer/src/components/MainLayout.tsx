@@ -4,10 +4,12 @@ import { useUi } from '../store/ui'
 import { useVoice } from '../voice/session'
 import { VoiceStage } from './voice/VoiceStage'
 import { toast } from '../lib/toast'
+import { canManageChannels } from '../lib/permissions'
 import { Sidebar } from './Sidebar'
 import { TextChannel } from './TextChannel'
 import { MemberList } from './MemberList'
 import { UpdateBanner } from './UpdateBanner'
+import { AccessRequestBanners } from './AccessRequestBanners'
 import { HashIcon, SpeakerIcon, UsersIcon } from './icons'
 
 export function MainLayout() {
@@ -28,6 +30,7 @@ function Center() {
   const membersOpen = useUi((s) => s.membersOpen)
   const toggleMembers = useUi((s) => s.toggleMembers)
   const inThisVoice = useVoice((s) => !!channel && s.channelId === channel.id)
+  const canManage = useApp((s) => canManageChannels(s.me))
 
   useEffect(() => {
     document.title = channel ? `${channel.type === 'text' ? '#' : ''}${channel.name} · ${serverName}` : serverName
@@ -75,12 +78,15 @@ function Center() {
           {connection === 'error' ? 'Connection problem — retrying…' : 'Reconnecting…'}
         </div>
       )}
+      <AccessRequestBanners />
       <UpdateBanner />
       <div className="center-body">
         {!channel ? (
           <div className="empty-state">
             <h2>No channel selected</h2>
-            <p className="muted">Create a channel with the + button in the sidebar.</p>
+            <p className="muted">
+              {canManage ? 'Create a channel with the + button in the sidebar.' : 'There are no channels yet. Ask an admin to create one.'}
+            </p>
           </div>
         ) : channel.type === 'text' ? (
           <TextChannel key={channel.id} channelId={channel.id} channelName={channel.name} />
