@@ -2,6 +2,12 @@
 
 export type ChannelType = 'text' | 'voice'
 
+/**
+ * What a user may do (docs/SPEC-ACCOUNTS.md §2). owner: the host, exactly one per server; admin: manages
+ * channels, deletes any message, removes members, approves sign-in requests; member: everything else.
+ */
+export type Role = 'owner' | 'admin' | 'member'
+
 export interface User {
   id: string
   name: string
@@ -11,6 +17,19 @@ export interface User {
    * Image URL: `${serverUrl}/avatars/${id}?v=${avatar}` (see AVATAR_* below).
    */
   avatar: string | null
+  /** Older servers omit it: they check no permissions, so clients treat a missing role as 'admin'. */
+  role?: Role
+}
+
+/** Someone without a saved login asking to sign in to an existing account (docs/SPEC-ACCOUNTS.md §4). */
+export interface AccessRequest {
+  id: string
+  /** The account they want to sign in to. */
+  userId: string
+  /** Address the request came from, as the server saw it (for the approver to judge). */
+  address: string
+  createdAt: number
+  expiresAt: number
 }
 
 export interface Channel {
@@ -73,12 +92,22 @@ export interface Bootstrap {
    * Older servers omit it.
    */
   lastMessageAt?: Record<string, number>
+  /** Permanent random id of this server; clients key saved logins by it. Older servers omit it. */
+  serverId?: string
+  /** Pending sign-in requests this user may answer (admins/owner, or for their own account). */
+  accessRequests?: AccessRequest[]
 }
 
 /** Sent in the socket.io handshake `auth` field. */
 export type HandshakeAuth =
   | { token: string }
   | { name: string; color: string; password?: string }
+  /**
+   * "Welcome back": sign in to `claim` (a user id) without a token. Accepted only when the connection
+   * comes from a Tailscale address linked to that account (GET /api/info `recognized`). Issues a new token
+   * in `bootstrap.token`. Rejected with HANDSHAKE_ERRORS NOT_RECOGNIZED otherwise.
+   */
+  | { claim: string }
 
 export type AckResult<T> = { ok: true; data: T } | { ok: false; error: string }
 export type Ack<T> = (res: AckResult<T>) => void
@@ -115,6 +144,15 @@ export interface ClientToServerEvents {
   'voice:streamToken': (p: { channelId: string }, ack: Ack<StreamCredentials>) => void
   'voice:state': (p: VoiceStatePatch) => void
   'profile:update': (p: { color: string }, ack: Ack<User>) => void
+  /** Owner only. Can't change the owner's own role (ownership moves with `nexo-server owner <name>`). */
+  'user:setRole': (p: { userId: string; role: 'admin' | 'member' }, ack: Ack<User>) => void
+  /**
+   * Admins remove members; only the owner removes admins; nobody removes the owner or themselves.
+   * Deletes the account with its messages, pictures and logins, and frees the name.
+   */
+  'user:remove': (p: { userId: string }, ack: Ack<null>) => void
+  /** Admins/owner, or the account the request is for (from another device). */
+  'access:respond': (p: { requestId: string; approve: boolean }, ack: Ack<null>) => void
 }
 
 export interface ServerToClientEvents {
@@ -127,7 +165,44 @@ export interface ServerToClientEvents {
   'message:deleted': (p: { messageId: string; channelId: string }) => void
   typing: (p: { channelId: string; userId: string }) => void
   'voice:states': (states: VoiceState[]) => void
+  /** The account is gone: drop the user, their messages and voice state. Its own sockets are disconnected. */
+  'user:removed': (p: { userId: string }) => void
+  /** To admins/owner and to the target account's sockets. */
+  'access:request': (r: AccessRequest) => void
+  /** The request was approved, denied, cancelled or expired: dismiss it. */
+  'access:resolved': (p: { requestId: string }) => void
 }
+
+// ---- Server info (HTTP, no auth) ----
+// GET /api/info → 200 ServerInfo. Clients call it before connecting without a saved login, to find the
+// saved login by serverId and to offer "Welcome back" for `recognized` accounts.
+export interface ServerInfo {
+  serverId: string
+  serverName: string
+  /** Account creation needs the server password. */
+  passwordRequired: boolean
+  /**
+   * Accounts linked to the caller's Tailscale device (most recently used first). Always [] for
+   * connections that don't come from a Tailscale address.
+   */
+  recognized: User[]
+}
+
+// ---- Sign-in requests (HTTP, no auth) ----
+// POST   /api/access-requests        body { name: string; password?: string }  (password = server password,
+//                                    required when the server has one)
+//        → 201 { id, secret, expiresAt } | 404 { error } no such account | 403 { error } wrong password
+//          | 429 { error } too many requests
+// GET    /api/access-requests/:id    Authorization: Bearer <secret>
+//        → 200 { status: 'pending' } | { status: 'denied' } | { status: 'approved', token }
+//          (the token is delivered once; afterwards and after expiry → 404)
+// DELETE /api/access-requests/:id    Authorization: Bearer <secret> → 204 (cancel)
+export type AccessRequestStatus =
+  | { status: 'pending' }
+  | { status: 'denied' }
+  | { status: 'approved'; token: string }
+export const ACCESS_REQUEST_TTL_MS = 10 * 60 * 1000
+export const ACCESS_REQUEST_POLL_MS = 2000
 
 // ---- Profile pictures (HTTP, not socket.io) ----
 // PUT    /api/avatar   Authorization: Bearer <device token>, body = image bytes
