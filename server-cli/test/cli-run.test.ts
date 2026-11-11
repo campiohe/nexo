@@ -100,6 +100,7 @@ test('backup and rename-user commands', async () => {
   try {
     const db = openDb(t.dir)
     db.users.create('Alice', '#3ee6b0', 'h')
+    db.users.create('Bob', '#3ee6b0', 'h2')
     db.close()
     assert.equal(await t.run('backup'), 0)
     assert.match(t.s.out(), /Database saved to .*backups/)
@@ -107,6 +108,10 @@ test('backup and rename-user commands', async () => {
     assert.match(t.s.out(), /Renamed "Alice" to "Alice-old"/)
     assert.equal(await t.run('rename-user', 'nobody', 'xx'), 1)
     assert.match(t.s.err(), /No user named "nobody"/)
+    assert.equal(await t.run('owner', 'bob'), 0)
+    assert.match(t.s.out(), /"Bob" is now the owner\. "Alice-old" is now an admin\./)
+    assert.equal(await t.run('owner', 'Bob'), 1)
+    assert.match(t.s.err(), /"Bob" is already the owner/)
   } finally {
     t.cleanup()
   }

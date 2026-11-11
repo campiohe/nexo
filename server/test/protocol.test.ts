@@ -343,9 +343,9 @@ describe('Nexo protocol', () => {
     assert.equal(await requestErr(alice.socket, 'message:history', { channelId: ch.id }), 'Channel not found')
   })
 
-  test('message delete: own messages only, broadcast with channelId', async () => {
+  test('message delete: members only their own, broadcast with channelId', async () => {
     const msg = await requestOk<Message>(alice.socket, 'message:send', { channelId: general.id, content: 'delete me' })
-    assert.equal(await requestErr(bob.socket, 'message:delete', { messageId: msg.id }), 'You can only delete your own messages')
+    assert.equal(await requestErr(bob.socket, 'message:delete', { messageId: msg.id }), "Only admins can delete other people's messages")
 
     const deleted = nextEvent(bob.socket, 'message:deleted')
     assert.equal(await requestOk<null>(alice.socket, 'message:delete', { messageId: msg.id }), null)
@@ -473,7 +473,7 @@ describe('Nexo protocol', () => {
   })
 
   test('deleting a voice channel clears voice states in it', async () => {
-    const temp = await requestOk<Channel>(bob.socket, 'channel:create', { name: 'Temp', type: 'voice' })
+    const temp = await requestOk<Channel>(alice.socket, 'channel:create', { name: 'Temp', type: 'voice' })
     const aliceId = alice.boot.me.id
     const bobId = bob.boot.me.id
     const both = nextEvent(alice.socket, 'voice:states', (s) => !!findVoice(s, aliceId) && !!findVoice(s, bobId))
@@ -483,7 +483,7 @@ describe('Nexo protocol', () => {
 
     const deleted = nextEvent(alice.socket, 'channel:deleted')
     const cleared = nextEvent(alice.socket, 'voice:states', (s) => !findVoice(s, aliceId))
-    await requestOk<null>(bob.socket, 'channel:delete', { channelId: temp.id })
+    await requestOk<null>(alice.socket, 'channel:delete', { channelId: temp.id })
     assert.deepEqual(await deleted, { channelId: temp.id })
     const states = await cleared
     assert.equal(findVoice(states, bobId)?.channelId, lounge.id, 'other channels untouched')
@@ -547,7 +547,7 @@ describe('Nexo protocol', () => {
     )
 
     // Another voice channel than the one Alice is in.
-    const other = await requestOk<Channel>(bob.socket, 'channel:create', { name: 'Other', type: 'voice' })
+    const other = await requestOk<Channel>(alice.socket, 'channel:create', { name: 'Other', type: 'voice' })
     assert.equal(
       await requestErr(alice.socket, 'voice:streamToken', { channelId: other.id }),
       'Join the voice channel before streaming',
@@ -565,7 +565,7 @@ describe('Nexo protocol', () => {
       'Join the voice channel before streaming',
     )
 
-    await requestOk<null>(bob.socket, 'channel:delete', { channelId: other.id })
+    await requestOk<null>(alice.socket, 'channel:delete', { channelId: other.id })
     const left = nextEvent(bob.socket, 'voice:states', (s) => !findVoice(s, aliceId))
     send(alice.socket, 'voice:state', voicePatch(null))
     await left
@@ -577,7 +577,7 @@ describe('Nexo protocol', () => {
     const second = await connect(url, { token: alice.token })
     const upsert = nextEvent(bob.socket, 'user:upsert', (u) => u.id === alice.boot.me.id)
     const updated = await requestOk<User>(alice.socket, 'profile:update', { color: '#ABCDEF' })
-    assert.deepEqual(updated, { id: alice.boot.me.id, name: 'Alice', color: '#abcdef', avatar: null })
+    assert.deepEqual(updated, { id: alice.boot.me.id, name: 'Alice', color: '#abcdef', avatar: null, role: 'owner' })
     assert.deepEqual(await upsert, updated)
 
     // The other socket mints tokens with the new color.

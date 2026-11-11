@@ -6,7 +6,7 @@ import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 // The schema comes from the server itself: openDb creates (and migrates) <dataDir>/nexo.db.
 import { openDb } from '../../server/src/db.ts'
-import { AdminError, backupDatabase, checkUserName, defaultBackupName, renameUser } from '../src/cli/admin.ts'
+import { AdminError, backupDatabase, checkUserName, defaultBackupName, makeOwner, renameUser } from '../src/cli/admin.ts'
 import { acquireInstance } from '../src/cli/instance.ts'
 
 const ports = { http: 3001, livekit: 7880, livekitTcp: 7881, livekitUdp: 7882 }
@@ -16,11 +16,11 @@ function fixture() {
   const dir = mkdtempSync(path.join(tmpdir(), 'nexo-cli-admin-'))
   const db = openDb(dir)
   const alice = db.users.create('Alice', '#3ee6b0', 'hash-a')
-  db.users.create('Bob', '#3ee6b0', 'hash-b')
+  const bob = db.users.create('Bob', '#3ee6b0', 'hash-b')
   const general = db.channels.all().find((c) => c.type === 'text')!
   db.messages.create(general.id, alice.id, 'hello')
   db.close()
-  return { dir, aliceId: alice.id, cleanup: () => rmSync(dir, { recursive: true, force: true }) }
+  return { dir, aliceId: alice.id, bobId: bob.id, cleanup: () => rmSync(dir, { recursive: true, force: true }) }
 }
 
 const names = (dir: string) => {
@@ -95,10 +95,70 @@ test('renameUser: refused while the server runs, unless --force', () => {
   }
 })
 
+const roles = (dir: string) => {
+  const db = new DatabaseSync(path.join(dir, 'nexo.db'))
+  try {
+    const rows = db.prepare('SELECT name, role FROM users ORDER BY name').all() as { name: string; role: string }[]
+    return Object.fromEntries(rows.map((r) => [r.name, r.role]))
+  } finally {
+    db.close()
+  }
+}
+
+test('makeOwner: moves ownership, the previous owner becomes an admin', () => {
+  const f = fixture()
+  try {
+    assert.deepEqual(roles(f.dir), { Alice: 'owner', Bob: 'member' }) // the first account owns the server
+    assert.deepEqual(makeOwner(f.dir, '  bob '), { id: f.bobId, name: 'Bob', previous: 'Alice' })
+    assert.deepEqual(roles(f.dir), { Alice: 'admin', Bob: 'owner' })
+    assert.deepEqual(makeOwner(f.dir, 'Alice'), { id: f.aliceId, name: 'Alice', previous: 'Bob' })
+    assert.deepEqual(roles(f.dir), { Alice: 'owner', Bob: 'admin' })
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('makeOwner: refuses unknown users, the current owner, and while the server runs', () => {
+  const f = fixture()
+  try {
+    assert.throws(() => makeOwner(f.dir, 'Carol'), /No user named "Carol"/)
+    assert.throws(() => makeOwner(f.dir, 'alice'), /"Alice" is already the owner/)
+    assert.throws(() => makeOwner(f.dir, '  '), AdminError)
+    const held = acquireInstance(f.dir, { version: 't', ports, pid: 4242, isAlive: () => true })
+    assert.ok(held.ok)
+    assert.throws(
+      () => makeOwner(f.dir, 'Bob', { isAlive: () => true }),
+      (e: Error) => e instanceof AdminError && /server is running \(PID 4242\)/.test(e.message) && /--force/.test(e.message),
+    )
+    assert.deepEqual(roles(f.dir), { Alice: 'owner', Bob: 'member' })
+    makeOwner(f.dir, 'Bob', { isAlive: () => true, force: true })
+    assert.deepEqual(roles(f.dir), { Alice: 'admin', Bob: 'owner' })
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('makeOwner: migrates a database from before roles', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'nexo-cli-admin-'))
+  try {
+    const db = new DatabaseSync(path.join(dir, 'nexo.db'))
+    db.exec(`CREATE TABLE users (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE, color TEXT NOT NULL,
+             token_hash TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL)`)
+    db.prepare('INSERT INTO users VALUES (?, ?, ?, ?, ?)').run('u1', 'First', '#111111', 'h1', 1)
+    db.prepare('INSERT INTO users VALUES (?, ?, ?, ?, ?)').run('u2', 'Second', '#222222', 'h2', 2)
+    db.close()
+    assert.deepEqual(makeOwner(dir, 'second'), { id: 'u2', name: 'Second', previous: 'First' })
+    assert.deepEqual(roles(dir), { First: 'admin', Second: 'owner' })
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('no database: clear message', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'nexo-cli-admin-'))
   try {
     assert.throws(() => renameUser(dir, 'a', 'bb'), /No database at .*--data/)
+    assert.throws(() => makeOwner(dir, 'Alice'), /No database at .*--data/)
     assert.throws(() => backupDatabase(dir), /No database at/)
     assert.equal(existsSync(path.join(dir, 'nexo.db')), false) // not created by accident
   } finally {
