@@ -8,6 +8,7 @@ import { installCapture } from './capture'
 import { devMode, isDev, platform, preloadArguments } from './platform'
 import { getPrefs, installPrefs } from './prefs'
 import { installHotkeys } from './hotkeys'
+import { installMainLog, logLine } from './log'
 import { installNativeShare, releaseNativeShare } from './native-media'
 import { installSecrets } from './secrets'
 import { installSecurity, isAppUrl, openExternalSafe, rendererEntry } from './security'
@@ -105,6 +106,12 @@ function createMainWindow(): BrowserWindow {
       if (level === 'warning' || level === 'error') console.log(`[renderer:${level}] ${message} (${sourceId}:${lineNumber})`)
     })
   }
+  // The renderer's own `[nexo]` warnings/errors (e.g. a login that couldn't be saved) also go to main.log.
+  win.webContents.on('console-message', ({ level, message }) => {
+    if ((level === 'warning' || level === 'error') && message.startsWith('[nexo]')) {
+      logLine(level === 'error' ? 'ERROR' : 'WARN', `[renderer] ${message}`)
+    }
+  })
 
   if (isDev) void win.loadURL(rendererEntry)
   else void win.loadFile(rendererEntry)
@@ -170,6 +177,8 @@ function applyUserDataDirSwitch(): void {
 }
 
 applyUserDataDirSwitch()
+// Right after userData is final: everything below may log.
+installMainLog()
 
 /**
  * Windows screen/window capture: hand frames to the encoder as GPU textures (Windows.Graphics.Capture)

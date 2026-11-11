@@ -241,6 +241,56 @@ input, textarea { user-select: text; }
 .onboarding-identity { display: flex; align-items: flex-end; gap: 14px; }
 .onboarding-identity .avatar { transition: background 0.2s var(--ease); }
 
+/* "This is my account" offer under a name-taken error */
+.onboarding-claim {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: -8px;
+  font-size: 13px;
+  color: var(--text-1);
+}
+
+/* Welcome back: accounts linked to this device */
+.welcome-accounts { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.welcome-account {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-2);
+}
+.welcome-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 650; font-size: 15px; }
+
+/* Sign-in request: waiting for approval */
+.signin-wait {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+.signin-help { font-size: 13px; line-height: 1.5; }
+.signin-help strong { color: var(--text-0); }
+
+.link-btn {
+  align-self: center;
+  padding: 2px 4px;
+  border: 0;
+  background: none;
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 600;
+}
+.link-btn:hover:not(:disabled) { color: var(--text-0); text-decoration: underline; }
+.link-btn:disabled { opacity: 0.55; }
+
 .collapsible { display: flex; flex-direction: column; gap: 8px; }
 .collapsible-toggle {
   display: inline-flex;
@@ -293,6 +343,8 @@ input, textarea { user-select: text; }
 .section-label { font-size: 11px; font-weight: 750; letter-spacing: 0.09em; text-transform: uppercase; color: var(--text-2); }
 .section-header:hover .section-label { color: var(--text-1); }
 .section-add { width: 24px; height: 24px; }
+/* Same height with or without the + button (members can't create channels). */
+.section-header { min-height: 32px; }
 
 .channel-list, .voice-members, .member-list, .switcher-list { list-style: none; margin: 0; padding: 0; }
 .channel-empty { padding: 6px 10px; font-size: 12px; color: var(--text-2); font-style: italic; }
@@ -485,6 +537,25 @@ input, textarea { user-select: text; }
   transition: width 0.3s var(--ease);
 }
 
+/* Sign-in requests (AccessRequestBanners): one bar each, stacked oldest first. */
+.access-requests { display: flex; flex-direction: column; flex: none; max-height: 40vh; overflow-y: auto; }
+.access-request {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 38px;
+  padding: 4px 8px 4px 14px;
+  background: var(--warn-soft);
+  color: var(--text-0);
+  font-size: 13px;
+  border-bottom: 1px solid rgb(255 181 71 / 0.25);
+}
+.access-request-icon { flex: none; color: var(--warn); }
+.access-request-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.access-request-text strong { font-weight: 700; }
+.access-request-error { color: var(--danger); font-weight: 600; }
+.access-request-actions { display: flex; gap: 6px; flex: none; }
+
 .empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; text-align: center; padding: 24px; }
 
 /* ---------- members ---------- */
@@ -514,6 +585,29 @@ input, textarea { user-select: text; }
 .member-text { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.25; }
 .member-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 550; color: var(--text-1); }
 .member-you { color: var(--text-2); font-weight: 400; }
+.member-name-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.member-name-row .member-name { min-width: 0; }
+
+/* Role badge (member list, Settings → Members). */
+.role-badge {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  height: 17px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  line-height: 1;
+  background: var(--bg-3);
+  color: var(--text-2);
+}
+.role-badge.is-owner { background: var(--warn-soft); color: var(--warn); }
+.role-badge.is-admin { background: var(--accent-soft); color: var(--accent); }
+/* The narrow member list: keep "Name (you)" readable next to the badge. */
+.role-badge.is-compact { height: 15px; padding: 0 4px; font-size: 9px; letter-spacing: 0.03em; }
 .member-sub { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--accent); }
 
 /* ---------- modal ---------- */
@@ -621,6 +715,29 @@ input, textarea { user-select: text; }
 .kb-row .toggle-text { min-width: 0; }
 .kb-combo { min-width: 150px; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kb-error { margin: 0 0 0 14px; font-size: 12px; color: var(--danger); }
+
+/* Members tab */
+.members-intro { margin: -8px 0 0; }
+.members-admin { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.members-admin-item { display: flex; flex-direction: column; gap: 4px; }
+.members-admin-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-0);
+}
+.members-admin-text { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 3px; }
+.members-admin-name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 650; }
+.members-role-seg { align-self: center; flex: none; }
+.members-role-seg .vx-seg-btn { height: 26px; padding: 0 10px; font-size: 12px; }
+.members-role-seg .vx-seg-btn:disabled { cursor: default; opacity: 0.6; }
+.members-remove { flex: none; }
+.members-remove:hover:not(:disabled) { color: var(--danger); border-color: rgb(255 92 92 / 0.35); background: var(--danger-soft); }
+.members-error { margin: 0 0 0 14px; font-size: 12px; color: var(--danger); }
+.members-confirm { display: flex; flex-direction: column; gap: 10px; }
 
 /* App preferences: label + switch */
 .toggle-row {

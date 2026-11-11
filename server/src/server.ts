@@ -1,26 +1,36 @@
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { Server, type Socket } from 'socket.io'
 import { AccessToken, TrackSource } from 'livekit-server-sdk'
 import type {
+  AccessRequest,
   Ack,
   ChannelType,
   ClientToServerEvents,
+  Role,
   ServerToClientEvents,
   User,
   VoiceState,
 } from '../../shared/protocol.ts'
-import { MAX_ATTACHMENTS_PER_MESSAGE, MAX_MESSAGE_LENGTH } from '../../shared/protocol.ts'
+import { ACCESS_REQUEST_TTL_MS, MAX_ATTACHMENTS_PER_MESSAGE, MAX_MESSAGE_LENGTH } from '../../shared/protocol.ts'
 import { streamIdentity } from '../../shared/stream.ts'
 import { loadConfig, type Config } from './config.ts'
 import { isUniqueViolation, openDb } from './db.ts'
 import { createAvatarRoutes } from './avatars.ts'
 import { createAttachmentRoutes } from './attachments.ts'
+import { createAccountRoutes } from './accounts.ts'
+import { isTailscaleAddress, unwrapAddress } from './address.ts'
+import { safeEqual } from './http.ts'
 
 interface SocketData {
   user: User
+  /** Remote address (IPv4-mapped IPv6 unwrapped), from the TCP connection, never from headers. */
+  address: string
+  /** A login created by this handshake (new account or claim), delivered once in bootstrap. */
   newToken?: string
+  /** This handshake created the account. */
+  created?: boolean
 }
 
 type NexoServer = Server<ClientToServerEvents, ServerToClientEvents, Record<string, never>, SocketData>
@@ -38,6 +48,16 @@ export interface StartOptions extends Partial<Omit<Config, 'livekit'>> {
   attachmentPendingTtlMs?: number
   /** How often unsent uploads are swept. Default: LIMITS.attachmentSweepIntervalMs. */
   attachmentSweepIntervalMs?: number
+  /**
+   * Whether a connection from this (unwrapped) remote address is a known device: links it to the account
+   * and allows "welcome back" claims (docs/SPEC-ACCOUNTS.md §3). Default: isTailscaleAddress. Tests inject
+   * one that trusts 127.0.0.1.
+   */
+  isTrustedDeviceAddress?: (address: string) => boolean
+  /** Lifetime of a sign-in request. Default: ACCESS_REQUEST_TTL_MS. */
+  accessRequestTtlMs?: number
+  /** How often expired sign-in requests are swept. Default: LIMITS.accessRequestSweepIntervalMs. */
+  accessRequestSweepIntervalMs?: number
 }
 
 export interface NexoInstance {
@@ -80,15 +100,43 @@ export const LIMITS = {
   attachmentPendingTtlMs: 60 * 60 * 1000,
   /** …by a sweep that runs at start and then every 10 minutes. */
   attachmentSweepIntervalMs: 10 * 60 * 1000,
+  /** Pending sign-in requests per remote address… */
+  accessRequestsPerAddress: 3,
+  /** …and in total. */
+  accessRequestsTotal: 20,
+  /** Expired sign-in requests are swept (and announced as resolved) this often. */
+  accessRequestSweepIntervalMs: 15 * 1000,
 } as const
 
 export const HANDSHAKE_ERRORS = {
   unknownToken: 'UNKNOWN_TOKEN',
+  /** A "welcome back" claim from an address that isn't a device linked to that account. */
+  notRecognized: 'NOT_RECOGNIZED',
   badName: `Names must be ${LIMITS.nameMin}–${LIMITS.nameMax} letters, numbers, spaces, . _ or -`,
   nameTaken: 'That name is already taken',
   wrongPassword: 'Wrong server password',
   server: 'Server error, try again',
 } as const
+
+/** Ack errors of role-checked events (docs/SPEC-ACCOUNTS.md §2). */
+export const PERMISSION_ERRORS = {
+  manageChannels: 'Only admins can manage channels',
+  deleteOthersMessages: "Only admins can delete other people's messages",
+  setRole: 'Only the owner can change roles',
+  ownerRole: "The owner's role can't be changed",
+  invalidRole: 'Invalid role',
+  removeAccounts: 'Only admins can remove accounts',
+  removeSelf: "You can't remove your own account",
+  removeOwner: "The owner can't be removed",
+  removeAdmin: 'Only the owner can remove admins',
+  answerRequests: 'Only admins can answer sign-in requests',
+  userNotFound: 'User not found',
+  requestNotFound: 'This sign-in request expired or was already answered',
+  invalidAnswer: 'Invalid answer',
+} as const
+
+/** admin and owner manage channels, delete any message, remove members and answer sign-in requests. */
+export const isAdminRole = (role: Role | undefined): boolean => role === 'admin' || role === 'owner'
 
 const DEFAULT_COLOR = '#3ee6b0'
 const COLOR_RE = /^#[0-9a-f]{6}$/i
@@ -97,11 +145,6 @@ const NAME_RE = new RegExp(`^[\\p{L}\\p{M}\\p{N}_.\\- ]{${LIMITS.nameMin},${LIMI
 const hashToken = (token: string) => createHash('sha256').update(token).digest('hex')
 const isStr = (v: unknown): v is string => typeof v === 'string'
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null
-
-/** Constant-time string comparison (hash first so lengths don't leak). */
-function safeEqual(a: string, b: string): boolean {
-  return timingSafeEqual(createHash('sha256').update(a).digest(), createHash('sha256').update(b).digest())
-}
 
 /** Whether an already-normalized name (normalizeUserName) is allowed. Shared with the server CLI's rename-user. */
 export function isValidUserName(name: string): boolean {
@@ -148,19 +191,72 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
     attachmentUploadsPerMinute,
     attachmentPendingTtlMs,
     attachmentSweepIntervalMs,
+    isTrustedDeviceAddress = isTailscaleAddress,
+    accessRequestTtlMs,
+    accessRequestSweepIntervalMs,
     ...rest
   } = options
   const config: Config = { ...base, ...rest, livekit: { ...base.livekit, ...livekit } }
   const log = logOpt === false ? () => {} : (logOpt ?? ((m: string) => console.log(m)))
+  const isTrusted = (address: string) => address !== '' && isTrustedDeviceAddress(address)
 
   const db = openDb(config.dataDir)
-  const { users, channels, messages, attachments } = db
+  const { users, devices, channels, messages, attachments } = db
 
   /** Store `user` as the latest profile on all of its sockets and tell everyone. */
   function publishUser(user: User) {
     for (const s of io.of('/').sockets.values()) if (s.data.user?.id === user.id) s.data.user = user
     io.emit('user:upsert', user)
   }
+
+  /** Creates another login for an account and returns the raw token (stored only as a hash). */
+  function issueToken(userId: string): string {
+    const token = randomBytes(32).toString('base64url')
+    users.addToken(userId, hashToken(token))
+    return token
+  }
+
+  /** The account's current role, read from the DB (undefined once the account is gone). */
+  const roleOf = (userId: string): Role | undefined => users.get(userId)?.role
+
+  /**
+   * Runs `fn` for every socket that may see a sign-in request for `targetUserId`: admins/owner, and the
+   * target account's own sockets.
+   */
+  function forApprovers(targetUserId: string, fn: (s: NexoSocket) => void) {
+    const roles = new Map<string, Role | undefined>()
+    for (const s of io.of('/').sockets.values()) {
+      const uid = s.data.user?.id
+      if (!uid) continue
+      if (!roles.has(uid)) roles.set(uid, roleOf(uid))
+      if (uid === targetUserId || isAdminRole(roles.get(uid))) fn(s)
+    }
+  }
+
+  const accountRoutes = createAccountRoutes({
+    serverId: db.serverId,
+    serverName: config.serverName,
+    serverPassword: config.serverPassword,
+    users,
+    devices,
+    userByName: (name) => {
+      const n = normalizeUserName(name)
+      return n ? users.byName(n) : undefined
+    },
+    issueToken,
+    isTrustedDeviceAddress: isTrusted,
+    ttlMs: accessRequestTtlMs ?? ACCESS_REQUEST_TTL_MS,
+    sweepIntervalMs: accessRequestSweepIntervalMs ?? LIMITS.accessRequestSweepIntervalMs,
+    maxPerAddress: LIMITS.accessRequestsPerAddress,
+    maxTotal: LIMITS.accessRequestsTotal,
+    onRequest: (r) => forApprovers(r.userId, (s) => s.emit('access:request', r)),
+    onResolved: (r) => forApprovers(r.userId, (s) => s.emit('access:resolved', { requestId: r.id })),
+    log,
+  })
+
+  /** Pending sign-in requests `user` may answer (all for admins/owner, else only those for their account). */
+  const requestsFor = (user: User): AccessRequest[] =>
+    accountRoutes.pending().filter((r) => r.userId === user.id || isAdminRole(user.role))
 
   const avatarRoutes = createAvatarRoutes({
     dataDir: config.dataDir,
@@ -189,8 +285,9 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
       res.end(JSON.stringify({ ok: true, name: config.serverName }))
       return
     }
-    if (avatarRoutes(req, res)) return
+    if (avatarRoutes.handle(req, res)) return
     if (attachmentRoutes.handle(req, res)) return
+    if (accountRoutes.handle(req, res)) return
     // socket.io handles /socket.io/* itself; everything else is 404.
     if (!pathname.startsWith('/socket.io')) res.writeHead(404).end()
   })
@@ -214,6 +311,24 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
   const voiceList = (): VoiceState[] => [...voiceStates.values()].map(({ socketId: _s, ...v }) => v)
   const broadcastVoice = () => io.emit('voice:states', voiceList())
   const broadcastPresence = () => io.emit('presence', onlineIds())
+
+  /**
+   * Deletes an account (docs/SPEC-ACCOUNTS.md §2): its sign-in requests, voice state, DB rows (messages,
+   * uploads, logins, device links) and files, then tells everyone and disconnects its sockets.
+   */
+  function removeAccount(target: User, by: User) {
+    accountRoutes.dropForUser(target.id)
+    const removed = users.remove(target.id)
+    if (!removed) return
+    attachmentRoutes.removeFiles(removed.attachmentIds)
+    avatarRoutes.removeFile(target.id)
+    if (voiceStates.delete(target.id)) broadcastVoice()
+    io.emit('user:removed', { userId: target.id })
+    io.in(userRoom(target.id)).disconnectSockets(true)
+    log(
+      `[nexo] ${by.name} removed the account "${target.name}" (${target.role}, ${removed.messages} message${removed.messages === 1 ? '' : 's'})`,
+    )
+  }
 
   function livekitUrlFor(socket: NexoSocket): string {
     if (config.livekit.publicUrl) return config.livekit.publicUrl
@@ -243,13 +358,35 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
   // ---------- identity handshake ----------
 
   io.use((socket, next) => {
+    // The TCP peer (socket.io takes it from the connection, not from X-Forwarded-For).
+    const address = unwrapAddress(socket.handshake.address)
+    socket.data.address = address
     try {
       const auth: Record<string, unknown> = isObj(socket.handshake.auth) ? socket.handshake.auth : {}
 
       if (isStr(auth.token) && auth.token) {
-        const user = users.byTokenHash(hashToken(auth.token))
-        if (!user) return next(new Error(HANDSHAKE_ERRORS.unknownToken))
+        const hash = hashToken(auth.token)
+        const user = users.byTokenHash(hash)
+        if (!user) {
+          log(`[nexo] refused a connection from ${address || 'unknown address'}: unknown device token (UNKNOWN_TOKEN)`)
+          return next(new Error(HANDSHAKE_ERRORS.unknownToken))
+        }
+        users.touchToken(hash)
         socket.data.user = user
+        return next()
+      }
+
+      // "Welcome back" (docs/SPEC-ACCOUNTS.md §3): only from a trusted device already linked to the account.
+      if ('claim' in auth) {
+        const user = isStr(auth.claim) && auth.claim ? users.get(auth.claim) : undefined
+        if (!user || !isTrusted(address) || !devices.isLinked(user.id, address)) {
+          const who = user ? `"${user.name}"` : 'an unknown account'
+          log(`[nexo] refused a "welcome back" sign-in to ${who} from ${address || 'unknown address'} (NOT_RECOGNIZED)`)
+          return next(new Error(HANDSHAKE_ERRORS.notRecognized))
+        }
+        socket.data.user = user
+        socket.data.newToken = issueToken(user.id)
+        log(`[nexo] "${user.name}" signed in again from their device ${address} (welcome back): new login issued`)
         return next()
       }
 
@@ -269,7 +406,9 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
         throw err
       }
       socket.data.newToken = token
-      log(`[nexo] new user "${name}"`)
+      socket.data.created = true
+      const role = socket.data.user.role
+      log(`[nexo] new user "${name}"${role === 'owner' ? ' (owner: the first account on this server)' : ''} from ${address}`)
       next()
     } catch (err) {
       console.error('[nexo] handshake error', err)
@@ -290,9 +429,13 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
     connections.set(userId, count)
     log(`[nexo] ${me().name} connected (${socket.id}, ${count} socket${count > 1 ? 's' : ''})`)
 
-    if (socket.data.newToken) socket.broadcast.emit('user:upsert', me())
+    // Device link for "welcome back" (Tailscale addresses only, see isTrustedDeviceAddress).
+    if (isTrusted(socket.data.address)) devices.link(userId, socket.data.address)
+
+    if (socket.data.created) socket.broadcast.emit('user:upsert', me())
     socket.emit('bootstrap', {
       serverName: config.serverName,
+      serverId: db.serverId,
       me: me(),
       ...(socket.data.newToken ? { token: socket.data.newToken } : {}),
       users: users.all(),
@@ -300,14 +443,20 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
       channels: channels.all(),
       voice: voiceList(),
       lastMessageAt: messages.lastByOthers(userId),
+      accessRequests: requestsFor(me()),
     })
     // The token is delivered exactly once.
     delete socket.data.newToken
+    delete socket.data.created
     if (count === 1) broadcastPresence()
 
-    // --- channels ---
+    /** Role checks read the DB, so a change (or removal) applies at once to every socket. */
+    const isAdmin = () => isAdminRole(roleOf(userId))
+
+    // --- channels (admins/owner) ---
 
     socket.on('channel:create', guard('channel:create', (p, ack) => {
+      if (!isAdmin()) return fail(ack, PERMISSION_ERRORS.manageChannels)
       if (!isObj(p) || (p.type !== 'text' && p.type !== 'voice')) return fail(ack, 'Invalid channel type')
       const name = normalizeChannelName(p.name, p.type)
       if (!name) return fail(ack, 'Invalid channel name')
@@ -318,6 +467,7 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
     }))
 
     socket.on('channel:rename', guard('channel:rename', (p, ack) => {
+      if (!isAdmin()) return fail(ack, PERMISSION_ERRORS.manageChannels)
       const existing = isObj(p) && isStr(p.channelId) ? channels.get(p.channelId) : undefined
       if (!existing) return fail(ack, 'Channel not found')
       const name = normalizeChannelName(p.name, existing.type)
@@ -329,6 +479,7 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
     }))
 
     socket.on('channel:delete', guard('channel:delete', (p, ack) => {
+      if (!isAdmin()) return fail(ack, PERMISSION_ERRORS.manageChannels)
       const existing = isObj(p) && isStr(p.channelId) ? channels.get(p.channelId) : undefined
       if (!existing) return fail(ack, 'Channel not found')
       attachmentRoutes.removeFiles(channels.delete(existing.id))
@@ -375,9 +526,11 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
     socket.on('message:delete', guard('message:delete', (p, ack) => {
       const msg = isObj(p) && isStr(p.messageId) ? messages.get(p.messageId) : undefined
       if (!msg) return fail(ack, 'Message not found')
-      if (msg.userId !== userId) return fail(ack, 'You can only delete your own messages')
+      const own = msg.userId === userId
+      if (!own && !isAdmin()) return fail(ack, PERMISSION_ERRORS.deleteOthersMessages)
       attachmentRoutes.removeFiles(messages.delete(msg.id))
       io.emit('message:deleted', { messageId: msg.id, channelId: msg.channelId })
+      if (!own) log(`[nexo] ${me().name} deleted a message by ${users.get(msg.userId)?.name ?? msg.userId}`)
       ok(ack, null)
     }))
 
@@ -495,6 +648,50 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
       ok(ack, updated)
     }))
 
+    // --- accounts (docs/SPEC-ACCOUNTS.md §2) ---
+
+    socket.on('user:setRole', guard('user:setRole', (p, ack) => {
+      if (roleOf(userId) !== 'owner') return fail(ack, PERMISSION_ERRORS.setRole)
+      const target = isObj(p) && isStr(p.userId) ? users.get(p.userId) : undefined
+      if (!target) return fail(ack, PERMISSION_ERRORS.userNotFound)
+      const role = p.role
+      if (role !== 'admin' && role !== 'member') return fail(ack, PERMISSION_ERRORS.invalidRole)
+      if (target.role === 'owner') return fail(ack, PERMISSION_ERRORS.ownerRole)
+      if (target.role === role) return ok(ack, target)
+      const updated = users.setRole(target.id, role)
+      if (!updated) return fail(ack, PERMISSION_ERRORS.userNotFound)
+      publishUser(updated)
+      // Other accounts' pending sign-in requests appear for a new admin and go away for a former one.
+      for (const r of accountRoutes.pending()) {
+        if (r.userId === updated.id) continue
+        if (role === 'admin') io.to(userRoom(updated.id)).emit('access:request', r)
+        else io.to(userRoom(updated.id)).emit('access:resolved', { requestId: r.id })
+      }
+      log(`[nexo] ${me().name} made "${updated.name}" ${role === 'admin' ? 'an admin' : 'a member'} (was ${target.role})`)
+      ok(ack, updated)
+    }))
+
+    socket.on('user:remove', guard('user:remove', (p, ack) => {
+      const role = roleOf(userId)
+      if (!isAdminRole(role)) return fail(ack, PERMISSION_ERRORS.removeAccounts)
+      const target = isObj(p) && isStr(p.userId) ? users.get(p.userId) : undefined
+      if (!target) return fail(ack, PERMISSION_ERRORS.userNotFound)
+      if (target.id === userId) return fail(ack, PERMISSION_ERRORS.removeSelf)
+      if (target.role === 'owner') return fail(ack, PERMISSION_ERRORS.removeOwner)
+      if (target.role === 'admin' && role !== 'owner') return fail(ack, PERMISSION_ERRORS.removeAdmin)
+      removeAccount(target, me())
+      ok(ack, null)
+    }))
+
+    socket.on('access:respond', guard('access:respond', (p, ack) => {
+      if (!isObj(p) || !isStr(p.requestId) || typeof p.approve !== 'boolean') return fail(ack, PERMISSION_ERRORS.invalidAnswer)
+      const request = accountRoutes.get(p.requestId)
+      if (!request) return fail(ack, PERMISSION_ERRORS.requestNotFound)
+      if (request.userId !== userId && !isAdmin()) return fail(ack, PERMISSION_ERRORS.answerRequests)
+      if (!accountRoutes.answer(request.id, p.approve, me())) return fail(ack, PERMISSION_ERRORS.requestNotFound)
+      ok(ack, null)
+    }))
+
     // --- disconnect ---
 
     socket.on('disconnect', (reason) => {
@@ -515,6 +712,7 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
   await new Promise<void>((resolve, reject) => {
     const onError = (err: Error) => {
       attachmentRoutes.close()
+      accountRoutes.close()
       db.close()
       reject(err)
     }
@@ -531,6 +729,7 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
   const close = () =>
     (closing ??= (async () => {
       attachmentRoutes.close()
+      accountRoutes.close()
       io.disconnectSockets(true)
       await io.close() // also closes the http server
       http.closeAllConnections()
@@ -544,8 +743,8 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
   const stats = (): ServerStats => {
     const addresses = new Set<string>()
     for (const socket of io.sockets.sockets.values()) {
-      const a = socket.handshake.address
-      if (a) addresses.add(a.startsWith('::ffff:') ? a.slice(7) : a)
+      const a = unwrapAddress(socket.handshake.address)
+      if (a) addresses.add(a)
     }
     let streaming = 0
     for (const v of voiceStates.values()) if (v.streaming) streaming++

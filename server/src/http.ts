@@ -1,6 +1,7 @@
 // Small helpers shared by the plain-HTTP routes (avatars, attachments): JSON errors, bounded body reads,
 // bearer-token auth and CORS preflights. Everything else on the server goes over socket.io.
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { createHash, timingSafeEqual } from 'node:crypto'
 import type { User } from '../../shared/protocol.ts'
 import type { Db } from './db.ts'
 
@@ -114,12 +115,23 @@ export function readBody(req: IncomingMessage, limit: number, tooLarge: () => Ht
   })
 }
 
-/** The user behind `Authorization: Bearer <device token>`, or a 401. */
-export function authenticate(req: IncomingMessage, users: Db['users'], hashToken: (token: string) => string): User {
+/** Constant-time string comparison (hash first so lengths don't leak). */
+export function safeEqual(a: string, b: string): boolean {
+  return timingSafeEqual(createHash('sha256').update(a).digest(), createHash('sha256').update(b).digest())
+}
+
+/** The value of `Authorization: Bearer <value>`, or null. */
+export function bearer(req: IncomingMessage): string | null {
   const header = req.headers.authorization
   const m = typeof header === 'string' ? /^Bearer\s+(\S+)\s*$/i.exec(header) : null
-  if (!m) throw new HttpError(401, 'Missing device token (Authorization: Bearer <token>)', { 'www-authenticate': 'Bearer' })
-  const user = users.byTokenHash(hashToken(m[1]))
+  return m ? m[1] : null
+}
+
+/** The user behind `Authorization: Bearer <device token>`, or a 401. */
+export function authenticate(req: IncomingMessage, users: Db['users'], hashToken: (token: string) => string): User {
+  const token = bearer(req)
+  if (!token) throw new HttpError(401, 'Missing device token (Authorization: Bearer <token>)', { 'www-authenticate': 'Bearer' })
+  const user = users.byTokenHash(hashToken(token))
   if (!user) throw new HttpError(401, 'Unknown device token', { 'www-authenticate': 'Bearer error="invalid_token"' })
   return user
 }

@@ -1,4 +1,5 @@
-// Admin commands that work on the database directly: `backup` and `rename-user` (spec §3.3).
+// Admin commands that work on the database directly: `backup`, `rename-user` (spec §3.3) and `owner`
+// (docs/SPEC-ACCOUNTS.md §2).
 //
 // rename-user replaces the manual SQLite command in docs/SERVER.md ("Lost identity") and applies the
 // server's own name rules (server/src/server.ts: normalizeUserName, LIMITS, NAME_RE; users.name is
@@ -7,6 +8,7 @@
 import { existsSync, mkdirSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import { openDb } from '../../../server/src/db.ts'
 import { isValidUserName, LIMITS, normalizeUserName } from '../../../server/src/server.ts'
 import { runningInstance } from './instance.ts'
 import { dataLayout } from './paths.ts'
@@ -125,6 +127,47 @@ export function renameUser(dataDir: string, oldName: string, newName: string, op
       throw err
     }
     return { id: user.id, oldName: user.name, newName: to.value }
+  } finally {
+    db.close()
+  }
+}
+
+export interface OwnerResult {
+  id: string
+  name: string
+  /** The previous owner, now an admin (undefined when there was none). */
+  previous?: string
+}
+
+/**
+ * Makes a user the server's owner; the previous owner becomes an admin (docs/SPEC-ACCOUNTS.md §2: the app
+ * can't move ownership). Matches the name case-insensitively, like the server. Opens the database with the
+ * server's own openDb, so an older database is migrated (roles, logins) first.
+ *
+ * Refused while the server for this data folder is running, unless `force`: permissions take effect at once
+ * (the server reads roles from the database), but connected friends see the old roles until they reconnect.
+ */
+export function makeOwner(dataDir: string, name: string, opts: RenameOptions = {}): OwnerResult {
+  const running = runningInstance(dataDir, opts.isAlive)
+  if (running && !opts.force) {
+    throw new AdminError(
+      `The server is running (PID ${running.pid}). Stop it first (Ctrl+C in its window), then run this again.\n` +
+        'Changing the owner while it runs works, but connected friends see the old roles until they reconnect.\n' +
+        'To do it anyway, add --force.',
+    )
+  }
+  const wanted = normalizeUserName(name)
+  if (!wanted) throw new AdminError('Give the name of the user who should own the server.')
+  openExisting(dataDir).close() // a clear error when there is no database (openDb would create one)
+
+  const db = openDb(dataDir)
+  try {
+    const user = db.users.byName(wanted)
+    if (!user) throw new AdminError(`No user named "${wanted}".`)
+    if (user.role === 'owner') throw new AdminError(`"${user.name}" is already the owner.`)
+    const moved = db.users.transferOwnership(user.id)
+    if (!moved) throw new AdminError(`No user named "${wanted}".`)
+    return { id: user.id, name: user.name, ...(moved.previous ? { previous: moved.previous.name } : {}) }
   } finally {
     db.close()
   }

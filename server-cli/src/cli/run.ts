@@ -11,7 +11,7 @@ import type { Readable, Writable } from 'node:stream'
 import { runAutostart, type Exec } from '../autostart.ts'
 import { runUpdate } from '../update/command.ts'
 import { packagedBinary } from '../update/install.ts'
-import { AdminError, backupDatabase, renameUser } from './admin.ts'
+import { AdminError, backupDatabase, makeOwner, renameUser } from './admin.ts'
 import { parseArgs, usage, type Command } from './commands.ts'
 import { applyEnvOverrides, ConfigError, loadCliConfig, saveCliConfig, type ServerCliConfig } from './config.ts'
 import { acquireInstance, runningInstance, type InstanceLock, type LockInfo } from './instance.ts'
@@ -198,6 +198,12 @@ export async function runCommand(cmd: Command, deps: CliDeps): Promise<number> {
         const dataDir = dataDirFor(cmd, deps)
         const r = renameUser(dataDir, cmd.oldName, cmd.newName, { force: cmd.force, isAlive: deps.isAlive })
         out(`Renamed "${r.oldName}" to "${r.newName}". Their messages are kept; "${r.oldName}" is free again.`)
+        return 0
+      }
+      case 'owner': {
+        const dataDir = dataDirFor(cmd, deps)
+        const r = makeOwner(dataDir, cmd.name, { force: cmd.force, isAlive: deps.isAlive })
+        out(`"${r.name}" is now the owner.${r.previous ? ` "${r.previous}" is now an admin.` : ''}`)
         return 0
       }
     }

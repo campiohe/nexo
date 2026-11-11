@@ -11,6 +11,7 @@ import { actionLabel, defaultInAppBinding, findConflict, HOTKEY_ACTIONS, sameCom
 import { allKeybinds, isInAppAction, setKeybind, useInputPrefs, useKeybinds } from '../voice/prefs'
 import { cancelCapture, recordKeybind, usePtt } from '../voice/ptt'
 import { DeviceSettings } from './voice/DeviceSettings'
+import { MembersSection } from './MembersSection'
 import { useVoice } from '../voice/session'
 import { Avatar } from './Avatar'
 import { AvatarCropDialog } from './AvatarCropDialog'
@@ -18,7 +19,7 @@ import { ColorSwatches } from './ColorSwatches'
 import { ConfirmDialog, Modal } from './Modal'
 import { AlertIcon, LogoutIcon } from './icons'
 
-type Tab = 'profile' | 'av' | 'keybinds' | 'app' | 'server'
+type Tab = 'profile' | 'av' | 'keybinds' | 'app' | 'members' | 'server'
 
 /** The App section needs the Electron bridge (window.nexo.prefs); it's hidden in a plain browser. */
 const hasPrefs = () => typeof window.nexo?.prefs?.get === 'function'
@@ -28,6 +29,7 @@ const TABS: { id: Tab; label: string; available?: () => boolean }[] = [
   { id: 'av', label: 'Audio & video' },
   { id: 'keybinds', label: 'Keybinds' },
   { id: 'app', label: 'App', available: hasPrefs },
+  { id: 'members', label: 'Members' },
   { id: 'server', label: 'Server' },
 ]
 
@@ -63,6 +65,7 @@ export function SettingsModal() {
           )}
           {tab === 'keybinds' && <KeybindsSection />}
           {tab === 'app' && hasPrefs() && <AppSection />}
+          {tab === 'members' && <MembersSection />}
           {tab === 'server' && <ServerSection onDone={close} />}
         </div>
       </div>

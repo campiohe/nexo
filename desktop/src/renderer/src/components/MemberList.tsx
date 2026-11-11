@@ -1,7 +1,9 @@
 import type { User, VoiceState } from '@shared/protocol'
 import { useApp } from '../store/app'
 import { useUi } from '../store/ui'
+import { hasRoles, roleOf } from '../lib/permissions'
 import { Avatar } from './Avatar'
+import { RoleBadge } from './MembersSection'
 import { SpeakerIcon } from './icons'
 
 export function MemberList() {
@@ -10,6 +12,8 @@ export function MemberList() {
   const voice = useApp((s) => s.voice)
   const channels = useApp((s) => s.channels)
   const meId = useApp((s) => s.me?.id)
+  // Servers older than roles send none: show no badges there.
+  const roles = useApp((s) => hasRoles(s.me))
 
   const voiceByUser = new Map(voice.map((v) => [v.userId, v]))
   const all = Object.values(users).sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
@@ -20,6 +24,7 @@ export function MemberList() {
   const renderUser = (u: User, isOnline: boolean) => {
     const v: VoiceState | undefined = voiceByUser.get(u.id)
     const canAdjust = !!v && u.id !== meId
+    const role = roleOf(u)
     return (
       <li
         key={u.id}
@@ -36,9 +41,12 @@ export function MemberList() {
       >
         <Avatar user={u} size={30} online={isOnline} />
         <div className="member-text">
-          <span className="member-name">
-            {u.name}
-            {u.id === meId && <span className="member-you"> (you)</span>}
+          <span className="member-name-row">
+            <span className="member-name">
+              {u.name}
+              {u.id === meId && <span className="member-you"> (you)</span>}
+            </span>
+            {roles && role !== 'member' && <RoleBadge role={role} compact />}
           </span>
           {v && (
             <span className="member-sub">

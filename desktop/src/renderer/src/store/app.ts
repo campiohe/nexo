@@ -6,6 +6,7 @@ import { connect, disconnect, request } from '../net/socket'
 import { normalizeServerUrl } from '../lib/url'
 import { settings } from './settings'
 import { resetUnread } from './unread'
+import { findLogin, NOTICE_UNREADABLE, resetSignIn } from './signin'
 
 export type ConnectionStatus = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'error'
 
@@ -50,7 +51,10 @@ export interface AppState {
   serverUrl: string | null
   /** Shown above the onboarding form (e.g. "this device is no longer recognized"). */
   onboardingNotice: string | null
-  /** Read saved settings and auto-connect when a token exists. */
+  /**
+   * Read saved settings and auto-connect when a saved login exists. Without one, asks the server's
+   * /api/info (docs/SPEC-ACCOUNTS.md §1, §3) before showing onboarding.
+   */
   init(): Promise<void>
   /** Onboarding: create a new identity on a server. */
   join(p: JoinParams): void
@@ -137,12 +141,12 @@ export const useApp = create<AppState>()((set, get) => {
     init: async () => {
       const saved = settings.getServerUrl()
       const url = saved ? normalizeServerUrl(saved) : null
-      const token = url ? await settings.getToken(url) : null
-      if (url && token) {
+      const found = url ? await findLogin(url) : null
+      if (url && found?.token) {
         set({ view: 'main', serverUrl: url })
-        connect(url, { token })
+        connect(url, { token: found.token })
       } else {
-        set({ view: 'onboarding', serverUrl: url })
+        set({ view: 'onboarding', serverUrl: url, onboardingNotice: found?.unreadable ? NOTICE_UNREADABLE : null })
       }
     },
 
@@ -166,6 +170,7 @@ export const useApp = create<AppState>()((set, get) => {
       void leaveVoiceQuietly()
       disconnect()
       resetUnread()
+      resetSignIn()
       set({ ...emptySession(), view: 'onboarding', onboardingNotice: null })
     },
 
@@ -178,6 +183,7 @@ export const useApp = create<AppState>()((set, get) => {
         settings.setLastChannel(url, null)
       }
       resetUnread()
+      resetSignIn()
       set({ ...emptySession(), view: 'onboarding', onboardingNotice: null })
     },
 
