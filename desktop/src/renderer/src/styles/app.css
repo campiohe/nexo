@@ -606,6 +606,8 @@ input, textarea { user-select: text; }
 }
 .role-badge.is-owner { background: var(--warn-soft); color: var(--warn); }
 .role-badge.is-admin { background: var(--accent-soft); color: var(--accent); }
+/* The narrow member list: keep "Name (you)" readable next to the badge. */
+.role-badge.is-compact { height: 15px; padding: 0 4px; font-size: 9px; letter-spacing: 0.03em; }
 .member-sub { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--accent); }
 
 /* ---------- modal ---------- */

@@ -14,8 +14,8 @@ import { AlertIcon } from './icons'
 const ROLE_RANK: Record<Role, number> = { owner: 0, admin: 1, member: 2 }
 const SETTABLE: ('admin' | 'member')[] = ['admin', 'member']
 
-export function RoleBadge({ role }: { role: Role }) {
-  return <span className={`role-badge is-${role}`}>{ROLE_LABEL[role]}</span>
+export function RoleBadge({ role, compact = false }: { role: Role; compact?: boolean }) {
+  return <span className={`role-badge is-${role}${compact ? ' is-compact' : ''}`}>{ROLE_LABEL[role]}</span>
 }
 
 function intro(me: User): string {

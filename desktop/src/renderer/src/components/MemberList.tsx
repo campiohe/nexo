@@ -46,7 +46,7 @@ export function MemberList() {
               {u.name}
               {u.id === meId && <span className="member-you"> (you)</span>}
             </span>
-            {roles && role !== 'member' && <RoleBadge role={role} />}
+            {roles && role !== 'member' && <RoleBadge role={role} compact />}
           </span>
           {v && (
             <span className="member-sub">
