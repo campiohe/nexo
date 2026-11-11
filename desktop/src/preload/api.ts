@@ -305,6 +305,9 @@ export const UPDATE_STATUSES: readonly UpdateStatus[] = [
   'error',
 ]
 
+/** secrets.read(): `unreadable` = the entry exists but no copy of it could be decrypted/read. */
+export type SecretRead = { status: 'ok'; value: string } | { status: 'missing' } | { status: 'unreadable' }
+
 export interface NexoBridge {
   platform: 'win32' | 'darwin' | 'linux'
   /** True when getDisplayMedia can include system audio (loopback) on this OS. */
@@ -349,9 +352,15 @@ export interface NexoBridge {
     onEvent(cb: (event: NativeShareEvent) => void): () => void
   }
 
-  /** Small encrypted key/value store (Electron safeStorage when available). Used for the device token. */
+  /**
+   * Small key/value store for logins (an Electron safeStorage-encrypted copy plus a plain copy, see
+   * docs/SPEC-ACCOUNTS.md §1). set() rejects when the value couldn't be saved.
+   */
   secrets: {
+    /** The value, or null when it is missing *or* unreadable. Prefer read(). */
     get(key: string): Promise<string | null>
+    /** The value, or whether the entry is missing or exists but can't be read. */
+    read(key: string): Promise<SecretRead>
     set(key: string, value: string | null): Promise<void>
   }
 
@@ -423,6 +432,7 @@ export const IPC = {
   listSources: 'nexo:capture:list-sources',
   selectSource: 'nexo:capture:select-source',
   secretGet: 'nexo:secrets:get',
+  secretRead: 'nexo:secrets:read',
   secretSet: 'nexo:secrets:set',
   openExternal: 'nexo:open-external',
   pttSetBinding: 'nexo:ptt:set-binding', // legacy: sets the 'ptt' slot only

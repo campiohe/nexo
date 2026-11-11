@@ -241,6 +241,56 @@ input, textarea { user-select: text; }
 .onboarding-identity { display: flex; align-items: flex-end; gap: 14px; }
 .onboarding-identity .avatar { transition: background 0.2s var(--ease); }
 
+/* "This is my account" offer under a name-taken error */
+.onboarding-claim {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: -8px;
+  font-size: 13px;
+  color: var(--text-1);
+}
+
+/* Welcome back: accounts linked to this device */
+.welcome-accounts { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.welcome-account {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-2);
+}
+.welcome-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 650; font-size: 15px; }
+
+/* Sign-in request: waiting for approval */
+.signin-wait {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+.signin-help { font-size: 13px; line-height: 1.5; }
+.signin-help strong { color: var(--text-0); }
+
+.link-btn {
+  align-self: center;
+  padding: 2px 4px;
+  border: 0;
+  background: none;
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 600;
+}
+.link-btn:hover:not(:disabled) { color: var(--text-0); text-decoration: underline; }
+.link-btn:disabled { opacity: 0.55; }
+
 .collapsible { display: flex; flex-direction: column; gap: 8px; }
 .collapsible-toggle {
   display: inline-flex;

@@ -17,6 +17,7 @@ import {
   type NexoBridge,
   type PttBinding,
   type PttStatus,
+  type SecretRead,
   type TrayAction,
   GLOBAL_HOTKEY_ACTIONS,
   type UpdateState,
@@ -157,6 +158,7 @@ const bridge: NexoBridge = {
 
   secrets: {
     get: (key: string): Promise<string | null> => ipcRenderer.invoke(IPC.secretGet, key),
+    read: (key: string): Promise<SecretRead> => ipcRenderer.invoke(IPC.secretRead, key),
     set: (key: string, value: string | null): Promise<void> => ipcRenderer.invoke(IPC.secretSet, key, value),
   },
 

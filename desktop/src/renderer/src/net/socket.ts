@@ -11,6 +11,8 @@ import type {
 import { MESSAGE_PAGE_SIZE } from '@shared/protocol'
 import { defaultChannelId, mergeMessages, sortChannels, useApp, type ChannelMessages } from '../store/app'
 import { settings } from '../store/settings'
+import { migrateLogin } from '../store/logins'
+import { handleNotRecognized, resetSignIn, saveNewLogin } from '../store/signin'
 import { forgetChannel, loadReadState, noteDeleted, noteMessage, resetUnread } from '../store/unread'
 
 export type NexoSocket = Socket<ServerToClientEvents, ClientToServerEvents>
@@ -125,6 +127,7 @@ function readableError(raw: string): string {
   if (/websocket error|xhr poll error|timeout|transport/i.test(msg))
     return `Can't reach the server at ${currentUrl}. Check the address and that the server is running.`
   if (/^UNKNOWN_TOKEN$/.test(msg)) return "This server doesn't recognize this device anymore."
+  if (/^NOT_RECOGNIZED$/.test(msg)) return "This device isn't linked to that account anymore."
   return msg
 }
 
@@ -136,6 +139,7 @@ function wire(s: NexoSocket) {
     if (!s.active) {
       // Rejected by the server's handshake middleware (no automatic retry).
       if (message === 'UNKNOWN_TOKEN') return void handleUnknownToken()
+      if (message === 'NOT_RECOGNIZED') return handleNotRecognized()
       useApp.setState({ connection: 'error', connectionError: readableError(message) })
       return
     }
@@ -246,9 +250,13 @@ function wire(s: NexoSocket) {
 async function handleBootstrap(b: Bootstrap) {
   const url = currentUrl
   if (b.token) {
-    // New identity: persist the token and use it for every future (re)connect.
+    // New identity (new account or "Welcome back" claim): persist the token (under the server id when the
+    // server sends one) and use it for every future (re)connect.
     currentAuth = { token: b.token }
-    await settings.setToken(url, b.token)
+    await saveNewLogin(url, b.serverId, b.token)
+  } else if (b.serverId && currentAuth && 'token' in currentAuth) {
+    // Move a login saved under the URL (older app versions) to the server-id key.
+    void migrateLogin(url, b.serverId, currentAuth.token)
   }
   settings.setServerUrl(url)
   const wasBootstrapped = bootstrapped
@@ -287,6 +295,7 @@ async function handleBootstrap(b: Bootstrap) {
     messages: sameIdentity ? messages : {},
     typing: {},
   })
+  resetSignIn() // signed in: any onboarding "Welcome back" / sign-in request state is obsolete
   loadReadState(
     url,
     b.me.id,
