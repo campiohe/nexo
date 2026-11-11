@@ -4,7 +4,6 @@
 #include <windows.graphics.directx.direct3d11.interop.h>
 #include <winrt/Windows.Foundation.Metadata.h>
 #include <winrt/Windows.Graphics.DirectX.Direct3D11.h>
-#include <winrt/Windows.Security.Authorization.AppCapabilityAccess.h>
 
 #include <algorithm>
 #include <chrono>
@@ -47,26 +46,6 @@ bool sessionProperty(const wchar_t* name) {
   }
 }
 
-/// Borderless capture needs GraphicsCaptureAccess to say Allowed. ApiInformation only tells us the property
-/// exists; an unpackaged exe can be refused (NotDeclaredByApp / ERROR_NOT_FOUND), so ask once and remember.
-bool borderlessAllowed() {
-  static const bool allowed = [] {
-    if (!sessionProperty(L"IsBorderRequired")) return false;
-    try {
-      const auto status = wgc::GraphicsCaptureAccess::RequestAccessAsync(wgc::GraphicsCaptureAccessKind::Borderless).get();
-      using winrt::Windows::Security::Authorization::AppCapabilityAccess::AppCapabilityAccessStatus;
-      if (status != AppCapabilityAccessStatus::Allowed) {
-        log::debug("capture: borderless access status {} (4 = allowed)", static_cast<int>(status));
-      }
-      return status == AppCapabilityAccessStatus::Allowed;
-    } catch (const winrt::hresult_error& e) {
-      log::debug("capture: borderless access request failed: {}", describeHresult(e.code()));
-      return false;
-    }
-  }();
-  return allowed;
-}
-
 } // namespace
 
 WgcFeatures queryWgcFeatures() {
@@ -77,7 +56,12 @@ WgcFeatures queryWgcFeatures() {
     f.supported = false;
   }
   f.cursorToggle = sessionProperty(L"IsCursorCaptureEnabled");
-  f.borderless = borderlessAllowed();
+  // Set IsBorderRequired(false) whenever the property exists, without GraphicsCaptureAccess::RequestAccessAsync
+  // first: that's what WebRTC (Chromium's capturer) does. The request is meant for packaged apps; for an unpackaged
+  // exe like ours it can come back NotDeclaredByApp even though the setting still works (a friend saw the
+  // yellow border only in native shares, never in Chromium's). If the user turned off "Let apps turn off the
+  // screenshot border" in Windows, the setting is ignored and the border shows, as it does for Chromium.
+  f.borderless = sessionProperty(L"IsBorderRequired");
   f.minUpdateInterval = sessionProperty(L"MinUpdateInterval");
   f.secondaryWindows = sessionProperty(L"IncludeSecondaryWindows");
   return f;

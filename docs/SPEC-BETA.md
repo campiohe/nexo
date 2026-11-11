@@ -157,7 +157,7 @@ The Nexo server's only new duty is signing the stream participant's token (§7).
   | Option | Value | Min OS |
   |---|---|---|
   | `IsCursorCaptureEnabled` | per share (on by default) | Win10 2004 |
-  | `IsBorderRequired` | `false` (after `GraphicsCaptureAccess::RequestAccessAsync(Borderless)`). Works for an unpackaged exe, but only when it runs from a local disk: from `\\wsl$` it fails with `0x80070490` | Win11 |
+  | `IsBorderRequired` | `false` whenever the property exists, without asking `GraphicsCaptureAccess::RequestAccessAsync(Borderless)` first (like WebRTC). The request is for packaged apps: for our unpackaged exe it can refuse (and from `\\wsl$` it fails with `0x80070490`) while setting the property still works | Win11 |
   | `MinUpdateInterval` | `1 / preset fps` | Win11 24H2 |
 
 - **Size changes** (`ContentSize` differs from the pool size): `Recreate` the pool. The **encoder output size never
