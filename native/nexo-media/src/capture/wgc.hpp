@@ -19,7 +19,7 @@ namespace nexo {
 struct WgcFeatures {
   bool supported = false;         ///< GraphicsCaptureSession::IsSupported()
   bool cursorToggle = false;      ///< IsCursorCaptureEnabled (Win10 2004)
-  bool borderless = false;        ///< IsBorderRequired (Win11)
+  bool borderless = false;        ///< IsBorderRequired exists (Win11): every share turns the yellow border off
   bool minUpdateInterval = false; ///< MinUpdateInterval (Win11 24H2)
   bool secondaryWindows = false;  ///< IncludeSecondaryWindows (Win11 24H2)
 };
