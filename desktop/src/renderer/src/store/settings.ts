@@ -1,9 +1,9 @@
-// Persisted client settings. Server URL + last channel live in localStorage; the device token goes
-// through window.nexo.secrets (Electron safeStorage). Outside Electron we fall back to localStorage.
+// Persisted client settings. Server URL + last channel live in localStorage; saved logins (device tokens)
+// are handled by store/logins.ts (window.nexo.secrets, keyed by server id).
+import { forgetLogin, readLogin, saveLogin } from './logins'
 
 const KEY_SERVER_URL = 'nexo:serverUrl'
 const KEY_LAST_CHANNEL = 'nexo:lastChannel:' // + serverUrl
-const KEY_SECRET_FALLBACK = 'nexo:secret:' // + secret key (dev only, outside Electron)
 
 function lsGet(key: string): string | null {
   try {
@@ -22,8 +22,6 @@ function lsSet(key: string, value: string | null): void {
   }
 }
 
-const tokenKey = (serverUrl: string) => `token:${serverUrl}`
-
 export const settings = {
   getServerUrl(): string | null {
     return lsGet(KEY_SERVER_URL)
@@ -39,28 +37,16 @@ export const settings = {
     lsSet(KEY_LAST_CHANNEL + serverUrl, channelId)
   },
 
+  /** The saved login (device token) for a server; see store/logins.ts for how it is found. */
   async getToken(serverUrl: string): Promise<string | null> {
-    const key = tokenKey(serverUrl)
-    if (window.nexo?.secrets) {
-      try {
-        return await window.nexo.secrets.get(key)
-      } catch (err) {
-        console.error('[nexo] secrets.get failed', err)
-        return null
-      }
-    }
-    return lsGet(KEY_SECRET_FALLBACK + key)
+    return (await readLogin(serverUrl)).token
   },
-  async setToken(serverUrl: string, token: string | null): Promise<void> {
-    const key = tokenKey(serverUrl)
-    if (window.nexo?.secrets) {
-      try {
-        await window.nexo.secrets.set(key, token)
-      } catch (err) {
-        console.error('[nexo] secrets.set failed', err)
-      }
-      return
-    }
-    lsSet(KEY_SECRET_FALLBACK + key, token)
+  /**
+   * Save (or with null, forget) the login for a server. Saving throws when the token couldn't be stored
+   * anywhere, so callers can tell the user instead of losing the account silently.
+   */
+  async setToken(serverUrl: string, token: string | null, serverId?: string): Promise<void> {
+    if (token === null) return forgetLogin(serverUrl)
+    await saveLogin(serverUrl, serverId, token)
   },
 }

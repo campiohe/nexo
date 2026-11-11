@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { useApp } from '../store/app'
 import { settings } from '../store/settings'
+import { findLogin, NOTICE_UNREADABLE, resumeLogin, startAccessRequest, useSignIn } from '../store/signin'
+import { errorMessage } from '../lib/toast'
 import { SWATCHES, randomSwatch } from '../lib/colors'
 import { DEFAULT_SERVER_URL, isValidServerUrl, normalizeServerUrl } from '../lib/url'
 import { Avatar } from './Avatar'
 import { ColorSwatches } from './ColorSwatches'
 import { AlertIcon, ChevronIcon, NexoMark } from './icons'
+import { AccessRequestStep, WelcomeBackStep } from './SignInSteps'
 
 const NAME_RE = /^[\p{L}\p{M}\p{N}_.\- ]{2,24}$/u
 
@@ -14,6 +17,8 @@ export function Onboarding() {
   const connectionError = useApp((s) => s.connectionError)
   const notice = useApp((s) => s.onboardingNotice)
   const join = useApp((s) => s.join)
+  const welcome = useSignIn((s) => s.welcome)
+  const accessRequest = useSignIn((s) => s.request)
 
   const [serverUrl, setServerUrl] = useState(() => useApp.getState().serverUrl ?? settings.getServerUrl() ?? DEFAULT_SERVER_URL)
   const [name, setName] = useState('')
@@ -22,18 +27,26 @@ export function Onboarding() {
   const [showPassword, setShowPassword] = useState(false)
   const [localError, setLocalError] = useState<string | null>(null)
   const [submitted, setSubmitted] = useState(false)
+  /** Checking the server for a saved login / "Welcome back" accounts before creating an account. */
+  const [probing, setProbing] = useState(false)
+  const [requesting, setRequesting] = useState(false)
+  /** The name last sent to the server (what "This is my account" asks for). */
+  const [submittedName, setSubmittedName] = useState('')
   const nameRef = useRef<HTMLInputElement>(null)
   const passwordRef = useRef<HTMLInputElement>(null)
 
-  const busy = submitted && connection === 'connecting'
+  const busy = probing || requesting || (submitted && connection === 'connecting')
   const serverError = submitted && connection === 'error' ? connectionError : null
   const error = localError ?? serverError
   const wrongPassword = !!serverError && /password/i.test(serverError)
   const nameTaken = !!serverError && /name/i.test(serverError)
+  /** "That name is already taken": offer a sign-in request for that account. */
+  const canRequestAccess = !!serverError && /taken/i.test(serverError)
 
+  // Also when coming back to the form from the "Welcome back" or sign-in request step.
   useEffect(() => {
     nameRef.current?.focus()
-  }, [])
+  }, [welcome, accessRequest])
 
   useEffect(() => {
     if (wrongPassword) {
@@ -44,7 +57,7 @@ export function Onboarding() {
     }
   }, [wrongPassword, nameTaken, serverError])
 
-  function submit(e: FormEvent) {
+  async function submit(e: FormEvent) {
     e.preventDefault()
     if (busy) return
     const url = normalizeServerUrl(serverUrl)
@@ -54,14 +67,57 @@ export function Onboarding() {
     setLocalError(null)
     setServerUrl(url)
     setName(cleanName)
+
+    // First time on this server address: look for a saved login (maybe under another address) and for
+    // accounts this device is linked to, before creating a new account.
+    if (useSignIn.getState().probedUrl !== url) {
+      setSubmitted(false)
+      setProbing(true)
+      const found = await findLogin(url).finally(() => setProbing(false))
+      if (found.token) return resumeLogin(url, found.token)
+      // Warn once; submitting again goes ahead.
+      if (found.unreadable && useApp.getState().onboardingNotice !== NOTICE_UNREADABLE) {
+        return useApp.setState({ onboardingNotice: NOTICE_UNREADABLE })
+      }
+      if (useSignIn.getState().welcome) return // "Welcome back" step
+    }
     setSubmitted(true)
+    setSubmittedName(cleanName)
     join({ serverUrl: url, name: cleanName, color, password: password || undefined })
+  }
+
+  async function requestAccess() {
+    if (busy) return
+    // The server that said the name is taken (connect() recorded it), not whatever the field says now.
+    const url = useApp.getState().serverUrl ?? normalizeServerUrl(serverUrl)
+    setLocalError(null)
+    setRequesting(true)
+    try {
+      await startAccessRequest(url, submittedName, password || undefined)
+    } catch (err) {
+      setLocalError(errorMessage(err))
+    } finally {
+      setRequesting(false)
+    }
+  }
+
+  if (accessRequest || welcome) {
+    return (
+      <div className="onboarding">
+        <div className="onboarding-glow" aria-hidden="true" />
+        {accessRequest ? (
+          <AccessRequestStep request={accessRequest} />
+        ) : (
+          welcome && <WelcomeBackStep serverUrl={welcome.serverUrl} accounts={welcome.accounts} />
+        )}
+      </div>
+    )
   }
 
   return (
     <div className="onboarding">
       <div className="onboarding-glow" aria-hidden="true" />
-      <form className="onboarding-card" onSubmit={submit} noValidate>
+      <form className="onboarding-card" onSubmit={(e) => void submit(e)} noValidate>
         <div className="onboarding-brand">
           <NexoMark size={40} />
           <div>
@@ -141,8 +197,25 @@ export function Onboarding() {
           </div>
         )}
 
+        {canRequestAccess && (
+          <div className="onboarding-claim">
+            <span>
+              Is <strong>{submittedName}</strong> you, on another device?
+            </span>
+            <button type="button" className="btn btn-ghost btn-sm" onClick={() => void requestAccess()} disabled={busy}>
+              {requesting ? (
+                <>
+                  <span className="spinner" /> Sending…
+                </>
+              ) : (
+                'This is my account'
+              )}
+            </button>
+          </div>
+        )}
+
         <button className="btn btn-primary btn-lg" type="submit" disabled={busy}>
-          {busy ? (
+          {busy && !requesting ? (
             <>
               <span className="spinner" /> Connecting…
             </>
