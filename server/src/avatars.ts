@@ -59,7 +59,7 @@ export interface AvatarRoutesOptions {
   log(msg: string): void
 }
 
-/** Returns an HTTP handler that answers avatar routes and returns false for anything else. */
+/** Returns an HTTP handler that answers avatar routes (false for anything else) and a file remover. */
 export function createAvatarRoutes(opts: AvatarRoutesOptions) {
   const { users } = opts
   const dir =
@@ -108,7 +108,11 @@ export function createAvatarRoutes(opts: AvatarRoutesOptions) {
       throw err
     }
     const updated = users.setAvatar(user.id, avatarToken(body))
-    if (!updated) throw new HttpError(401, 'Unknown device token')
+    if (!updated) {
+      // The account was removed during the upload.
+      await rm(fileFor(user.id), { force: true })
+      throw new HttpError(401, 'Unknown device token')
+    }
     opts.onUserUpdated(updated)
     opts.log(`[nexo] ${updated.name} changed their profile picture (${actual}, ${body.length} bytes)`)
     sendJson(res, 200, { user: updated }, CORS_HEADERS)
@@ -152,8 +156,14 @@ export function createAvatarRoutes(opts: AvatarRoutesOptions) {
     res.end(req.method === 'HEAD' ? undefined : bytes)
   }
 
+  /** Deletes a user's picture file (the DB row is the caller's). Never throws. */
+  function removeFile(userId: string) {
+    if (!UUID_RE.test(userId)) return
+    rm(fileFor(userId), { force: true }).catch((err) => console.error(`[nexo] couldn't delete avatar of ${userId}:`, err))
+  }
+
   /** Handles avatar routes. Returns false when the request isn't one (the caller then answers it). */
-  return function handle(req: IncomingMessage, res: ServerResponse): boolean {
+  function handle(req: IncomingMessage, res: ServerResponse): boolean {
     let url: URL
     try {
       url = new URL(req.url ?? '/', 'http://nexo.invalid')
@@ -184,4 +194,6 @@ export function createAvatarRoutes(opts: AvatarRoutesOptions) {
     finish(req, res, work, { label: 'avatar', cors: CORS_HEADERS, drainBytes: AVATAR_MAX_BYTES * 4 })
     return true
   }
+
+  return { handle, removeFile }
 }

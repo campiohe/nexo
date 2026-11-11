@@ -21,6 +21,8 @@ export type Command =
   | { kind: 'status'; global: GlobalOptions }
   | { kind: 'backup'; global: GlobalOptions; file?: string }
   | { kind: 'rename-user'; global: GlobalOptions; oldName: string; newName: string; force: boolean }
+  /** Make `name` the owner; the previous owner becomes an admin. */
+  | { kind: 'owner'; global: GlobalOptions; name: string; force: boolean }
   /** `autostart` alone (or `status`) shows the current state. */
   | { kind: 'autostart'; global: GlobalOptions; action: 'on' | 'off' | 'status' }
   | { kind: 'update'; global: GlobalOptions }
@@ -31,7 +33,7 @@ export type Command =
 
 export type CommandKind = Command['kind']
 
-const SUBCOMMANDS = ['setup', 'invite', 'status', 'backup', 'rename-user', 'autostart', 'update', 'help'] as const
+const SUBCOMMANDS = ['setup', 'invite', 'status', 'backup', 'rename-user', 'owner', 'autostart', 'update', 'help'] as const
 
 /** Usage text (the program name defaults to `nexo-server`). */
 export function usage(prog = 'nexo-server'): string {
@@ -45,6 +47,7 @@ export function usage(prog = 'nexo-server'): string {
     `  status                      Is it running, who's online, ports, version`,
     `  backup [file]               Save a copy of the database (default: <data>/backups/)`,
     `  rename-user <old> <new>     Free a name: rename a user, keeping their messages`,
+    `  owner <name>                Make a user the owner (the previous owner becomes an admin)`,
     `  autostart [on|off]          Start with the computer (per user, no admin); alone: show the state`,
     `  update                      Download and install the newest server version`,
     '',
@@ -53,7 +56,7 @@ export function usage(prog = 'nexo-server'): string {
     `  --name <name>               Setup without questions: server name`,
     `  --password <password>       Setup without questions: password for new friends`,
     `  --no-password               Setup without questions: no password`,
-    `  --force                     rename-user: even while the server is running`,
+    `  --force                     rename-user, owner: even while the server is running`,
     `  --ascii                     Plain ASCII output`,
     `  -h, --help                  Show this help`,
     `  -v, --version               Show the version`,
@@ -145,7 +148,7 @@ export function parseArgs(argv: readonly string[]): Command {
   const [name, ...args] = positional
   const setupFlagsUsed = setup.name !== undefined || setup.password !== undefined || setup.noPassword === true
   if (setup.password !== undefined && setup.noPassword) return err('Use either --password or --no-password, not both')
-  if (force && name !== 'rename-user') return err('--force only applies to rename-user')
+  if (force && name !== 'rename-user' && name !== 'owner') return err('--force only applies to rename-user and owner')
   if (setupFlagsUsed && name !== undefined && name !== 'setup') return err(`--name/--password/--no-password only apply to setup (or starting for the first time)`)
 
   const extra = (n: number): Command | null => (args.length > n ? err(`Too many arguments for "${name}": ${args.slice(n).join(' ')}`) : null)
@@ -166,6 +169,9 @@ export function parseArgs(argv: readonly string[]): Command {
     case 'rename-user':
       if (args.length < 2) return err('rename-user needs the current name and the new name, e.g. rename-user "Alice" "Alice-old"')
       return extra(2) ?? { kind: 'rename-user', global, oldName: args[0], newName: args[1], force }
+    case 'owner':
+      if (args.length < 1) return err('owner needs the name of the user who should own the server, e.g. owner "Alice"')
+      return extra(1) ?? { kind: 'owner', global, name: args[0], force }
     case 'autostart': {
       const v = args[0]?.toLowerCase() ?? 'status'
       if (v !== 'on' && v !== 'off' && v !== 'status') return err('autostart takes "on", "off" or nothing (shows the state)')

@@ -17,6 +17,8 @@ const ok: [string[], Command][] = [
   [['rename-user', 'Alice', 'Alice-old'], { kind: 'rename-user', global: {}, oldName: 'Alice', newName: 'Alice-old', force: false }],
   [['rename-user', '--force', 'Alice', 'Alice old'], { kind: 'rename-user', global: {}, oldName: 'Alice', newName: 'Alice old', force: true }],
   [['rename-user', '--', '-x-', 'y'], { kind: 'rename-user', global: {}, oldName: '-x-', newName: 'y', force: false }],
+  [['owner', 'Alice'], { kind: 'owner', global: {}, name: 'Alice', force: false }],
+  [['owner', '--force', 'Alice B'], { kind: 'owner', global: {}, name: 'Alice B', force: true }],
   [['autostart', 'on'], { kind: 'autostart', global: {}, action: 'on' }],
   [['autostart', 'OFF'], { kind: 'autostart', global: {}, action: 'off' }],
   [['autostart'], { kind: 'autostart', global: {}, action: 'status' }],
@@ -45,6 +47,9 @@ const bad: [string[], RegExp][] = [
   [['status', '--force'], /--force only applies to rename-user/],
   [['rename-user', 'Alice'], /needs the current name and the new name/],
   [['rename-user', 'a', 'b', 'c'], /Too many arguments/],
+  [['owner'], /owner needs the name/],
+  [['owner', 'a', 'b'], /Too many arguments/],
+  [['backup', '--force'], /--force only applies to rename-user and owner/],
   [['backup', 'a', 'b'], /Too many arguments/],
   [['autostart', 'maybe'], /"on", "off" or nothing/],
   [['autostart', 'on', 'now'], /Too many arguments/],
@@ -62,5 +67,5 @@ test('parseArgs: invalid usage gives a helpful error', () => {
 
 test('usage lists every command', () => {
   const u = usage()
-  for (const c of ['setup', 'invite', 'status', 'backup', 'rename-user', 'autostart', 'update', '--data']) assert.ok(u.includes(c), c)
+  for (const c of ['setup', 'invite', 'status', 'backup', 'rename-user', 'owner <name>', 'autostart', 'update', '--data']) assert.ok(u.includes(c), c)
 })

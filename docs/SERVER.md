@@ -10,6 +10,7 @@ same PC. The manual setups below (Linux, VPS, WSL with Docker) are the advanced 
 - [Advanced: Linux host or VPS](#advanced-linux-host-or-vps)
 - [Advanced: Windows host (WSL)](#advanced-windows-host-wsl)
 - [Letting your friends in](#letting-your-friends-in)
+- [Roles](#roles)
 - [Configuration (`.env`)](#configuration-env)
 - [Ports](#ports)
 - [Bandwidth](#bandwidth)
@@ -64,7 +65,8 @@ Run these in a terminal in the folder (or add `--data <folder>` to use another d
 | `nexo-server status` | Is it running, who's online, ports, version |
 | `nexo-server setup` | Change the name, password, ports or network mode |
 | `nexo-server backup` | Save a copy of the database (safe while it runs) |
-| `nexo-server rename-user <old> <new>` | Free a name (see [Lost identity](#troubleshooting)) |
+| `nexo-server rename-user <old> <new>` | Rename a user, keeping their messages |
+| `nexo-server owner <name>` | Make someone else the owner (see [Roles](#roles)) |
 | `nexo-server autostart on` / `off` | Start the server when you log in to Windows |
 | `nexo-server update` | Download and install the newest server (stop the server first) |
 
@@ -380,6 +382,32 @@ reverse proxy (for example Caddy) in front of both the Nexo server (`https://`) 
 
 ---
 
+## Roles
+
+Every account has a role. The server enforces it; the app hides what you can't do.
+
+| | member | admin | owner |
+|---|---|---|---|
+| Chat, delete own messages, voice, streams, profile | ✓ | ✓ | ✓ |
+| Create, rename and delete channels | | ✓ | ✓ |
+| Delete anyone's message | | ✓ | ✓ |
+| Approve or deny sign-in requests | own account only | ✓ | ✓ |
+| Remove a member's account | | ✓ | ✓ |
+| Remove an admin's account, make someone admin or member | | | ✓ |
+
+- **The owner** is the first account created on the server. After upgrading from a version without roles,
+  the oldest account becomes the owner. There is exactly one.
+- The owner can't be removed or demoted from the app. To hand the server to someone else, run
+  `nexo-server owner <name>` (manual setup, from the repository folder:
+  `npm run dev -w server-cli -- --data "$PWD/server/data" owner <name>`). That user becomes the owner and
+  the previous owner an admin.
+  Stop the server first, or add `--force`: permissions change at once, but connected friends see the old
+  roles until they reconnect.
+- **Removing an account** deletes its messages (with their images), its profile picture and its logins,
+  and frees its name. The person is disconnected, and their saved login stops working.
+
+---
+
 ## Configuration (`.env`)
 
 | Variable | Default | Meaning |
@@ -483,9 +511,28 @@ Without the systemd service, stop the server with Ctrl+C and start it again with
 **"Wrong server password"**: the password is only checked when a *new* name is created. Check
 `SERVER_PASSWORD` in `.env` (restart the server after changing it). Returning devices don't need it.
 
-**Lost identity** (a friend reinstalled the app, got a new PC, cleared app data): the device token is
-gone, and there is no recovery. They pick a new name. To free the old name for reuse, rename the old
-user, which keeps its messages:
+**Lost identity** (a friend reinstalled the app, got a new PC, cleared app data, or the app can't read its
+saved login): the account is not lost. There are two ways back in, and neither needs a password or a code:
+
+1. **"Welcome back" (Tailscale).** When a friend connects over Tailscale, the server remembers that device's
+   Tailscale address for their account. If the app has no saved login, it asks the server, which offers
+   **Welcome back** with that account: one click and they are in, on the same account. This works only for
+   connections that come from a Tailscale address (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`), which
+   WireGuard authenticates. It stays off behind a reverse proxy, and the server never trusts headers
+   like `X-Forwarded-For` for it.
+2. **Sign-in request (any connection).** In onboarding they type their old name; when it's taken, they
+   choose **This is my account** (plus the server password, if there is one). Every admin, the owner and
+   the account's own other devices see "*name* wants to sign in on a new device (*address*)" with
+   **Approve** / **Deny**. Approving gives the new device its own login; the account's other devices keep
+   theirs. Requests expire after 10 minutes. There can be at most 3 pending requests per address and 20
+   in total.
+
+The server log lists both: claims, requests, approvals and denials, and refused connections with their
+address (`UNKNOWN_TOKEN`, `NOT_RECOGNIZED`).
+
+If nobody can approve (the owner lost their own login and isn't on Tailscale), free the name with
+`nexo-server rename-user <old> <new>` (it keeps the messages under the new name) and have them create a
+new account. On a manual setup without the CLI:
 
 ```bash
 node -e "const {DatabaseSync}=require('node:sqlite'); const db=new DatabaseSync('server/data/nexo.db');
@@ -504,5 +551,6 @@ silence it, run `sudo sysctl -w net.core.rmem_max=5000000`.
 ## Limitations
 
 - Nexo is only available **while the host is on**, and the host's upload carries every stream.
-- No account recovery, no roles: everyone can create, rename and delete channels.
+- Account recovery needs Tailscale or someone to approve the sign-in request (see
+  [Lost identity](#troubleshooting)). Sign-in requests are kept in memory: a server restart forgets them.
 - Plain `ws://` and `http://` are fine over Tailscale or a LAN, but a public deployment needs TLS.

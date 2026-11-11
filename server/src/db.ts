@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { mkdirSync } from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
-import type { Attachment, Channel, ChannelType, Message, User } from '../../shared/protocol.ts'
+import type { Attachment, Channel, ChannelType, Message, Role, User } from '../../shared/protocol.ts'
 import { MESSAGE_PAGE_SIZE } from '../../shared/protocol.ts'
 
 const SCHEMA = `
@@ -16,7 +16,8 @@ const SCHEMA = `
     color       TEXT NOT NULL,
     token_hash  TEXT NOT NULL UNIQUE,
     created_at  INTEGER NOT NULL,
-    avatar      TEXT NULL
+    avatar      TEXT NULL,
+    role        TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('owner', 'admin', 'member'))
   );
 
   CREATE TABLE IF NOT EXISTS channels (
@@ -50,6 +51,31 @@ const SCHEMA = `
     created_at  INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS attachments_by_message ON attachments (message_id, position);
+
+  -- v0.5 (docs/SPEC-ACCOUNTS.md §5): server id, several logins per account, Tailscale device links.
+  CREATE TABLE IF NOT EXISTS meta (
+    key         TEXT PRIMARY KEY,
+    value       TEXT NOT NULL
+  );
+
+  -- Every login (device token) of an account. Authentication looks only here; users.token_hash is the
+  -- legacy column (still NOT NULL UNIQUE, so new accounts write their first token hash there too).
+  CREATE TABLE IF NOT EXISTS user_tokens (
+    token_hash   TEXT PRIMARY KEY,
+    user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at   INTEGER NOT NULL,
+    last_used_at INTEGER NULL
+  );
+  CREATE INDEX IF NOT EXISTS user_tokens_by_user ON user_tokens (user_id);
+
+  -- Tailscale addresses an account connected from (unwrapped, see address.ts).
+  CREATE TABLE IF NOT EXISTS user_devices (
+    user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    address      TEXT NOT NULL,
+    last_seen_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, address)
+  );
+  CREATE INDEX IF NOT EXISTS user_devices_by_address ON user_devices (address, last_seen_at);
 `
 
 export type Db = ReturnType<typeof openDb>
@@ -60,8 +86,33 @@ export type Db = ReturnType<typeof openDb>
  */
 function migrate(db: DatabaseSync): void {
   const userCols = new Set((db.prepare('PRAGMA table_info(users)').all() as { name: string }[]).map((c) => c.name))
-  // v0.2: profile pictures. NULL = no picture; otherwise the picture's version token.
-  if (!userCols.has('avatar')) db.exec('ALTER TABLE users ADD COLUMN avatar TEXT NULL')
+  db.exec('BEGIN')
+  try {
+    // v0.2: profile pictures. NULL = no picture; otherwise the picture's version token.
+    if (!userCols.has('avatar')) db.exec('ALTER TABLE users ADD COLUMN avatar TEXT NULL')
+    // v0.5: roles.
+    if (!userCols.has('role')) {
+      db.exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('owner', 'admin', 'member'))")
+    }
+    // Exactly one owner: the oldest account, when there is none yet.
+    db.exec(`
+      UPDATE users SET role = 'owner'
+      WHERE id = (SELECT id FROM users ORDER BY created_at, rowid LIMIT 1)
+        AND NOT EXISTS (SELECT 1 FROM users WHERE role = 'owner')
+    `)
+    // Accounts with no login in user_tokens get their legacy one. (On every open, not just once, so accounts
+    // created by an older server after a downgrade can still sign in after upgrading again.)
+    db.exec(`
+      INSERT OR IGNORE INTO user_tokens (token_hash, user_id, created_at, last_used_at)
+      SELECT token_hash, id, created_at, NULL FROM users
+      WHERE id NOT IN (SELECT user_id FROM user_tokens)
+    `)
+    db.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES ('server_id', ?)").run(randomUUID())
+    db.exec('COMMIT')
+  } catch (err) {
+    db.exec('ROLLBACK')
+    throw err
+  }
 }
 
 /** True when `err` is a SQLite UNIQUE constraint violation. */
@@ -80,7 +131,8 @@ export function openDb(dataDir: string) {
   db.exec(SCHEMA)
   migrate(db)
 
-  const userCols = 'id, name, color, avatar'
+  const userCols = 'id, name, color, avatar, role'
+  const userColsU = 'u.id, u.name, u.color, u.avatar, u.role'
   const chanCols = 'id, name, type, position'
   const msgCols = 'id, channel_id AS channelId, user_id AS userId, content, created_at AS createdAt'
   const attCols = 'id, type, width, height, size'
@@ -88,11 +140,37 @@ export function openDb(dataDir: string) {
   const q = {
     usersAll: db.prepare(`SELECT ${userCols} FROM users ORDER BY name`),
     userById: db.prepare(`SELECT ${userCols} FROM users WHERE id = ?`),
-    userByToken: db.prepare(`SELECT ${userCols} FROM users WHERE token_hash = ?`),
+    userByToken: db.prepare(
+      `SELECT ${userColsU} FROM user_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = ?`,
+    ),
     userByName: db.prepare(`SELECT ${userCols} FROM users WHERE name = ?`),
-    userInsert: db.prepare('INSERT INTO users (id, name, color, token_hash, created_at) VALUES (?, ?, ?, ?, ?)'),
+    /** The first account on a server becomes its owner. */
+    userInsert: db.prepare(
+      `INSERT INTO users (id, name, color, token_hash, created_at, role) VALUES (?, ?, ?, ?, ?,
+         CASE WHEN EXISTS (SELECT 1 FROM users WHERE role = 'owner') THEN 'member' ELSE 'owner' END)`,
+    ),
     userSetColor: db.prepare('UPDATE users SET color = ? WHERE id = ?'),
     userSetAvatar: db.prepare('UPDATE users SET avatar = ? WHERE id = ?'),
+    userSetRole: db.prepare('UPDATE users SET role = ? WHERE id = ?'),
+    userOwner: db.prepare(`SELECT ${userCols} FROM users WHERE role = 'owner' ORDER BY created_at LIMIT 1`),
+    userDelete: db.prepare('DELETE FROM users WHERE id = ?'),
+
+    tokenInsert: db.prepare('INSERT INTO user_tokens (token_hash, user_id, created_at, last_used_at) VALUES (?, ?, ?, ?)'),
+    tokenTouch: db.prepare('UPDATE user_tokens SET last_used_at = ? WHERE token_hash = ?'),
+    tokenDeleteForUser: db.prepare('DELETE FROM user_tokens WHERE user_id = ?'),
+
+    deviceUpsert: db.prepare(
+      `INSERT INTO user_devices (user_id, address, last_seen_at) VALUES (?, ?, ?)
+       ON CONFLICT (user_id, address) DO UPDATE SET last_seen_at = excluded.last_seen_at`,
+    ),
+    deviceLinked: db.prepare('SELECT 1 AS linked FROM user_devices WHERE user_id = ? AND address = ?'),
+    deviceUsers: db.prepare(
+      `SELECT ${userColsU} FROM user_devices d JOIN users u ON u.id = d.user_id
+       WHERE d.address = ? ORDER BY d.last_seen_at DESC, u.name`,
+    ),
+    deviceDeleteForUser: db.prepare('DELETE FROM user_devices WHERE user_id = ?'),
+
+    metaGet: db.prepare('SELECT value FROM meta WHERE key = ?'),
 
     chansAll: db.prepare(`SELECT ${chanCols} FROM channels ORDER BY type, position, created_at`),
     chanById: db.prepare(`SELECT ${chanCols} FROM channels WHERE id = ?`),
@@ -134,6 +212,12 @@ export function openDb(dataDir: string) {
     ),
     attDeletePendingBefore: db.prepare('DELETE FROM attachments WHERE message_id IS NULL AND created_at < ? RETURNING id'),
     attAllIds: db.prepare('SELECT id FROM attachments'),
+    /** Everything a user uploaded (pending or sent), plus the attachments of their messages. */
+    attDeleteForUser: db.prepare(
+      `DELETE FROM attachments WHERE uploader_id = ? OR message_id IN (SELECT id FROM messages WHERE user_id = ?)
+       RETURNING id`,
+    ),
+    msgDeleteForUser: db.prepare('DELETE FROM messages WHERE user_id = ?'),
   }
 
   /** Runs `fn` in a transaction (rolled back if it throws). */
@@ -175,13 +259,64 @@ export function openDb(dataDir: string) {
   const users = {
     all: (): User[] => q.usersAll.all() as unknown as User[],
     get: (id: string): User | undefined => q.userById.get(id) as User | undefined,
+    /** The account a login (device token hash) belongs to. Looks only at user_tokens. */
     byTokenHash: (hash: string): User | undefined => q.userByToken.get(hash) as User | undefined,
     byName: (name: string): User | undefined => q.userByName.get(name) as User | undefined,
-    /** Throws a UNIQUE violation (see isUniqueViolation) if the name is taken. */
+    owner: (): User | undefined => q.userOwner.get() as User | undefined,
+    /**
+     * Creates an account with its first login. The first account on a server becomes the owner, later ones
+     * members. Throws a UNIQUE violation (see isUniqueViolation) if the name is taken.
+     */
     create(name: string, color: string, tokenHash: string): User {
-      const user: User = { id: randomUUID(), name, color, avatar: null }
-      q.userInsert.run(user.id, name, color, tokenHash, Date.now())
-      return user
+      const id = randomUUID()
+      return transaction(() => {
+        const now = Date.now()
+        q.userInsert.run(id, name, color, tokenHash, now)
+        q.tokenInsert.run(tokenHash, id, now, null)
+        return users.get(id)!
+      })
+    },
+    /** Adds another login to an account (claims, approved sign-in requests). */
+    addToken(userId: string, tokenHash: string): void {
+      q.tokenInsert.run(tokenHash, userId, Date.now(), null)
+    },
+    /** Records that a login was just used. */
+    touchToken(tokenHash: string): void {
+      q.tokenTouch.run(Date.now(), tokenHash)
+    },
+    setRole(id: string, role: Role): User | undefined {
+      q.userSetRole.run(role, id)
+      return users.get(id)
+    },
+    /**
+     * Makes `id` the owner and the previous owner an admin (server CLI `nexo-server owner <name>`).
+     * `previous` is the old owner, when there was one and it is another account. Undefined: no such account.
+     */
+    transferOwnership(id: string): { owner: User; previous?: User } | undefined {
+      return transaction(() => {
+        if (!users.get(id)) return undefined
+        const old = users.owner()
+        if (old && old.id !== id) q.userSetRole.run('admin', old.id)
+        q.userSetRole.run('owner', id)
+        const owner = users.get(id)!
+        return old && old.id !== id ? { owner, previous: users.get(old.id) } : { owner }
+      })
+    },
+    /**
+     * Deletes an account: its messages (with their attachments), its pending uploads, logins, device links
+     * and the row itself, in one transaction. Returns the ids of the deleted attachments (their files, and
+     * the avatar file, are the caller's to delete), or undefined if there is no such account.
+     */
+    remove(id: string): { attachmentIds: string[]; messages: number } | undefined {
+      return transaction(() => {
+        if (!users.get(id)) return undefined
+        const attachmentIds = ids(q.attDeleteForUser.all(id, id))
+        const messages = Number(q.msgDeleteForUser.run(id).changes)
+        q.tokenDeleteForUser.run(id)
+        q.deviceDeleteForUser.run(id)
+        q.userDelete.run(id)
+        return { attachmentIds, messages }
+      })
     },
     setColor(id: string, color: string): User | undefined {
       q.userSetColor.run(color, id)
@@ -284,6 +419,18 @@ export function openDb(dataDir: string) {
     allIds: (): Set<string> => new Set(ids(q.attAllIds.all())),
   }
 
+  const devices = {
+    /** Records (or refreshes) that `userId` connected from `address` (an unwrapped Tailscale address). */
+    link(userId: string, address: string): void {
+      q.deviceUpsert.run(userId, address, Date.now())
+    },
+    isLinked: (userId: string, address: string): boolean => q.deviceLinked.get(userId, address) !== undefined,
+    /** Accounts linked to `address`, most recently seen first. */
+    users: (address: string): User[] => q.deviceUsers.all(address) as unknown as User[],
+  }
+
+  const serverId = (q.metaGet.get('server_id') as { value: string }).value
+
   if (channels.count() === 0) {
     channels.create('general', 'text')
     channels.create('clips-and-memes', 'text')
@@ -292,7 +439,10 @@ export function openDb(dataDir: string) {
   }
 
   return {
+    /** Permanent random id of this server (meta.server_id); clients key saved logins by it. */
+    serverId,
     users,
+    devices,
     channels,
     messages,
     attachments,
