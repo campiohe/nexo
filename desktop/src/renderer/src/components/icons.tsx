@@ -141,6 +141,13 @@ export const SearchIcon = (p: IconProps) => (
   </Svg>
 )
 
+export const KeyIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="7.5" cy="15.5" r="4.5" />
+    <path d="m10.7 12.3 9.3-9.3M16 7l3 3M14 9l2 2" />
+  </Svg>
+)
+
 /** Nexo mark: two interlocking rounded nodes. */
 export const NexoMark = ({ size = 28, ...rest }: IconProps) => (
   <svg width={size} height={size} viewBox="0 0 32 32" aria-hidden="true" {...rest}>

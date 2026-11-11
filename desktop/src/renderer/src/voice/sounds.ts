@@ -1,10 +1,11 @@
-// Short synthesized UI sounds for mute / unmute / deafen / undeafen (no audio files: Web Audio only).
+// Short synthesized UI sounds for mute / unmute / deafen / undeafen and sign-in requests (no audio files:
+// Web Audio only).
 // They play on the selected speaker through one lazily created AudioContext that is suspended again
 // once idle, so nothing runs between sounds. The context only feeds its own destination, never the
 // mic / WebRTC graph, so nobody in the call (or watching a stream) hears them.
 import { useDevicePrefs } from './devices'
 
-export type VoiceSound = 'mute' | 'unmute' | 'deafen' | 'undeafen'
+export type VoiceSound = 'mute' | 'unmute' | 'deafen' | 'undeafen' | 'request'
 
 interface Note {
   /** Hz. */
@@ -44,6 +45,13 @@ const SOUNDS: Record<VoiceSound, readonly Note[]> = {
   undeafen: [
     { freq: 262, at: 0, dur: 0.1 },
     { freq: 392, at: 0.085, dur: 0.125 },
+  ],
+  // Someone asks to sign in (docs/SPEC-ACCOUNTS.md §4): a rising three-note chime (E5 A5 E6), ~330 ms,
+  // unlike any voice sound.
+  request: [
+    { freq: 659, at: 0, dur: 0.1 },
+    { freq: 880, at: 0.09, dur: 0.1 },
+    { freq: 1319, at: 0.18, dur: 0.15 },
   ],
 }
 
@@ -127,7 +135,8 @@ function schedule(c: AudioContext, notes: readonly Note[]): number {
 }
 
 /**
- * Play a mute / deafen confirmation sound on the selected speaker (no-op when sound effects are off).
+ * Play a mute / deafen confirmation (or sign-in request) sound on the selected speaker (no-op when sound
+ * effects are off).
  * Independent of deafen: remote voices are silenced on their own <audio> elements, not here.
  */
 export function playVoiceSound(sound: VoiceSound): void {

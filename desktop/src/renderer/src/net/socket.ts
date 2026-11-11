@@ -12,6 +12,7 @@ import { MESSAGE_PAGE_SIZE } from '@shared/protocol'
 import { defaultChannelId, mergeMessages, sortChannels, useApp, type ChannelMessages } from '../store/app'
 import { settings } from '../store/settings'
 import { forgetChannel, loadReadState, noteDeleted, noteMessage, resetUnread } from '../store/unread'
+import { addAccessRequest, applyUserRemoved, dropAccessRequest, setAccessRequests } from '../store/admin'
 
 export type NexoSocket = Socket<ServerToClientEvents, ClientToServerEvents>
 
@@ -241,6 +242,22 @@ function wire(s: NexoSocket) {
   s.on('voice:states', (states) => {
     useApp.setState({ voice: states })
   })
+
+  // ---- accounts and roles (docs/SPEC-ACCOUNTS.md §2, §4); state lives in store/admin.ts ----
+  s.on('user:removed', ({ userId }) => {
+    if (socket !== s) return
+    applyUserRemoved(userId)
+  })
+
+  s.on('access:request', (r) => {
+    if (socket !== s) return
+    addAccessRequest(r)
+  })
+
+  s.on('access:resolved', ({ requestId }) => {
+    if (socket !== s) return
+    dropAccessRequest(requestId)
+  })
 }
 
 async function handleBootstrap(b: Bootstrap) {
@@ -294,6 +311,7 @@ async function handleBootstrap(b: Bootstrap) {
     channels.filter((c) => c.type === 'text').map((c) => c.id),
   )
   useApp.getState().selectChannel(selected)
+  setAccessRequests(b.accessRequests)
 
   if (wasBootstrapped || sameIdentity) {
     for (const cid of Object.keys(messages)) if (messages[cid].loaded) void refreshChannel(cid)

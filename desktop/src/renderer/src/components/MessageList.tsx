@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 
 import type { Attachment, Message, User } from '@shared/protocol'
 import { useApp } from '../store/app'
 import { toast } from '../lib/toast'
+import { canDeleteMessage } from '../lib/permissions'
 import { formatDay, formatFull, formatTime, isSameDay } from '../lib/time'
 import { Avatar } from './Avatar'
 import { ConfirmDialog } from './Modal'
@@ -48,6 +49,8 @@ export function MessageList({ channelId }: { channelId: string }) {
   const channelName = useApp((s) => s.channels.find((c) => c.id === channelId)?.name ?? '')
   const users = useApp((s) => s.users)
   const meId = useApp((s) => s.me?.id)
+  // Admins and the owner may delete anyone's message; members only their own.
+  const me = useApp((s) => s.me)
   const serverUrl = useApp((s) => s.serverUrl)
   const loadHistory = useApp((s) => s.loadHistory)
   const loadOlder = useApp((s) => s.loadOlder)
@@ -165,6 +168,7 @@ export function MessageList({ channelId }: { channelId: string }) {
               row={r}
               author={users[r.msg.userId]}
               mine={r.msg.userId === meId}
+              canDelete={canDeleteMessage(me, r.msg)}
               serverUrl={serverUrl}
               onDelete={setPendingDelete}
               onOpenImage={setLightbox}
@@ -179,7 +183,11 @@ export function MessageList({ channelId }: { channelId: string }) {
       )}
       {pendingDelete && (
         <ConfirmDialog
-          title="Delete message?"
+          title={
+            pendingDelete.userId === meId
+              ? 'Delete message?'
+              : `Delete ${users[pendingDelete.userId]?.name ?? 'this user'}'s message?`
+          }
           message={
             <>
               <div className="confirm-preview">{previewText(pendingDelete)}</div>
@@ -213,6 +221,7 @@ const MessageRow = memo(function MessageRow({
   row,
   author,
   mine,
+  canDelete,
   serverUrl,
   onDelete,
   onOpenImage,
@@ -220,6 +229,7 @@ const MessageRow = memo(function MessageRow({
   row: Row
   author: User | undefined
   mine: boolean
+  canDelete: boolean
   serverUrl: string | null
   onDelete(m: Message): void
   onOpenImage(att: Attachment): void
@@ -256,7 +266,7 @@ const MessageRow = memo(function MessageRow({
           {msg.content && <MessageContent text={msg.content} />}
           <MessageAttachments attachments={msg.attachments ?? NO_ATTACHMENTS} serverUrl={serverUrl} onOpen={onOpenImage} />
         </div>
-        {mine && (
+        {canDelete && (
           <div className="message-actions">
             <button
               className="icon-btn danger"
