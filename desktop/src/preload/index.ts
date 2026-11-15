@@ -6,6 +6,7 @@ import {
   IPC,
   type AppPrefs,
   type CaptureSource,
+  type ChatNotification,
   type GlobalHotkeyAction,
   type HotkeyBindings,
   type HotkeyEvent,
@@ -19,6 +20,7 @@ import {
   type PttStatus,
   type SecretRead,
   type TrayAction,
+  type UnreadBadge,
   GLOBAL_HOTKEY_ACTIONS,
   type UpdateState,
   UPDATE_STATUSES,
@@ -46,6 +48,8 @@ function subscribe<T>(channel: string, accept: (v: unknown) => v is T, cb: (v: T
     ipcRenderer.removeListener(channel, listener)
   }
 }
+
+const isChannelId = (v: unknown): v is string => typeof v === 'string' && v.length > 0 && v.length <= 128
 
 const isTrayAction = (v: unknown): v is TrayAction => TRAY_ACTIONS.includes(v as TrayAction)
 
@@ -165,6 +169,13 @@ const bridge: NexoBridge = {
   openExternal: (url: string): void => ipcRenderer.send(IPC.openExternal, url),
 
   requestAttention: (): void => ipcRenderer.send(IPC.requestAttention),
+
+  notifications: {
+    show: (n: ChatNotification): void => ipcRenderer.send(IPC.notifyShow, n),
+    clear: (channelId: string | null): void => ipcRenderer.send(IPC.notifyClear, channelId),
+    setBadge: (badge: UnreadBadge): void => ipcRenderer.send(IPC.notifyBadge, badge),
+    onOpen: (cb: (channelId: string) => void): (() => void) => subscribe(IPC.notifyOpen, isChannelId, cb),
+  },
 
   hotkeys: {
     setBindings: (bindings: HotkeyBindings): Promise<HotkeyStatus> =>

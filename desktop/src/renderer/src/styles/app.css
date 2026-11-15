@@ -171,6 +171,8 @@ input, textarea { user-select: text; }
 }
 .avatar-presence.is-online { background: var(--accent); }
 .avatar-presence.is-offline { background: var(--bg-4); }
+.avatar-presence.is-idle { background: var(--warn); }
+.avatar-presence.is-dnd { background: var(--danger); }
 
 .swatches { display: flex; flex-wrap: wrap; gap: 10px; }
 .swatch {

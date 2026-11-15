@@ -2,7 +2,8 @@ import { useEffect, useRef, useState, type DragEvent, type FormEvent, type Keybo
 import { create } from 'zustand'
 import type { Channel, ChannelType, VoiceState } from '@shared/protocol'
 import { useApp } from '../store/app'
-import { isUnread, useUnread } from '../store/unread'
+import { isUnread, mentionBadgeLabel, unreadMentions, useUnread } from '../store/unread'
+import '../styles/mentions.css'
 import { useUi } from '../store/ui'
 import { useShallow } from 'zustand/react/shallow'
 import { useVoice } from '../voice/session'
@@ -148,6 +149,12 @@ function ChannelRow({ channel }: { channel: Channel }) {
   const deleteChannel = useApp((s) => s.deleteChannel)
   const inThisVoice = useVoice((s) => s.channelId === channel.id)
   const unread = useUnread((s) => channel.type === 'text' && isUnread(s, channel.id))
+  // A string so the selector result compares by value ('' = no unread mention).
+  const mentionLabel = useUnread((s) => {
+    if (channel.type !== 'text') return ''
+    const m = unreadMentions(s, channel.id)
+    return m.count > 0 ? mentionBadgeLabel(m) : ''
+  })
   const canManage = useApp((s) => canManageChannels(s.me))
   const [renamingOpen, setRenaming] = useState(false)
   const [confirmingOpen, setConfirming] = useState(false)
@@ -195,6 +202,15 @@ function ChannelRow({ channel }: { channel: Channel }) {
             <Icon size={17} className="channel-icon" />
             <span className="channel-name">{channel.name}</span>
             {unread && <span className="sr-only">, unread messages</span>}
+            {mentionLabel && (
+              <span
+                className="mention-badge"
+                title={mentionLabel === '@' ? 'You were mentioned' : `${mentionLabel} unread mention${mentionLabel === '1' ? '' : 's'}`}
+              >
+                {mentionLabel}
+                <span className="sr-only">, mentioned</span>
+              </span>
+            )}
           </button>
           {canManage && (
             <span className="channel-actions">

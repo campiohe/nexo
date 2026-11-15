@@ -156,6 +156,22 @@ export const BellIcon = (p: IconProps) => (
   </Svg>
 )
 
+/** Add reaction: a smiley with a small plus. */
+export const SmilePlusIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M21 12a9 9 0 1 1-9-9" />
+    <path d="M8 14s1.5 2 4 2 4-2 4-2M9 9h.01M15 9h.01M19 2v6M16 5h6" />
+  </Svg>
+)
+
+/** Reply: arrow curving back to the left. */
+export const ReplyIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M9 17 4 12l5-5" />
+    <path d="M20 18v-2a4 4 0 0 0-4-4H4" />
+  </Svg>
+)
+
 /** Nexo mark: two interlocking rounded nodes. */
 export const NexoMark = ({ size = 28, ...rest }: IconProps) => (
   <svg width={size} height={size} viewBox="0 0 32 32" aria-hidden="true" {...rest}>

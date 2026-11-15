@@ -1,12 +1,13 @@
 // CONTRACT (owner: workstream C — renderer core & chat). Extended freely; the original fields/actions are kept.
 import { create } from 'zustand'
-import type { Channel, ChannelType, Message, User, VoiceState } from '@shared/protocol'
-import { MAX_MESSAGE_LENGTH, MESSAGE_PAGE_SIZE } from '@shared/protocol'
+import type { Channel, ChannelType, Message, Reaction, User, VoiceState } from '@shared/protocol'
+import { MAX_MESSAGE_LENGTH, MAX_REACTIONS_PER_MESSAGE, MESSAGE_PAGE_SIZE } from '@shared/protocol'
 import { connect, disconnect, request } from '../net/socket'
 import { normalizeServerUrl } from '../lib/url'
 import { settings } from './settings'
 import { resetUnread } from './unread'
 import { findLogin, NOTICE_UNREADABLE, resetSignIn } from './signin'
+import { useCompose } from './compose'
 
 export type ConnectionStatus = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'error'
 
@@ -68,9 +69,16 @@ export interface AppState {
   // ---- data actions ----
   loadHistory(channelId: string): Promise<void>
   loadOlder(channelId: string): Promise<void>
-  /** `attachmentIds`: uploaded images (net/attachments.ts), in display order. Text may be empty when there are some. */
-  sendMessage(channelId: string, content: string, attachmentIds?: string[]): Promise<Message>
+  /**
+   * `attachmentIds`: uploaded images (net/attachments.ts), in display order. Text may be empty when there are some.
+   * `replyToId`: the message (same channel) this one replies to.
+   */
+  sendMessage(channelId: string, content: string, attachmentIds?: string[], replyToId?: string): Promise<Message>
   deleteMessage(messageId: string): Promise<void>
+  /** Author only. `content` is wire content (`<@id>` mentions); may be empty only when the message has images. */
+  editMessage(messageId: string, content: string): Promise<Message>
+  /** Add your `emoji` reaction to a message, or remove it when you already reacted with it. Optimistic. */
+  toggleReaction(messageId: string, emoji: string): Promise<void>
   createChannel(name: string, type: ChannelType): Promise<Channel>
   renameChannel(channelId: string, name: string): Promise<Channel>
   deleteChannel(channelId: string): Promise<void>
@@ -106,6 +114,52 @@ export function mergeMessages(a: Message[], b: Message[]): Message[] {
 }
 
 const inflightHistory = new Map<string, Promise<void>>()
+
+/** Older servers send messages without reactions. */
+export const NO_REACTIONS: Reaction[] = []
+
+/** The loaded message `messageId` and its channel, or null. */
+export function findMessage(messages: Record<string, ChannelMessages>, messageId: string): { channelId: string; msg: Message } | null {
+  for (const [channelId, cm] of Object.entries(messages)) {
+    const msg = cm.items.find((m) => m.id === messageId)
+    if (msg) return { channelId, msg }
+  }
+  return null
+}
+
+/** `messages` with message `messageId` of `channelId` replaced by `fn(msg)` (same object when it isn't loaded). */
+export function mapMessage(
+  messages: Record<string, ChannelMessages>,
+  channelId: string,
+  messageId: string,
+  fn: (m: Message) => Message,
+): Record<string, ChannelMessages> {
+  const cm = messages[channelId]
+  const i = cm ? cm.items.findIndex((m) => m.id === messageId) : -1
+  if (!cm || i < 0) return messages
+  const items = cm.items.slice()
+  items[i] = fn(items[i])
+  return { ...messages, [channelId]: { ...cm, items } }
+}
+
+/** `reactions` with `userId` added to (`on`) or removed from `emoji`; empty reactions are dropped. */
+export function applyReaction(reactions: Reaction[], emoji: string, userId: string, on: boolean): Reaction[] {
+  const i = reactions.findIndex((r) => r.emoji === emoji)
+  if (on) {
+    if (i < 0) return [...reactions, { emoji, userIds: [userId] }]
+    if (reactions[i].userIds.includes(userId)) return reactions
+    return reactions.map((r, j) => (j === i ? { ...r, userIds: [...r.userIds, userId] } : r))
+  }
+  if (i < 0 || !reactions[i].userIds.includes(userId)) return reactions
+  return reactions
+    .map((r, j) => (j === i ? { ...r, userIds: r.userIds.filter((u) => u !== userId) } : r))
+    .filter((r) => r.userIds.length > 0)
+}
+
+/** A message was deleted: close its inline editor (the composer handles its own reply bar). */
+export function forgetDeletedMessage(messageId: string): void {
+  if (useCompose.getState().editingId === messageId) useCompose.getState().setEditing(null)
+}
 
 export const useApp = create<AppState>()((set, get) => {
   const patchChannel = (channelId: string, patch: Partial<ChannelMessages>) =>
@@ -238,12 +292,17 @@ export const useApp = create<AppState>()((set, get) => {
       }
     },
 
-    sendMessage: async (channelId, content, attachmentIds = []) => {
+    sendMessage: async (channelId, content, attachmentIds = [], replyToId) => {
       const text = content.trim()
       if (!text && attachmentIds.length === 0) throw new Error('Message is empty')
       if (text.length > MAX_MESSAGE_LENGTH) throw new Error(`Messages are limited to ${MAX_MESSAGE_LENGTH} characters`)
-      // attachmentIds is only sent when used, so text-only messages look exactly like before to older servers.
-      const msg = await request('message:send', attachmentIds.length ? { channelId, content: text, attachmentIds } : { channelId, content: text })
+      // Optional fields are only sent when used, so plain messages look exactly like before to older servers.
+      const msg = await request('message:send', {
+        channelId,
+        content: text,
+        ...(attachmentIds.length ? { attachmentIds } : {}),
+        ...(replyToId ? { replyToId } : {}),
+      })
       // The broadcast `message:new` normally lands first; insert anyway (deduped) in case it didn't.
       const cur = get().messages[channelId]
       if (cur?.loaded) patchChannel(channelId, { items: mergeMessages(cur.items, [msg]) })
@@ -260,6 +319,44 @@ export const useApp = create<AppState>()((set, get) => {
         }
         return { messages }
       })
+      forgetDeletedMessage(messageId)
+    },
+
+    editMessage: async (messageId, content) => {
+      const text = content.trim()
+      const found = findMessage(get().messages, messageId)
+      if (!text && found && !found.msg.attachments?.length) throw new Error('Message is empty')
+      if (text.length > MAX_MESSAGE_LENGTH) throw new Error(`Messages are limited to ${MAX_MESSAGE_LENGTH} characters`)
+      const msg = await request('message:edit', { messageId, content: text })
+      // Same as the `message:updated` broadcast (which may have landed first): replace in place.
+      set((s) => ({ messages: mapMessage(s.messages, msg.channelId, msg.id, () => msg) }))
+      return msg
+    },
+
+    toggleReaction: async (messageId, emoji) => {
+      const meId = get().me?.id
+      const found = findMessage(get().messages, messageId)
+      if (!meId || !found) return
+      const reactions = found.msg.reactions ?? NO_REACTIONS
+      const existing = reactions.find((r) => r.emoji === emoji)
+      const on = !existing?.userIds.includes(meId)
+      if (on && !existing && reactions.length >= MAX_REACTIONS_PER_MESSAGE)
+        throw new Error(`Messages can have at most ${MAX_REACTIONS_PER_MESSAGE} different reactions`)
+      // Optimistic; the `message:reactions` broadcast replaces the list with the server's.
+      const apply = (value: boolean) =>
+        set((s) => ({
+          messages: mapMessage(s.messages, found.channelId, messageId, (m) => ({
+            ...m,
+            reactions: applyReaction(m.reactions ?? NO_REACTIONS, emoji, meId, value),
+          })),
+        }))
+      apply(on)
+      try {
+        await request('message:react', { messageId, emoji, on })
+      } catch (err) {
+        apply(!on)
+        throw err
+      }
     },
 
     // ---------- channels ----------

@@ -1,38 +1,70 @@
-import { memo, useState } from 'react'
+import { memo, useState, type CSSProperties } from 'react'
 import type { Attachment } from '@shared/protocol'
-import { linkify, openExternal } from '../lib/linkify'
+import { openExternal } from '../lib/linkify'
+import { UNKNOWN_USER } from '../lib/mentions'
+import { tokenizeContent, type ContentNode } from '../lib/messageTokens'
 import { attachmentUrl } from '../net/attachments'
+import { useApp } from '../store/app'
+import '../styles/mentions.css'
 
-/** Message text rendered as React text nodes (never HTML). Newlines are preserved via CSS (pre-wrap). */
+/**
+ * Message text rendered as React text nodes (never HTML): links, `<@id>` mentions and `@everyone` become
+ * elements, everything else stays text. Newlines are preserved via CSS (pre-wrap).
+ */
 export const MessageContent = memo(function MessageContent({ text }: { text: string }) {
-  const parts = linkify(text)
-  return (
-    <div className="message-content">
-      {parts.map((p, i) =>
-        p.type === 'text' ? (
-          <span key={i}>{p.text}</span>
-        ) : (
-          <a
-            key={i}
-            href={p.href}
-            className="message-link"
-            title={p.href}
-            onClick={(e) => {
-              e.preventDefault()
-              openExternal(p.href)
-            }}
-            onAuxClick={(e) => {
-              e.preventDefault()
-              if (e.button === 1) openExternal(p.href)
-            }}
-          >
-            {p.text}
-          </a>
-        ),
-      )}
-    </div>
-  )
+  const nodes = tokenizeContent(text)
+  return <div className="message-content">{nodes.map((n, i) => renderNode(n, i))}</div>
 })
+
+function renderNode(n: ContentNode, key: number) {
+  switch (n.type) {
+    case 'text':
+      return <span key={key}>{n.text}</span>
+    case 'link':
+      return (
+        <a
+          key={key}
+          href={n.href}
+          className="message-link"
+          title={n.href}
+          onClick={(e) => {
+            e.preventDefault()
+            openExternal(n.href)
+          }}
+          onAuxClick={(e) => {
+            e.preventDefault()
+            if (e.button === 1) openExternal(n.href)
+          }}
+        >
+          {n.text}
+        </a>
+      )
+    case 'mention':
+      return <MentionPill key={key} userId={n.userId} />
+    case 'everyone':
+      return (
+        <span key={key} className="mention is-everyone" title="Notifies everyone">
+          @everyone
+        </span>
+      )
+  }
+}
+
+/** "@Name" in the user's colour (live: follows renames and colour changes); brighter when it's you. */
+function MentionPill({ userId }: { userId: string }) {
+  const user = useApp((s) => s.users[userId])
+  const isMe = useApp((s) => s.me?.id === userId)
+  if (!user) return <span className="mention is-unknown">@{UNKNOWN_USER}</span>
+  return (
+    <span
+      className={`mention ${isMe ? 'is-me' : ''}`}
+      style={{ '--mention-color': user.color } as CSSProperties}
+      title={user.name}
+    >
+      @{user.name}
+    </span>
+  )
+}
 
 /** Display box per image: one image may be large, several share a compact grid. */
 const SINGLE_MAX = { w: 400, h: 300 }

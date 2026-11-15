@@ -1,18 +1,27 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FocusEvent, type KeyboardEvent, type MouseEvent } from 'react'
 import type { Attachment, Message, User } from '@shared/protocol'
-import { useApp } from '../store/app'
+import { NO_REACTIONS, useApp } from '../store/app'
+import { useCompose } from '../store/compose'
 import { toast } from '../lib/toast'
 import { canDeleteMessage } from '../lib/permissions'
+import { contentToPlain, mentionsUser } from '../lib/mentions'
 import { formatDay, formatFull, formatTime, isSameDay } from '../lib/time'
 import { Avatar } from './Avatar'
 import { ConfirmDialog } from './Modal'
 import { MessageAttachments, MessageContent } from './MessageContent'
 import { ImageLightbox } from './ImageLightbox'
-import { ArrowDownIcon, HashIcon, TrashIcon } from './icons'
+import { MessageActions } from './MessageActions'
+import { MessageEditor } from './MessageEditor'
+import { Reactions } from './Reactions'
+import { EmojiPicker } from './EmojiPicker'
+import { ArrowDownIcon, HashIcon } from './icons'
 
 const GROUP_WINDOW_MS = 5 * 60 * 1000
 const STICK_THRESHOLD_PX = 80
 const LOAD_OLDER_THRESHOLD_PX = 120
+/** Clicking a reply preview loads at most this many older pages looking for the original. */
+const JUMP_MAX_PAGES = 10
+const FLASH_MS = 1600
 /** Older servers send messages without the field. */
 const NO_ATTACHMENTS: Attachment[] = []
 
@@ -37,11 +46,29 @@ function buildRows(items: Message[]): Row[] {
   let prev: Message | undefined
   for (const msg of items) {
     const newDay = !prev || !isSameDay(prev.createdAt, msg.createdAt)
-    const head = newDay || !prev || prev.userId !== msg.userId || msg.createdAt - prev.createdAt > GROUP_WINDOW_MS
+    // A reply always starts a new group (its preview line sits above the author header).
+    const head =
+      newDay || !prev || prev.userId !== msg.userId || msg.createdAt - prev.createdAt > GROUP_WINDOW_MS || !!msg.replyTo
     rows.push({ msg, head, day: newDay ? formatDay(msg.createdAt) : null })
     prev = msg
   }
   return rows
+}
+
+/** Where the emoji picker was opened from (one picker at a time). */
+interface PickerState {
+  messageId: string
+  anchor: HTMLElement
+  from: 'bar' | 'reactions'
+}
+
+const nextFrame = () => new Promise<void>((r) => requestAnimationFrame(() => r()))
+
+function flash(el: HTMLElement) {
+  el.classList.remove('is-flash')
+  void el.offsetWidth // restart the animation
+  el.classList.add('is-flash')
+  window.setTimeout(() => el.classList.remove('is-flash'), FLASH_MS)
 }
 
 export function MessageList({ channelId }: { channelId: string }) {
@@ -54,6 +81,8 @@ export function MessageList({ channelId }: { channelId: string }) {
   const serverUrl = useApp((s) => s.serverUrl)
   const loadHistory = useApp((s) => s.loadHistory)
   const loadOlder = useApp((s) => s.loadOlder)
+  const editingId = useCompose((s) => s.editingId)
+  const replyingToId = useCompose((s) => s.replyTo[channelId])
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
@@ -65,6 +94,7 @@ export function MessageList({ channelId }: { channelId: string }) {
   const [unseen, setUnseen] = useState(0)
   const [pendingDelete, setPendingDelete] = useState<Message | null>(null)
   const [lightbox, setLightbox] = useState<Attachment | null>(null)
+  const [picker, setPicker] = useState<PickerState | null>(null)
 
   const items = cm?.items ?? []
   const loaded = !!cm?.loaded
@@ -76,6 +106,21 @@ export function MessageList({ channelId }: { channelId: string }) {
   useEffect(() => {
     loadHistory(channelId).catch((err) => toast(err, 'error'))
   }, [channelId, loadHistory])
+
+  // Leaving the channel closes its inline editor and picker.
+  useEffect(() => {
+    setPicker(null)
+    return () => {
+      const id = useCompose.getState().editingId
+      if (id && useApp.getState().messages[channelId]?.items.some((m) => m.id === id)) useCompose.getState().setEditing(null)
+    }
+  }, [channelId])
+
+  // The message the picker belongs to was deleted.
+  const pickerMessageId = picker?.messageId
+  useEffect(() => {
+    if (pickerMessageId && !items.some((m) => m.id === pickerMessageId)) setPicker(null)
+  }, [items, pickerMessageId])
 
   const requestOlder = useCallback(() => {
     loadOlder(channelId).catch((err) => toast(err, 'error'))
@@ -142,11 +187,82 @@ export function MessageList({ channelId }: { channelId: string }) {
     setUnseen(0)
   }
 
-  const rows = buildRows(items)
+  const openPicker = useCallback((messageId: string, anchor: HTMLElement, from: PickerState['from']) => {
+    // The same button again closes it (the picker ignores clicks on its anchor).
+    setPicker((p) => (p && p.messageId === messageId && p.anchor === anchor ? null : { messageId, anchor, from }))
+  }, [])
+
+  /** Scroll to a message (loading older pages if needed, up to a cap) and flash it. */
+  const jumpTo = useCallback(
+    async (messageId: string) => {
+      const find = () => scrollRef.current?.querySelector<HTMLElement>(`[data-mid="${CSS.escape(messageId)}"]`) ?? null
+      let el = find()
+      for (let page = 0; !el && page < JUMP_MAX_PAGES; page++) {
+        // Let an automatic older-page load finish first.
+        for (let i = 0; i < 300 && useApp.getState().messages[channelId]?.loading; i++) await nextFrame()
+        const before = useApp.getState().messages[channelId]
+        if (!before?.loaded || !before.hasMore) break
+        try {
+          await loadOlder(channelId)
+        } catch (err) {
+          toast(err, 'error')
+          return
+        }
+        await nextFrame()
+        el = find()
+        if ((useApp.getState().messages[channelId]?.items.length ?? 0) <= before.items.length) break
+      }
+      if (!el) {
+        toast('Original message is further up', 'info')
+        return
+      }
+      stickRef.current = false
+      el.scrollIntoView({ block: 'center', behavior: 'smooth' })
+      flash(el)
+    },
+    [channelId, loadOlder],
+  )
+
+  // Keyboard: Up/Down move between messages (focusing one shows its action bar), Escape goes to the composer.
+  function onListKeyDown(e: KeyboardEvent<HTMLDivElement>) {
+    const t = e.target as HTMLElement
+    const onRow = t.classList.contains('message')
+    if (t !== e.currentTarget && !onRow) return
+    if (e.key === 'Escape' && onRow) {
+      e.preventDefault()
+      useCompose.getState().focusComposer(channelId)
+      return
+    }
+    if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return
+    const rowsEls = [...(contentRef.current?.querySelectorAll<HTMLElement>('.message[data-mid]') ?? [])]
+    if (!rowsEls.length) return
+    let next: HTMLElement | undefined
+    if (onRow) {
+      const i = rowsEls.indexOf(t)
+      next = rowsEls[e.key === 'ArrowUp' ? i - 1 : i + 1]
+    } else {
+      next = rowsEls[rowsEls.length - 1]
+    }
+    e.preventDefault()
+    if (next) {
+      next.focus({ preventScroll: true })
+      next.scrollIntoView({ block: 'nearest' })
+    }
+  }
+
+  const rows = useMemo(() => buildRows(items), [items])
 
   return (
     <div className="message-list-wrap">
-      <div className="message-list" ref={scrollRef} onScroll={onScroll} role="log" aria-label={`Messages in #${channelName}`}>
+      <div
+        className="message-list"
+        ref={scrollRef}
+        onScroll={onScroll}
+        onKeyDown={onListKeyDown}
+        tabIndex={0}
+        role="log"
+        aria-label={`Messages in #${channelName}`}
+      >
         <div className="message-list-content" ref={contentRef}>
           {loaded && !hasMore && (
             <div className="channel-intro">
@@ -165,13 +281,22 @@ export function MessageList({ channelId }: { channelId: string }) {
           {rows.map((r) => (
             <MessageRow
               key={r.msg.id}
-              row={r}
+              msg={r.msg}
+              head={r.head}
+              day={r.day}
               author={users[r.msg.userId]}
+              meId={meId}
               mine={r.msg.userId === meId}
               canDelete={canDeleteMessage(me, r.msg)}
+              mentioned={mentionsUser(r.msg, meId)}
+              editing={editingId === r.msg.id}
+              replyTarget={replyingToId === r.msg.id}
+              picker={picker?.messageId === r.msg.id ? picker.from : null}
               serverUrl={serverUrl}
               onDelete={setPendingDelete}
               onOpenImage={setLightbox}
+              onOpenPicker={openPicker}
+              onJump={jumpTo}
             />
           ))}
         </div>
@@ -180,6 +305,18 @@ export function MessageList({ channelId }: { channelId: string }) {
         <button className="new-messages-pill" onClick={jumpToBottom}>
           {unseen === 1 ? 'New message' : `${unseen} new messages`} <ArrowDownIcon size={14} />
         </button>
+      )}
+      {picker && (
+        <EmojiPicker
+          key={picker.messageId}
+          anchor={picker.anchor}
+          label="Add a reaction"
+          onClose={() => setPicker(null)}
+          onPick={(emoji) => {
+            const messageId = picker.messageId
+            useApp.getState().toggleReaction(messageId, emoji).catch((err) => toast(err, 'error'))
+          }}
+        />
       )}
       {pendingDelete && (
         <ConfirmDialog
@@ -217,24 +354,102 @@ async function deleteNow(msg: Message) {
   }
 }
 
+/** The "replying to" line above a reply: connector, avatar, name, one-line snippet. Click jumps there. */
+const ReplyLine = memo(function ReplyLine({ reply, onJump }: { reply: NonNullable<Message['replyTo']>; onJump(id: string): void }) {
+  const users = useApp((s) => s.users)
+  if (reply.deleted) {
+    return (
+      <div className="message-reply is-deleted">
+        <span className="message-reply-text">Original message was deleted</span>
+      </div>
+    )
+  }
+  const author: User | undefined = reply.userId ? users[reply.userId] : undefined
+  // '' = the account was removed (history), and a user missing from the list is gone too.
+  const name = author?.name ?? 'Deleted user'
+  const text = contentToPlain(reply.content, users).replace(/\s+/g, ' ').trim()
+  return (
+    <div className="message-reply">
+      <button
+        className="message-reply-target"
+        onClick={() => onJump(reply.id)}
+        title="Go to the original message"
+        aria-label={`Replying to ${name}: ${text || (reply.hasAttachments ? 'image' : '')}. Go to the original message`}
+      >
+        <Avatar user={author} size={16} />
+        <span className="message-reply-author" style={{ color: author?.color }}>
+          {name}
+        </span>
+        <span className={`message-reply-text ${text ? '' : 'is-meta'}`}>{text || (reply.hasAttachments ? '[image]' : '…')}</span>
+      </button>
+    </div>
+  )
+})
+
 const MessageRow = memo(function MessageRow({
-  row,
+  msg,
+  head,
+  day,
   author,
+  meId,
   mine,
   canDelete,
+  mentioned,
+  editing,
+  replyTarget,
+  picker,
   serverUrl,
   onDelete,
   onOpenImage,
+  onOpenPicker,
+  onJump,
 }: {
-  row: Row
+  msg: Message
+  head: boolean
+  day: string | null
   author: User | undefined
+  meId: string | undefined
   mine: boolean
   canDelete: boolean
+  /** Mentions you (or replies to you / @everyone): highlighted. */
+  mentioned: boolean
+  /** Shows the inline editor (store/compose editingId). */
+  editing: boolean
+  /** The composer is replying to this message. */
+  replyTarget: boolean
+  /** The emoji picker is open for this message, opened from the action bar or the reactions "+". */
+  picker: PickerState['from'] | null
   serverUrl: string | null
   onDelete(m: Message): void
   onOpenImage(att: Attachment): void
+  onOpenPicker(messageId: string, anchor: HTMLElement, from: PickerState['from']): void
+  onJump(messageId: string): void
 }) {
-  const { msg, head, day } = row
+  // The action bar only exists for the hovered / keyboard-focused message (cheap long lists).
+  const [hover, setHover] = useState(false)
+  const [keyboard, setKeyboard] = useState(false)
+  const showBar = hover || keyboard || picker === 'bar'
+  const reactions = msg.reactions ?? NO_REACTIONS
+
+  const onFocus = (e: FocusEvent<HTMLDivElement>) => {
+    if (e.target instanceof HTMLElement && e.target.matches(':focus-visible')) setKeyboard(true)
+  }
+  const onBlur = (e: FocusEvent<HTMLDivElement>) => {
+    if (!(e.relatedTarget instanceof Node && e.currentTarget.contains(e.relatedTarget))) setKeyboard(false)
+  }
+
+  const classes = [
+    'message',
+    head ? 'is-head' : 'is-cont',
+    mine ? 'is-mine' : '',
+    mentioned ? 'is-mentioned' : '',
+    replyTarget ? 'is-reply-target' : '',
+    editing ? 'is-editing' : '',
+    msg.replyTo ? 'is-reply' : '',
+  ]
+    .filter(Boolean)
+    .join(' ')
+
   return (
     <>
       {day && (
@@ -242,7 +457,16 @@ const MessageRow = memo(function MessageRow({
           <span>{day}</span>
         </div>
       )}
-      <div className={`message ${head ? 'is-head' : 'is-cont'} ${mine ? 'is-mine' : ''}`}>
+      <div
+        className={classes}
+        data-mid={msg.id}
+        tabIndex={-1}
+        onMouseEnter={() => setHover(true)}
+        onMouseLeave={() => setHover(false)}
+        onFocus={onFocus}
+        onBlur={onBlur}
+      >
+        {msg.replyTo && <ReplyLine reply={msg.replyTo} onJump={onJump} />}
         <div className="message-gutter">
           {head ? (
             <Avatar user={author} size={36} />
@@ -263,20 +487,45 @@ const MessageRow = memo(function MessageRow({
               </time>
             </div>
           )}
-          {msg.content && <MessageContent text={msg.content} />}
+          {editing ? (
+            <MessageEditor msg={msg} onDelete={onDelete} />
+          ) : (
+            (!!msg.content || !!msg.editedAt) && (
+              <div className="message-text">
+                {msg.content && <MessageContent text={msg.content} />}
+                {msg.editedAt ? (
+                  <span className="message-edited" title={`Edited ${formatFull(msg.editedAt)}`}>
+                    {' '}
+                    (edited)
+                  </span>
+                ) : null}
+              </div>
+            )
+          )}
           <MessageAttachments attachments={msg.attachments ?? NO_ATTACHMENTS} serverUrl={serverUrl} onOpen={onOpenImage} />
+          <Reactions
+            messageId={msg.id}
+            reactions={reactions}
+            meId={meId}
+            pickerOpen={picker === 'reactions'}
+            onAdd={(anchor) => onOpenPicker(msg.id, anchor, 'reactions')}
+          />
         </div>
-        {canDelete && (
-          <div className="message-actions">
-            <button
-              className="icon-btn danger"
-              title="Delete message (Shift+click to skip confirmation)"
-              aria-label="Delete message"
-              onClick={(e) => (e.shiftKey ? void deleteNow(msg) : onDelete(msg))}
-            >
-              <TrashIcon size={15} />
-            </button>
-          </div>
+        {showBar && (
+          <MessageActions
+            messageId={msg.id}
+            canEdit={mine && !editing}
+            canDelete={canDelete}
+            pickerOpen={picker === 'bar'}
+            onReact={(anchor) => onOpenPicker(msg.id, anchor, 'bar')}
+            onReply={() => {
+              const compose = useCompose.getState()
+              compose.setReply(msg.channelId, msg.id)
+              compose.focusComposer(msg.channelId)
+            }}
+            onEdit={() => useCompose.getState().setEditing(msg.id)}
+            onDelete={(e: MouseEvent) => (e.shiftKey ? void deleteNow(msg) : onDelete(msg))}
+          />
         )}
       </div>
     </>

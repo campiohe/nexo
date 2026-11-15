@@ -305,6 +305,31 @@ export const UPDATE_STATUSES: readonly UpdateStatus[] = [
   'error',
 ]
 
+/** A native notification for a chat message (renderer -> main). At most one per channel is kept on screen. */
+export interface ChatNotification {
+  /** Channel it belongs to: a newer notification for the same channel replaces the old one; clicking opens it. */
+  channelId: string
+  /** e.g. "Ana in #general" (main trims it to 128 characters). */
+  title: string
+  /** Plain text (main trims it to 256 characters). */
+  body: string
+  /** `data:image/png;base64,…` (the author's avatar, ≤ 256 KB), or null for the app icon. */
+  icon: string | null
+}
+
+/** Unread state for the taskbar / dock / tray (renderer -> main). */
+export interface UnreadBadge {
+  /** Unread mentions over all channels (0 clears the badge). */
+  mentions: number
+  /**
+   * Windows taskbar overlay: a small `data:image/png;base64,…` (the red count bubble, drawn by the renderer),
+   * or null for none.
+   */
+  overlay: string | null
+  /** Accessible description of the overlay, e.g. "3 unread mentions". */
+  description: string
+}
+
 /** secrets.read(): `unreadable` = the entry exists but no copy of it could be decrypted/read. */
 export type SecretRead = { status: 'ok'; value: string } | { status: 'missing' } | { status: 'unreadable' }
 
@@ -372,6 +397,18 @@ export interface NexoBridge {
    * window is focused.
    */
   requestAttention(): void
+
+  /** Native chat notifications through the main process (the renderer's web Notification stays denied). */
+  notifications: {
+    /** Show (or replace this channel's) notification. Ignored where the OS has no notifications. */
+    show(n: ChatNotification): void
+    /** Remove the notification of a channel (it was read), or every one with null. */
+    clear(channelId: string | null): void
+    /** Taskbar overlay (Windows), dock / launcher badge count (macOS / Linux) and the tray icon's red dot. */
+    setBadge(badge: UnreadBadge): void
+    /** A notification was clicked: main already showed and focused the window; open `channelId`. */
+    onOpen(cb: (channelId: string) => void): () => void
+  }
 
   /**
    * Global hotkeys (work while other apps, e.g. games, have focus). One system-wide hook runs while any
@@ -442,6 +479,10 @@ export const IPC = {
   secretSet: 'nexo:secrets:set',
   openExternal: 'nexo:open-external',
   requestAttention: 'nexo:window:request-attention',
+  notifyShow: 'nexo:notify:show',
+  notifyClear: 'nexo:notify:clear',
+  notifyBadge: 'nexo:notify:badge',
+  notifyOpen: 'nexo:notify:open', // main → renderer (channelId)
   pttSetBinding: 'nexo:ptt:set-binding', // legacy: sets the 'ptt' slot only
   hotkeysSetBindings: 'nexo:hotkeys:set-bindings',
   hotkeysCapture: 'nexo:hotkeys:capture',

@@ -1,0 +1,70 @@
+/* Composer additions: the @mention popup and the "Replying to" bar (Composer.tsx). */
+
+.composer-wrap { position: relative; }
+
+/* ---- @mention autocomplete, floating above the composer ---- */
+.mention-popup {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 20;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-1);
+  box-shadow: var(--shadow);
+  animation: mention-pop 0.12s var(--ease);
+}
+@keyframes mention-pop { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+.mention-popup-title {
+  padding: 2px 8px 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.mention-popup ul { max-height: 280px; margin: 0; padding: 0; overflow-y: auto; list-style: none; }
+.mention-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 36px;
+  padding: 0 8px;
+  border-radius: var(--radius-sm);
+  color: var(--text-1);
+  cursor: pointer;
+}
+.mention-option.is-active { background: var(--bg-3); color: var(--text-0); }
+.mention-option-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.mention-option-hint { margin-left: auto; flex: none; font-size: 12px; color: var(--text-2); }
+.mention-option-at {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-weight: 800;
+  font-size: 13px;
+}
+
+/* ---- "Replying to Name" ---- */
+.composer-reply {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: -2px -2px 0;
+  padding: 4px 4px 4px 10px;
+  border-radius: calc(var(--radius) - 4px) calc(var(--radius) - 4px) var(--radius-sm) var(--radius-sm);
+  background: var(--bg-2);
+  color: var(--text-2);
+  font-size: 13px;
+}
+.composer-reply > svg { flex: none; color: var(--accent); }
+.composer-reply-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer-reply-text strong { font-weight: 700; }
+.composer-reply-close { width: 24px; height: 24px; flex: none; }

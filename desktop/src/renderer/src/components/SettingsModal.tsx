@@ -13,13 +13,16 @@ import { cancelCapture, recordKeybind, usePtt } from '../voice/ptt'
 import { DeviceSettings } from './voice/DeviceSettings'
 import { MembersSection } from './MembersSection'
 import { useVoice } from '../voice/session'
+import { useDevicePrefs } from '../voice/devices'
+import { hasNativeNotifications, setNotifyPrefs, useNotifyPrefs, type NotifyLevel } from '../lib/notify'
+import '../styles/notify.css'
 import { Avatar } from './Avatar'
 import { AvatarCropDialog } from './AvatarCropDialog'
 import { ColorSwatches } from './ColorSwatches'
 import { ConfirmDialog, Modal } from './Modal'
 import { AlertIcon, LogoutIcon } from './icons'
 
-type Tab = 'profile' | 'av' | 'keybinds' | 'app' | 'members' | 'server'
+type Tab = 'profile' | 'av' | 'keybinds' | 'notifications' | 'app' | 'members' | 'server'
 
 /** The App section needs the Electron bridge (window.nexo.prefs); it's hidden in a plain browser. */
 const hasPrefs = () => typeof window.nexo?.prefs?.get === 'function'
@@ -28,6 +31,7 @@ const TABS: { id: Tab; label: string; available?: () => boolean }[] = [
   { id: 'profile', label: 'Profile' },
   { id: 'av', label: 'Audio & video' },
   { id: 'keybinds', label: 'Keybinds' },
+  { id: 'notifications', label: 'Notifications', available: hasNativeNotifications },
   { id: 'app', label: 'App', available: hasPrefs },
   { id: 'members', label: 'Members' },
   { id: 'server', label: 'Server' },
@@ -64,6 +68,7 @@ export function SettingsModal() {
             </section>
           )}
           {tab === 'keybinds' && <KeybindsSection />}
+          {tab === 'notifications' && hasNativeNotifications() && <NotificationsSection />}
           {tab === 'app' && hasPrefs() && <AppSection />}
           {tab === 'members' && <MembersSection />}
           {tab === 'server' && <ServerSection onDone={close} />}
@@ -386,6 +391,93 @@ function nativeCapabilitiesLine(caps: NativeShareCapabilities | null): string {
   if (!caps.available) return `Native capture isn't available on this PC: ${caps.reason ?? 'unknown reason'}. Streams use Chromium.`
   const encoder = caps.encoder ?? 'the hardware encoder'
   return caps.adapter ? `Streams with ${encoder} on ${caps.adapter}.` : `Streams with ${encoder}.`
+}
+
+const NOTIFY_LEVELS: { id: NotifyLevel; label: string }[] = [
+  { id: 'all', label: 'All messages' },
+  { id: 'mentions', label: 'Only mentions' },
+  { id: 'off', label: 'Off' },
+]
+
+/** Stored in renderer localStorage (lib/notify.ts): every notification decision is made in the renderer. */
+function NotificationsSection() {
+  const prefs = useNotifyPrefs()
+  const soundEffects = useDevicePrefs((s) => s.soundEffects)
+  const flashLabel = window.nexo.platform === 'darwin' ? 'Bounce the Dock icon when you’re mentioned' : 'Flash the taskbar when you’re mentioned'
+  return (
+    <section>
+      <h3 className="settings-heading">Notifications</h3>
+      <div className="toggle-row" style={{ cursor: 'default' }}>
+        <span className="toggle-text">
+          <span id="notify-level-label">Desktop notifications</span>
+          <span className="muted small">
+            For messages in channels you're not looking at, or while Nexo is in the background or in the tray. A
+            mention is a message with your @name, @everyone, or a reply to you.
+          </span>
+        </span>
+        <div className="vx-seg" role="radiogroup" aria-labelledby="notify-level-label">
+          {NOTIFY_LEVELS.map((l) => (
+            <button
+              key={l.id}
+              type="button"
+              role="radio"
+              aria-checked={prefs.desktop === l.id}
+              className={`vx-seg-btn ${prefs.desktop === l.id ? 'is-active' : ''}`}
+              onClick={() => setNotifyPrefs({ desktop: l.id })}
+            >
+              {l.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <label className="toggle-row">
+        <span className="toggle-text">
+          <span>Notification sound</span>
+          <span className="muted small">
+            A soft sound with each notification, a brighter one when you're mentioned. Only you hear them.
+            {!soundEffects && <strong> Sound effects are off (Audio & video), so these are silent too.</strong>}
+          </span>
+        </span>
+        <input
+          type="checkbox"
+          role="switch"
+          className="switch"
+          checked={prefs.sound}
+          disabled={prefs.desktop === 'off'}
+          onChange={(e) => setNotifyPrefs({ sound: e.target.checked })}
+        />
+      </label>
+      <label className="toggle-row">
+        <span className="toggle-text">
+          <span>{flashLabel}</span>
+          <span className="muted small">Only while Nexo isn't the focused window, until you come back to it.</span>
+        </span>
+        <input
+          type="checkbox"
+          role="switch"
+          className="switch"
+          checked={prefs.flash}
+          onChange={(e) => setNotifyPrefs({ flash: e.target.checked })}
+        />
+      </label>
+      <div className="settings-actions-row">
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm"
+          onClick={() =>
+            window.nexo.notifications.show({
+              channelId: 'nexo-test',
+              title: 'Nexo',
+              body: 'Notifications are working. Unread mentions also show on the taskbar and the tray icon.',
+              icon: null,
+            })
+          }
+        >
+          Send a test notification
+        </button>
+      </div>
+    </section>
+  )
 }
 
 function AppSection() {

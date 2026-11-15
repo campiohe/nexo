@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { User } from '@shared/protocol'
+import type { PresenceStatus, User } from '@shared/protocol'
 import { initials, inkOn } from '../lib/colors'
 import { avatarUrl } from '../lib/avatar'
 import { useApp } from '../store/app'
@@ -10,12 +10,14 @@ interface AvatarProps {
   size?: number
   /** Show a presence dot: true = online, false = offline, undefined = no dot. */
   online?: boolean
+  /** With `online`: idle (yellow) / do not disturb (red) instead of the plain online dot. */
+  status?: PresenceStatus
   className?: string
   /** Show this image instead of the user's picture (e.g. a local preview). */
   src?: string | null
 }
 
-export function Avatar({ user, size = 32, online, className, src }: AvatarProps) {
+export function Avatar({ user, size = 32, online, status, className, src }: AvatarProps) {
   const serverUrl = useApp((s) => s.serverUrl)
   const url = src ?? avatarUrl(serverUrl, user)
   // Remember which URL failed so a new version (or a fixed server) is tried again.
@@ -42,7 +44,11 @@ export function Avatar({ user, size = 32, online, className, src }: AvatarProps)
       ) : (
         initials(name)
       )}
-      {online !== undefined && <span className={`avatar-presence ${online ? 'is-online' : 'is-offline'}`} />}
+      {online !== undefined && (
+        <span
+          className={`avatar-presence ${online ? `is-online${status && status !== 'online' ? ` is-${status}` : ''}` : 'is-offline'}`}
+        />
+      )}
     </span>
   )
 }

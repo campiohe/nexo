@@ -10,6 +10,7 @@ import { getPrefs, installPrefs } from './prefs'
 import { installHotkeys } from './hotkeys'
 import { installMainLog, logLine } from './log'
 import { installNativeShare, releaseNativeShare } from './native-media'
+import { closeAllNotifications, installNotifications } from './notifications'
 import { installSecrets } from './secrets'
 import { installSecurity, isAppUrl, openExternalSafe, rendererEntry } from './security'
 import { destroyTray, hasTray, installTray, maybeShowTrayHint, setTrayUpdateReady } from './tray'
@@ -204,7 +205,11 @@ if (!app.requestSingleInstanceLock()) {
   app.on('before-quit', () => {
     isQuitting = true
   })
-  app.on('will-quit', destroyTray)
+  app.on('will-quit', () => {
+    destroyTray()
+    // Their click would start Nexo again without the channel: take them out of the Action Center.
+    closeAllNotifications()
+  })
 
   void app.whenReady().then(() => {
     installSecurity()
@@ -232,6 +237,7 @@ if (!app.requestSingleInstanceLock()) {
 
     mainWindow = createMainWindow()
     installTray({ getWindow: () => mainWindow, showWindow: focusMainWindow, installUpdate })
+    installNotifications({ getWindow: () => mainWindow, showWindow: focusMainWindow })
 
     // macOS: clicking the Dock icon re-shows the window (hidden to the tray or closed).
     app.on('activate', focusMainWindow)

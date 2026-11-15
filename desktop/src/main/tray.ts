@@ -38,11 +38,51 @@ let voice: VoiceState = { inVoice: false, channelName: null, muted: false, deafe
 /** Version of a downloaded update waiting for a restart (null: none). */
 let updateReady: string | null = null
 
+/** Unread mentions (lib/notify.ts in the renderer): the tray icon gets a red dot and the tooltip says so. */
+let mentions = 0
+
+/** The red of the unread-mention dot (same as the renderer's mention badge). */
+const DOT = { r: 0xf2, g: 0x3f, b: 0x43 }
+
+/**
+ * Paints the unread dot on a square icon: a red circle in the bottom-right corner with a transparent ring
+ * around it, so it reads on any taskbar colour. Works on the raw bitmap (BGRA, premultiplied alpha) since
+ * nativeImage can't draw; edges are anti-aliased by pixel coverage.
+ */
+function withDot(img: NativeImage): NativeImage {
+  const { width, height } = img.getSize()
+  if (!width || !height) return img
+  const px = Buffer.from(img.toBitmap())
+  if (px.length < width * height * 4) return img
+  const r = width * 0.27
+  const ring = r + Math.max(1, width * 0.07)
+  const cx = width - r - 0.5
+  const cy = height - r - 0.5
+  const clamp = (v: number): number => Math.min(1, Math.max(0, v))
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const d = Math.hypot(x - cx, y - cy)
+      if (d > ring + 1) continue
+      const i = (y * width + x) * 4
+      const erase = clamp(ring - d + 0.5)
+      const cover = clamp(r - d + 0.5)
+      for (let c = 0; c < 4; c++) px[i + c] = Math.round(px[i + c] * (1 - erase))
+      // Premultiplied "over" with an opaque colour: dst = src * a + dst * (1 - a).
+      const src = [DOT.b, DOT.g, DOT.r, 255]
+      for (let c = 0; c < 4; c++) px[i + c] = Math.round(src[c] * cover + px[i + c] * (1 - cover))
+    }
+  }
+  return nativeImage.createFromBitmap(px, { width, height })
+}
+
 /** icon.png (1024 px) scaled down; @1x/@1.5x/@2x representations so the OS picks a crisp one for its DPI. */
-function trayImage(): NativeImage {
+function trayImage(dot = false): NativeImage {
   const src = nativeImage.createFromPath(icon)
   if (src.isEmpty()) return src
-  const scaled = (px: number): NativeImage => src.resize({ width: px, height: px, quality: 'best' })
+  const scaled = (px: number): NativeImage => {
+    const img = src.resize({ width: px, height: px, quality: 'best' })
+    return dot ? withDot(img) : img
+  }
   // Linux status-notifier hosts scale the image to their panel size themselves (usually 22–24 px).
   if (platform === 'linux') return scaled(32)
   // Windows: 16 px at 100 % DPI; macOS: a 16 pt full-colour icon (the logo is a coloured tile, so it isn't
@@ -54,10 +94,11 @@ function trayImage(): NativeImage {
 }
 
 function tooltip(): string {
-  if (!voice.inVoice) return 'Nexo'
+  const unread = mentions > 0 ? ` · ${mentions} unread mention${mentions === 1 ? '' : 's'}` : ''
+  if (!voice.inVoice) return `Nexo${unread}`
   const where = voice.channelName ? `in ${voice.channelName}` : 'in voice'
   const flag = voice.deafened ? ' (deafened)' : voice.muted ? ' (muted)' : ''
-  return `Nexo — ${where}${flag}`
+  return `Nexo — ${where}${flag}${unread}`
 }
 
 function sendAction(action: TrayAction): void {
@@ -120,7 +161,7 @@ export function installTray(d: TrayDeps): boolean {
     rebuild()
   })
   try {
-    tray = new Tray(trayImage())
+    tray = new Tray(trayImage(mentions > 0))
   } catch (err) {
     console.warn('[nexo] could not create the tray icon:', err)
     tray = null
@@ -130,6 +171,17 @@ export function installTray(d: TrayDeps): boolean {
   if (platform !== 'darwin') tray.on('click', () => deps?.showWindow())
   rebuild()
   return true
+}
+
+/** Unread mentions over all channels: a red dot on the tray icon while there are any (0 removes it). */
+export function setTrayMentions(count: number): void {
+  const next = Math.max(0, Math.floor(count))
+  if (next === mentions) return
+  const dotChanged = next > 0 !== mentions > 0
+  mentions = next
+  if (!tray || tray.isDestroyed()) return
+  if (dotChanged) tray.setImage(trayImage(mentions > 0))
+  tray.setToolTip(tooltip())
 }
 
 /** Shows or hides the "Restart to update" item (version of the downloaded update, or null). */
