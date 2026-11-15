@@ -11,7 +11,9 @@ import type {
   ClientToServerEvents,
   Presence,
   PresenceStatus,
+  PluginId,
   Role,
+  ServerPlugins,
   ServerToClientEvents,
   User,
   VoiceState,
@@ -32,6 +34,7 @@ import {
   STATUS_TEXT_MAX,
 } from '../../shared/protocol.ts'
 import { MAX_PINS_PER_CHANNEL, SEARCH_QUERY_MAX } from '../../shared/protocol.ts'
+import { DEFAULT_PLUGINS } from '../../shared/protocol.ts'
 import { streamIdentity } from '../../shared/stream.ts'
 import { loadConfig, type Config } from './config.ts'
 import { isUniqueViolation, openDb, searchWords } from './db.ts'
@@ -43,6 +46,7 @@ import { safeEqual } from './http.ts'
 import { normalizeDisplayText, truncate } from './text.ts'
 import { createEmbedRoutes } from './embeds.ts'
 import { createSoundRoutes } from './sounds.ts'
+import { createMusic, MUSIC_ERRORS, type MusicTimers } from './music.ts'
 
 interface SocketData {
   user: User
@@ -97,6 +101,16 @@ export interface StartOptions extends Partial<Omit<Config, 'livekit'>> {
   soundUploadsPerMinute?: number
   /** Minimum ms between two `sound:play` from the same user. Default: SOUND_COOLDOWN_MS. */
   soundCooldownMs?: number
+  /** Server clock (ms epoch) for `time:now` and music timing. Default: Date.now. */
+  now?: () => number
+  /** `music:add` + `music:control` requests per user per window. Default: LIMITS.musicControlsPerWindow / musicWindowMs. */
+  musicLimit?: { count: number; windowMs: number }
+  /** Music: how long after a track's end the queue advances. Default: MUSIC_LIMITS.advanceGraceMs (music.ts). */
+  musicAdvanceGraceMs?: number
+  /** Music: how long a session survives its voice channel being empty. Default: MUSIC_IDLE_CLEAR_MS. */
+  musicIdleClearMs?: number
+  /** Music: the timers of the state machine (tests inject fake ones). Default: setTimeout/clearTimeout. */
+  musicTimers?: MusicTimers
 }
 
 export interface NexoInstance {
@@ -170,6 +184,9 @@ export const LIMITS = {
   embedTimeoutMs: 4000,
   /** Soundboard uploads per user per minute. */
   soundUploadsPerMinute: 10,
+  /** `music:add` + `music:control` requests per user (all sockets) in any window of musicWindowMs. */
+  musicControlsPerWindow: 20,
+  musicWindowMs: 10_000,
 } as const
 
 export const HANDSHAKE_ERRORS = {
@@ -250,6 +267,16 @@ export const SOUND_ERRORS = {
   notInVoice: 'Join a voice channel to play sounds',
   cooldown: 'Wait a moment before playing another sound',
 } as const
+
+/** Ack errors of `plugins:set`. */
+export const PLUGIN_ERRORS = {
+  notAdmin: 'Only admins can change plugins',
+  unknown: 'Unknown plugin',
+  invalid: 'Invalid plugin setting',
+} as const
+
+/** Ack errors of `music:add` and `music:control`. */
+export { MUSIC_ERRORS } from './music.ts'
 
 /** Ack errors of `profile:update`. */
 export const PROFILE_ERRORS = {
@@ -392,6 +419,11 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
     embedLookupsPerMinute = LIMITS.embedLookupsPerMinute,
     soundUploadsPerMinute = LIMITS.soundUploadsPerMinute,
     soundCooldownMs = SOUND_COOLDOWN_MS,
+    now = Date.now,
+    musicLimit = { count: LIMITS.musicControlsPerWindow, windowMs: LIMITS.musicWindowMs },
+    musicAdvanceGraceMs,
+    musicIdleClearMs,
+    musicTimers,
     ...rest
   } = options
   const config: Config = { ...base, ...rest, livekit: { ...base.livekit, ...livekit } }
@@ -529,7 +561,11 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
   const userRoom = (userId: string) => `user:${userId}`
   const onlineIds = () => [...connections.keys()]
   const voiceList = (): VoiceState[] => [...voiceStates.values()].map(({ socketId: _s, ...v }) => v)
-  const broadcastVoice = () => io.emit('voice:states', voiceList())
+  /** Every voice state change ends here: music sessions of channels that emptied pause (and later clear). */
+  const broadcastVoice = () => {
+    io.emit('voice:states', voiceList())
+    music.setOccupied(new Set([...voiceStates.values()].flatMap((v) => (v.channelId ? [v.channelId] : []))))
+  }
   const broadcastPresence = () => io.emit('presence', onlineIds())
 
   /** `${senderId}>${targetId}` -> time of the last `voice:nudge` (server-wide: shared by all of a sender's sockets). */
@@ -551,6 +587,23 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
   const presenceRate = rateLimiter(presenceLimit)
   /** `message:search` requests per user (server-wide: shared by all of a user's sockets). */
   const searchRate = rateLimiter(searchLimit)
+  /** `music:add` + `music:control` requests per user (server-wide). */
+  const musicRate = rateLimiter(musicLimit)
+
+  // ---------- plugins & music (docs/SPEC.md §5.4) ----------
+
+  /** Built-in plugins the admins turned on (persisted in meta.plugins). */
+  let plugins: ServerPlugins = db.plugins.get()
+  const PLUGIN_IDS = Object.keys(DEFAULT_PLUGINS) as PluginId[]
+
+  /** Per-voice-channel "listen together" state (memory only). Every change is broadcast to everyone. */
+  const music = createMusic({
+    onState: (state) => io.emit('music:state', state),
+    now,
+    timers: musicTimers,
+    advanceGraceMs: musicAdvanceGraceMs,
+    idleClearMs: musicIdleClearMs,
+  })
 
   /**
    * Presence is kept per socket (docs/SPEC.md §5.1): userId -> socketId -> what that connection reported
@@ -621,6 +674,7 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
     pruneNudges(Date.now(), target.id)
     reactionRate.forget(target.id)
     searchRate.forget(target.id)
+    musicRate.forget(target.id)
     // No presence:changed: user:removed drops everything clients know about the account (and its sockets'
     // disconnects below then find nothing left to recompute).
     socketPresences.delete(target.id)
@@ -758,6 +812,8 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
       accessRequests: requestsFor(me()),
       presence: Object.fromEntries([...presences].filter(([id]) => connections.has(id))),
       sounds: db.sounds.all(),
+      plugins,
+      music: music.active(),
     })
     // The token is delivered exactly once.
     delete socket.data.newToken
@@ -797,6 +853,8 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
       const existing = isObj(p) && isStr(p.channelId) ? channels.get(p.channelId) : undefined
       if (!existing) return fail(ack, 'Channel not found')
       attachmentRoutes.removeFiles(channels.delete(existing.id))
+      // Its music session ends (before broadcastVoice, which would only pause it).
+      music.drop(existing.id)
       // Everyone in a deleted voice channel is out of voice.
       let voiceChanged = false
       for (const [uid, v] of voiceStates) {
@@ -1114,6 +1172,52 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
       ok(ack, null)
     }))
 
+    // --- plugins & music ---
+
+    socket.on('plugins:set', guard('plugins:set', (p, ack) => {
+      if (!isAdmin()) return fail(ack, PLUGIN_ERRORS.notAdmin)
+      if (!isObj(p) || !isStr(p.plugin) || !(PLUGIN_IDS as string[]).includes(p.plugin)) return fail(ack, PLUGIN_ERRORS.unknown)
+      if (typeof p.enabled !== 'boolean') return fail(ack, PLUGIN_ERRORS.invalid)
+      const plugin = p.plugin as PluginId
+      if (plugins[plugin] === p.enabled) return ok(ack, plugins)
+      plugins = { ...plugins, [plugin]: p.enabled }
+      db.plugins.set(plugins)
+      io.emit('plugins:changed', plugins)
+      // Turning Music off ends every session (their empty states are broadcast).
+      if (plugin === 'music' && !p.enabled) music.clearAll()
+      log(`[nexo] ${me().name} turned the ${plugin} plugin ${p.enabled ? 'on' : 'off'}`)
+      ok(ack, plugins)
+    }))
+
+    socket.on('time:now', guard('time:now', (_p, ack) => ok(ack, { now: now() })))
+
+    /** The voice channel of a music request, or the ack error (plugin on, voice channel, caller in it, rate). */
+    function musicChannel(p: unknown): { channelId: string } | { error: string } {
+      if (!plugins.music) return { error: MUSIC_ERRORS.pluginOff }
+      const channel = isObj(p) && isStr(p.channelId) ? channels.get(p.channelId) : undefined
+      if (!channel || channel.type !== 'voice') return { error: MUSIC_ERRORS.channelNotFound }
+      if (voiceStates.get(userId)?.channelId !== channel.id) return { error: MUSIC_ERRORS.notInChannel }
+      if (!musicRate.allow(userId, now())) return { error: MUSIC_ERRORS.slowDown }
+      return { channelId: channel.id }
+    }
+
+    socket.on('music:add', guard('music:add', (p, ack) => {
+      const target = musicChannel(p)
+      if ('error' in target) return fail(ack, target.error)
+      const { tracks, next } = p as { tracks?: unknown; next?: unknown }
+      const result = music.add(target.channelId, userId, tracks, next === true)
+      if (typeof result === 'string') return fail(ack, result)
+      ok(ack, result)
+    }))
+
+    socket.on('music:control', guard('music:control', (p, ack) => {
+      const target = musicChannel(p)
+      if ('error' in target) return fail(ack, target.error)
+      const result = music.control(target.channelId, p as Record<string, unknown>)
+      if (typeof result === 'string') return fail(ack, result)
+      ok(ack, result)
+    }))
+
     // --- profile ---
 
     socket.on('profile:update', guard('profile:update', (p, ack) => {
@@ -1282,6 +1386,7 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
       embedRoutes.close()
       soundRoutes.close()
       lastSoundPlays.clear()
+      music.close()
       attachmentRoutes.close()
       accountRoutes.close()
       io.disconnectSockets(true)
