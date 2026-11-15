@@ -4,7 +4,8 @@
 // decoded once and kept as a PNG blob: URL shared by every Avatar showing it.
 //
 // Cache: entries in use are never dropped; up to MAX_IDLE unused ones are kept (least recently used
-// evicted first, revoking their blob: URL).
+// evicted first, revoking their blob: URL). A failure isn't permanent: a failed entry is dropped once
+// unused (the next Avatar showing it tries again) and retried after RETRY_MS while in use.
 import { useCallback, useSyncExternalStore } from 'react'
 
 export interface StillFrame {
@@ -18,9 +19,13 @@ interface Entry {
   snapshot: StillFrame
   refs: number
   listeners: Set<() => void>
+  /** When the last attempt failed (0 = it didn't, or one is running). */
+  failedAt: number
 }
 
 const MAX_IDLE = 48
+/** A failed first frame is tried again after this long (e.g. the server was briefly unreachable). */
+const RETRY_MS = 60_000
 const NONE: StillFrame = { url: null, failed: false }
 /** Map order = least recently released first. */
 const cache = new Map<string, Entry>()
@@ -41,25 +46,35 @@ async function firstFrame(src: string): Promise<string> {
   }
 }
 
-function entryFor(src: string): Entry {
-  let entry = cache.get(src)
-  if (entry) return entry
-  const created: Entry = { snapshot: NONE, refs: 0, listeners: new Set() }
-  cache.set(src, created)
+function load(src: string, entry: Entry): void {
+  entry.failedAt = 0
   const settle = (snapshot: StillFrame) => {
-    if (cache.get(src) !== created) {
+    if (cache.get(src) !== entry) {
       // Evicted while loading.
       if (snapshot.url) URL.revokeObjectURL(snapshot.url)
       return
     }
-    created.snapshot = snapshot
-    created.listeners.forEach((l) => l())
+    if (snapshot.failed) entry.failedAt = Date.now()
+    // A retry that fails again keeps the same snapshot object (no re-render).
+    if (snapshot.failed && entry.snapshot.failed) return
+    entry.snapshot = snapshot
+    entry.listeners.forEach((l) => l())
   }
   firstFrame(src).then(
     (url) => settle({ url, failed: false }),
     () => settle({ url: null, failed: true }),
   )
-  entry = created
+}
+
+function entryFor(src: string): Entry {
+  let entry = cache.get(src)
+  if (entry) {
+    if (entry.failedAt && Date.now() - entry.failedAt >= RETRY_MS) load(src, entry)
+    return entry
+  }
+  entry = { snapshot: NONE, refs: 0, listeners: new Set(), failedAt: 0 }
+  cache.set(src, entry)
+  load(src, entry)
   return entry
 }
 
@@ -83,9 +98,9 @@ function subscribe(src: string, listener: () => void): () => void {
     entry.listeners.delete(listener)
     entry.refs--
     if (entry.refs === 0 && cache.get(src) === entry) {
-      // Most recently used goes last.
+      // Most recently used goes last; a failure is forgotten (tried again next time).
       cache.delete(src)
-      cache.set(src, entry)
+      if (!entry.snapshot.failed) cache.set(src, entry)
       evictIdle()
     }
   }

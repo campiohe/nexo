@@ -2,7 +2,7 @@
 // Animations (GIF / animated WebP / APNG) play while cropping and are saved as an animated GIF.
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react'
 import { AVATAR_ANIMATED_MAX_BYTES } from '@shared/protocol'
-import { encodeAnimatedAvatar } from '../lib/gifAvatar'
+import { encodeAnimatedAvatar, isAbort } from '../lib/gifAvatar'
 import { drawCrop, encodeAvatar, type CropRect, type LoadedImage } from '../lib/imageCrop'
 import { toast } from '../lib/toast'
 import { Modal } from './Modal'
@@ -48,6 +48,9 @@ export function AvatarCropDialog({ image, onCancel, onConfirm }: Props) {
   const [busy, setBusy] = useState(false)
   /** Animated pictures: encoding progress (0..100) while preparing the GIF, null otherwise. */
   const [prep, setPrep] = useState<{ percent: number; simplifying: boolean } | null>(null)
+  /** Aborts the animation encode in progress (Cancel, or the dialog closing). */
+  const encodeAbort = useRef<AbortController | null>(null)
+  useEffect(() => () => encodeAbort.current?.abort(), [])
   const animated = !!image.animatedType
   const viewportRef = useRef<HTMLDivElement>(null)
   const previewRefs = useRef<(HTMLCanvasElement | null)[]>([])
@@ -147,9 +150,16 @@ export function AvatarCropDialog({ image, onCancel, onConfirm }: Props) {
       let picture: Blob
       if (image.animatedType) {
         setPrep({ percent: 0, simplifying: false })
-        const result = await encodeAnimatedAvatar(image.file, image.animatedType, crop, width, (p) =>
-          setPrep({ percent: Math.round(p.fraction * 100), simplifying: p.simplifying }),
+        const abort = (encodeAbort.current = new AbortController())
+        const result = await encodeAnimatedAvatar(
+          image.file,
+          image.animatedType,
+          crop,
+          width,
+          (p) => setPrep({ percent: Math.round(p.fraction * 100), simplifying: p.simplifying }),
+          abort.signal,
         )
+        encodeAbort.current = null
         setPrep(null)
         if (result.simplified.length > 0) {
           const limit = `${Math.round(AVATAR_ANIMATED_MAX_BYTES / (1024 * 1024))} MB`
@@ -161,22 +171,32 @@ export function AvatarCropDialog({ image, onCancel, onConfirm }: Props) {
       }
       await onConfirm(picture)
     } catch (err) {
+      encodeAbort.current = null
+      // Cancelled while preparing: the dialog is closing, nothing to report.
+      if (isAbort(err)) return
       toast(err, 'error')
       setPrep(null)
       setBusy(false)
     }
   }
 
+  /** Cancel works while the animation is being prepared (it stops that), not while uploading. */
+  const cancel = () => {
+    if (busy && !prep) return
+    encodeAbort.current?.abort()
+    onCancel()
+  }
+
   const s = base * view.zoom
   return (
     <Modal
       title="Crop your picture"
-      onClose={() => !busy && onCancel()}
+      onClose={cancel}
       width={520}
       className="crop-modal"
       footer={
         <>
-          <button className="btn btn-ghost" onClick={onCancel} disabled={busy}>
+          <button className="btn btn-ghost" onClick={cancel} disabled={busy && !prep}>
             Cancel
           </button>
           <button className="btn btn-primary" onClick={save} disabled={busy} data-autofocus>

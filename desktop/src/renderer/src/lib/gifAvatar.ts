@@ -66,9 +66,20 @@ export interface AnimatedProgress {
 
 const nextTask = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
 
+/** The encoder worker sent nothing (no progress, no result) for this long: it is presumed dead. */
+const WORKER_STALL_MS = 30_000
+const STALLED = 'Preparing the animation stopped responding. Try again, or pick a shorter or smaller animation.'
+
+const abortError = (signal: AbortSignal): unknown => signal.reason ?? new DOMException('Aborted', 'AbortError')
+
+/** Whether `err` comes from aborting (the user cancelled): nothing to report then. */
+export const isAbort = (err: unknown): boolean => err instanceof DOMException && err.name === 'AbortError'
+
 /**
  * Decode `file` (an animation, see animatedTypeOf), crop `crop` (in the source's pixels, as shown by the
  * crop dialog, whose picture is `sourceWidth` wide) out of every frame and encode the GIF to upload.
+ * Aborting `signal` stops it (rejects with an AbortError, see isAbort). Fails with a clear error when the
+ * encoder worker stops responding for WORKER_STALL_MS.
  */
 export async function encodeAnimatedAvatar(
   file: Blob,
@@ -76,7 +87,9 @@ export async function encodeAnimatedAvatar(
   crop: CropRect,
   sourceWidth: number,
   onProgress?: (p: AnimatedProgress) => void,
+  signal?: AbortSignal,
 ): Promise<AnimatedAvatar> {
+  if (signal?.aborted) throw abortError(signal)
   const S = AVATAR_ANIMATED_SIZE
   const decoder = new ImageDecoder({ data: file.stream(), type, preferAnimation: true })
   const simplified: string[] = []
@@ -102,6 +115,7 @@ export async function encodeAnimatedAvatar(
     let last = performance.now()
     let i = 0
     for (; i < total && elapsed < ANIMATED_MAX_MS; i++) {
+      if (signal?.aborted) throw abortError(signal)
       const { image } = await decoder.decode({ frameIndex: i, completeFramesOnly: true })
       try {
         const us = image.duration
@@ -134,6 +148,7 @@ export async function encodeAnimatedAvatar(
     }
     if (i < total) simplified.push(`shortened to ${ANIMATED_MAX_MS / 1000} seconds`)
   } catch (err) {
+    if (isAbort(err) || (signal?.aborted && err === signal.reason)) throw err
     if (err instanceof Error && err.message.startsWith("Couldn't")) throw err
     throw new Error("Couldn't read that animation")
   } finally {
@@ -146,8 +161,10 @@ export async function encodeAnimatedAvatar(
   }
   if (frames.length < 2) throw new Error("Couldn't read that animation")
 
-  const result = await encodeGif(frames, (fraction, simplifying) =>
-    onProgress?.({ fraction: 0.35 + 0.65 * fraction, simplifying }),
+  const result = await encodeGif(
+    frames,
+    (fraction, simplifying) => onProgress?.({ fraction: 0.35 + 0.65 * fraction, simplifying }),
+    signal,
   )
   if (merged || result.step > 1) simplified.push('lower frame rate')
   if (result.colors < 256) simplified.push('fewer colours')
@@ -156,19 +173,32 @@ export async function encodeAnimatedAvatar(
 
 /**
  * Encode in a worker; on the main thread (with yields) if the worker can't start or crashes. The frames are
- * copied, not transferred, so that fallback still has them (~12 MB, a few ms).
+ * copied, not transferred, so that fallback still has them (~12 MB, a few ms). A worker that goes silent
+ * (no progress for WORKER_STALL_MS, e.g. killed without an error event) fails the encode with a clear
+ * error instead of leaving the caller waiting forever; aborting `signal` terminates it.
  */
 async function encodeGif(
   frames: RgbaFrame[],
   onProgress: (fraction: number, simplifying: boolean) => void,
+  signal?: AbortSignal,
 ): Promise<Omit<FitResult, 'bytes'> & { bytes: Uint8Array }> {
   const opts = { size: AVATAR_ANIMATED_SIZE, maxBytes: AVATAR_ANIMATED_MAX_BYTES }
   let worker: Worker | null = null
+  let watchdog: ReturnType<typeof setTimeout> | undefined
+  let onAbort: (() => void) | undefined
   try {
     worker = new GifWorker()
     const w = worker
     const result = await new Promise<FitResult | null>((resolve, reject) => {
+      const arm = () => {
+        clearTimeout(watchdog)
+        watchdog = setTimeout(() => reject(new Error(STALLED)), WORKER_STALL_MS)
+      }
+      onAbort = () => reject(abortError(signal!))
+      if (signal?.aborted) return onAbort()
+      signal?.addEventListener('abort', onAbort, { once: true })
       w.onmessage = (e: MessageEvent<GifWorkerMessage>) => {
+        arm()
         const msg = e.data
         if (msg.kind === 'progress') onProgress(msg.fraction, msg.simplifying)
         else if (msg.kind === 'error') reject(new Error(msg.message))
@@ -183,13 +213,17 @@ async function encodeGif(
         ...opts,
       }
       w.postMessage(request)
+      arm()
     })
     if (result) return result
   } catch (err) {
-    // A message from the encoder (e.g. "too detailed") is the answer; anything else means no worker.
-    if (worker && err instanceof Error) throw err
+    // A message from the encoder (e.g. "too detailed"), a stall or an abort is the answer; anything else
+    // means no worker.
+    if (worker && (err instanceof Error || isAbort(err) || signal?.aborted)) throw err
   } finally {
+    clearTimeout(watchdog)
+    if (onAbort) signal?.removeEventListener('abort', onAbort)
     worker?.terminate()
   }
-  return encodeFittedGif(frames, { ...opts, onProgress })
+  return encodeFittedGif(frames, { ...opts, onProgress, signal })
 }

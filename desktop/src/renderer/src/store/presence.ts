@@ -3,7 +3,10 @@
 // lib/presenceSync.ts; net/socket.ts feeds the server events in here.
 //
 // Your own presence is shown from this device's state (instant, and works on servers without presence),
-// everyone else's from the server. Older servers send no presence at all: everyone is plain online then.
+// everyone else's from the server (the aggregate over their devices). The server's aggregate for yourself
+// lands in `byUser` too but is never shown nor adopted: a choice made here stays here (per device), and what
+// others see is the combination (Do not disturb anywhere wins). Older servers send no presence at all:
+// everyone is plain online then.
 import { create } from 'zustand'
 import type { Activity, Presence, PresenceStatus } from '@shared/protocol'
 import { DEFAULT_PRESENCE } from '@shared/protocol'

@@ -2,28 +2,24 @@
 // auto-idle and the detected game from the main process (window.nexo.presence), and voice state.
 // Imported once for its side effects by App.tsx (after voice/session exists, which this module needs).
 //
-// - Only changes are sent (the server rate-limits to 20 per minute); after every (re)connect the full
-//   presence is sent again. The activity is only included when this device has (or had) one, so a second
-//   device without a game doesn't wipe the first one's "Playing X" ("latest wins" on the server).
+// - The server keeps presence per connection and shows others the aggregate over your devices (dnd > online
+//   > idle; the most recently started activity), so this device only ever reports its OWN state: the
+//   status picked here (persisted per device), auto-idle, and the game detected here. It never adopts the
+//   aggregate (`presence:changed` / bootstrap for yourself) as its own choice.
+// - Only changes are sent (the server rate-limits per socket and applies excess updates late, never drops
+//   them); after every (re)connect the full state is sent again (a new connection starts as plain online).
 // - Auto-idle: system idle for 10 minutes, unless you're talking in voice (unmuted) or a detected game is
 //   running (controller input doesn't count as input for the OS). Never overrides Do Not Disturb.
-// - Two devices: a status set on another device (online / dnd) arrives as `presence:changed` for yourself
-//   and is adopted here. An idle from another device is answered with this device's status when you're
-//   active here, so you don't look away while using this one.
 // - Older servers ignore `presence:update` (and send no presence): everything just stays local.
 import type { Activity, PresenceStatus, User } from '@shared/protocol'
-import { DEFAULT_PRESENCE } from '@shared/protocol'
 import { emit, isConnected, onConnected, request } from '../net/socket'
 import { useApp } from '../store/app'
-import { ownStatus, resetPresence, setManualStatus, useAutoIdle, usePresenceStore } from '../store/presence'
+import { ownStatus, resetPresence, useAutoIdle, usePresenceStore } from '../store/presence'
 import { useVoice } from '../voice/session'
 
 /** What the server last got from this device (null = nothing yet). */
 let sentStatus: PresenceStatus | null = null
 let sentActivity: Activity | null = null
-/** Statuses sent recently: their `presence:changed` echo isn't another device talking. */
-const recent: { status: PresenceStatus; at: number }[] = []
-const ECHO_WINDOW_MS = 4000
 
 const sameActivity = (a: Activity | null, b: Activity | null) =>
   a === b || (!!a && !!b && a.name === b.name && a.startedAt === b.startedAt)
@@ -45,31 +41,11 @@ function send(full: boolean): void {
   const activity = usePresenceStore.getState().activity
   const patch: { status?: PresenceStatus; activity?: Activity | null } = {}
   if (full || status !== sentStatus) patch.status = status
-  if (full ? !!activity || !!sentActivity : !sameActivity(activity, sentActivity)) patch.activity = activity
+  if (full || !sameActivity(activity, sentActivity)) patch.activity = activity
   if (patch.status === undefined && patch.activity === undefined) return
   emit('presence:update', patch)
-  if (patch.status) {
-    const now = Date.now()
-    recent.push({ status: patch.status, at: now })
-    while (recent.length && (recent.length > 8 || now - recent[0].at > ECHO_WINDOW_MS)) recent.shift()
-  }
   sentStatus = status
   sentActivity = activity
-}
-
-/** `presence:changed` for yourself that isn't the echo of what this device sent. */
-function onOwnPresenceFromServer(status: PresenceStatus): void {
-  if (status === sentStatus) return
-  const now = Date.now()
-  if (recent.some((r) => r.status === status && now - r.at <= ECHO_WINDOW_MS)) return
-  if (status === 'idle') {
-    // Another device went idle: say you're here if you are (otherwise the server already has it right).
-    if (ownStatus() !== 'idle') send(true)
-    return
-  }
-  // Online / Do not disturb picked on another device: follow it here.
-  sentStatus = status
-  setManualStatus(status)
 }
 
 /** Set (or with '' / null clear) your custom status text. Rejects with the server's error. */
@@ -104,8 +80,6 @@ offs.push(
   usePresenceStore.subscribe((s, prev) => {
     if (s.systemIdle !== prev.systemIdle || s.activity !== prev.activity) refreshAutoIdle()
     if (s.manual !== prev.manual || s.activity !== prev.activity) send(false)
-    const meId = useApp.getState().me?.id
-    if (meId && s.byUser[meId] !== prev.byUser[meId]) onOwnPresenceFromServer((s.byUser[meId] ?? DEFAULT_PRESENCE).status)
   }),
 )
 offs.push(useAutoIdle.subscribe(() => send(false)))
@@ -123,7 +97,6 @@ offs.push(
       resetPresence()
       sentStatus = null
       sentActivity = null
-      recent.length = 0
     }
   }),
 )

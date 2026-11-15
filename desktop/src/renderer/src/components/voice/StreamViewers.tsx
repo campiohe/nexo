@@ -10,11 +10,14 @@ import { EyeIcon } from './icons'
 const NO_VIEWERS: string[] = []
 
 /**
- * userIds watching `streamerId`'s stream: voice states in the streamer's channel whose `watching` lists them.
+ * userIds watching `streamerId`'s stream: voice states in the streamer's channel whose `watching` lists them,
+ * and none while the streamer isn't streaming. The server only checks the shape of `watching` (a viewer may
+ * announce before the streamer does, e.g. after a server restart), so this filter is what makes it right.
  * Use with `useShallow` (as useStreamViewers does) so the result only changes when the viewers do.
  */
 export function streamViewerIds(voice: readonly VoiceState[], streamerId: string): string[] {
-  const channelId = voice.find((v) => v.userId === streamerId)?.channelId
+  const streamer = voice.find((v) => v.userId === streamerId)
+  const channelId = streamer?.streaming ? streamer.channelId : null
   if (!channelId) return NO_VIEWERS
   const ids = voice
     .filter((v) => v.channelId === channelId && v.userId !== streamerId && v.watching?.includes(streamerId))

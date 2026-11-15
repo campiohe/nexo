@@ -11,6 +11,10 @@ import { AlertIcon, TrashIcon } from './icons'
 import { GamepadIcon } from './peopleIcons'
 import '../styles/people.css'
 
+/** The main process's message without Electron's "Error invoking remote method '…': Error: " prefix. */
+const ipcErrorMessage = (err: unknown): string =>
+  errorMessage(err).replace(/^Error invoking remote method '[^']*': (?:[A-Za-z]*Error: )?/, '')
+
 /** Needs the desktop bridge (absent in a plain browser or with an older preload). */
 export const hasActivityBridge = (): boolean => typeof window.nexo?.presence?.getState === 'function'
 
@@ -56,7 +60,7 @@ export function ActivitySection() {
       return true
     } catch (err) {
       setSettings(settings)
-      toast(err, 'error')
+      toast(ipcErrorMessage(err), 'error')
       return false
     } finally {
       setSaving(false)
@@ -180,7 +184,7 @@ function AddGame({ busy, onAdd, onCancel }: { busy: boolean; onAdd(g: CustomGame
     window.nexo.presence
       .listProcesses()
       .then(setProcesses)
-      .catch((err: unknown) => setLoadError(errorMessage(err)))
+      .catch((err: unknown) => setLoadError(ipcErrorMessage(err)))
   }
   useEffect(load, [])
 

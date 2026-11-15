@@ -96,6 +96,7 @@ function loadSettings(): ActivitySettings {
   return data
 }
 
+/** Writes the settings file; throws (a message fit for the user) when it can't, so the change isn't kept. */
 function saveSettings(data: ActivitySettings): void {
   try {
     mkdirSync(app.getPath('userData'), { recursive: true })
@@ -104,6 +105,8 @@ function saveSettings(data: ActivitySettings): void {
     renameSync(`${target}.tmp`, target)
   } catch (err) {
     console.warn('[nexo] could not save activity settings:', err)
+    const code = (err as NodeJS.ErrnoException).code
+    throw new Error(`Couldn't save the activity settings${code ? ` (${code})` : ''}`)
   }
 }
 
@@ -250,9 +253,11 @@ export function installPresence(d: PresenceDeps): void {
   ipcMain.handle(IPC.presenceSetSettings, (event, patch: unknown): ActivitySettings => {
     if (!fromApp(event)) throw new Error('forbidden')
     const changes = parsePatch(patch)
-    const data = loadSettings()
-    Object.assign(data, changes)
+    const data: ActivitySettings = { ...loadSettings(), ...changes }
+    // Throws when the file can't be written: the renderer then reverts and shows the error, and nothing
+    // here changes (the cache and detection keep the saved settings).
     saveSettings(data)
+    settingsCache = data
     applySettings(data)
     return copySettings(data)
   })

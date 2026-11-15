@@ -297,10 +297,71 @@ export function searchShortcodes(query: string, limit = 8): ShortcodeMatch[] {
 /** Characters of a shortcode (between the colons). */
 export const SHORTCODE_CHARS = /[a-z0-9_+-]/i
 const SHORTCODE_RE = /(?<![\p{L}\p{N}]):([a-z0-9_+-]{1,48}):/giu
-/** Fenced code and inline code spans: shortcodes in them are left alone. */
-const CODE_RE = /```[\s\S]*?(?:```|$)|`[^`\n]*`/g
+/**
+ * A URL like lib/messageTokens.ts finds them (`https://…`, `http://…`, `www.…`, not after a letter or
+ * digit), without its trailing-punctuation trimming: a little more is left alone, never less.
+ */
+const URL_RE = /(?<![\p{L}\p{N}])(?:https?:\/\/|www\.)[^\s<>"]+/giu
 
-/** Replaces every known `:shortcode:` outside code with its emoji (skin tone applied); unknown ones stay. */
+/** Index of the next run of exactly `len` backticks at or after `from`, or -1 (like messageTokens). */
+function backtickRunAt(text: string, from: number, len: number): number {
+  for (let j = text.indexOf('`', from); j !== -1; ) {
+    let k = j
+    while (text[k] === '`') k++
+    if (k - j === len) return j
+    j = text.indexOf('`', k)
+  }
+  return -1
+}
+
+/**
+ * [start, end) ranges where `:shortcodes:` are literal text: code and URLs. Code is a run of backticks of
+ * any length up to the next run of the same length (``` blocks included), like lib/messageTokens.ts; a
+ * backslash escapes a backtick. An unclosed ``` runs to the end (a block still being written). With
+ * `typing`, an unclosed shorter run also counts, up to the end of its line (a code span being typed).
+ */
+function literalRanges(text: string, typing: boolean): [number, number][] {
+  const out: [number, number][] = []
+  const urls = (from: number, to: number) => {
+    if (from >= to) return
+    for (const m of text.slice(from, to).matchAll(URL_RE)) out.push([from + m.index, from + m.index + m[0].length])
+  }
+  /** Run lengths known to have no closer further on (keeps this linear on runs of lone backticks). */
+  const noCloser = new Set<number>()
+  let textFrom = 0
+  for (let i = 0; i < text.length; ) {
+    const c = text[i]
+    if (c === '\\') {
+      i += 2
+      continue
+    }
+    if (c !== '`') {
+      i++
+      continue
+    }
+    let len = 1
+    while (text[i + len] === '`') len++
+    const close = noCloser.has(len) ? -1 : backtickRunAt(text, i + len, len)
+    let end: number
+    if (close !== -1) end = close + len
+    else {
+      noCloser.add(len)
+      if (len >= 3) end = text.length
+      else if (typing) end = text.indexOf('\n', i) === -1 ? text.length : text.indexOf('\n', i)
+      else {
+        i += len
+        continue
+      }
+    }
+    urls(textFrom, i)
+    out.push([i, end])
+    textFrom = i = end
+  }
+  urls(textFrom, text.length)
+  return out.sort((x, y) => x[0] - y[0])
+}
+
+/** Replaces every known `:shortcode:` outside code and URLs with its emoji (skin tone applied); unknown ones stay. */
 export function replaceShortcodes(text: string, tone = skinTone()): string {
   if (!text.includes(':')) return text
   const swap = (part: string) =>
@@ -310,21 +371,19 @@ export function replaceShortcodes(text: string, tone = skinTone()): string {
     })
   let out = ''
   let last = 0
-  for (const m of text.matchAll(CODE_RE)) {
-    out += swap(text.slice(last, m.index)) + m[0]
-    last = m.index + m[0].length
+  for (const [start, end] of literalRanges(text, false)) {
+    out += swap(text.slice(last, start)) + text.slice(start, end)
+    last = end
   }
   return out + swap(text.slice(last))
 }
 
-/** Whether `pos` is inside a ``` block or a `code span` (on its line): no shortcode magic there. */
+/**
+ * Whether `pos` is inside code (a closed or still-open backtick span or ``` block) or a URL, in text being
+ * typed: no shortcode magic there.
+ */
 export function isInCode(text: string, pos: number): boolean {
-  let fences = 0
-  for (let i = text.indexOf('```'); i !== -1 && i < pos; i = text.indexOf('```', i + 3)) fences++
-  if (fences % 2 === 1) return true
-  let ticks = 0
-  for (let i = text.lastIndexOf('\n', pos - 1) + 1; i < pos; i++) if (text[i] === '`') ticks++
-  return ticks % 2 === 1
+  return literalRanges(text, true).some(([start, end]) => pos > start && pos < end)
 }
 
 /** A `:query` being typed (at least 2 characters after the colon): `start` is the index of the colon. */
