@@ -2,8 +2,8 @@ import { DatabaseSync } from 'node:sqlite'
 import { mkdirSync } from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
-import type { Attachment, Channel, ChannelType, Message, Role, User } from '../../shared/protocol.ts'
-import { MESSAGE_PAGE_SIZE } from '../../shared/protocol.ts'
+import type { Attachment, Channel, ChannelType, Message, Reaction, ReplyPreview, Role, User } from '../../shared/protocol.ts'
+import { MAX_REACTIONS_PER_MESSAGE, MESSAGE_PAGE_SIZE, REPLY_PREVIEW_LENGTH } from '../../shared/protocol.ts'
 
 const SCHEMA = `
   PRAGMA journal_mode = WAL;
@@ -33,7 +33,14 @@ const SCHEMA = `
     channel_id  TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
     user_id     TEXT NOT NULL REFERENCES users(id),
     content     TEXT NOT NULL,
-    created_at  INTEGER NOT NULL
+    created_at  INTEGER NOT NULL,
+    -- v0.6 (added by migrate() to older databases): edits, replies, @everyone.
+    edited_at         INTEGER NULL,
+    -- The message replied to. No foreign key on purpose: when the original is deleted the reply keeps
+    -- the id (and its author, cleared when that account is removed) and shows a "deleted" preview.
+    reply_to_id       TEXT NULL,
+    reply_to_user_id  TEXT NULL,
+    mentions_everyone INTEGER NOT NULL DEFAULT 0
   );
   CREATE INDEX IF NOT EXISTS messages_by_channel ON messages (channel_id, created_at);
 
@@ -76,16 +83,64 @@ const SCHEMA = `
     PRIMARY KEY (user_id, address)
   );
   CREATE INDEX IF NOT EXISTS user_devices_by_address ON user_devices (address, last_seen_at);
+
+  -- v0.6: people a message notifies (<@userId> tokens plus the author of the replied message), in order.
+  CREATE TABLE IF NOT EXISTS message_mentions (
+    message_id  TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    PRIMARY KEY (message_id, user_id)
+  );
+  CREATE INDEX IF NOT EXISTS message_mentions_by_user ON message_mentions (user_id);
+
+  -- v0.6: reactions. emoji_position orders a message's emoji: given when an emoji is first added and shared
+  -- by all its rows, so an emoji keeps its place while anyone still has it. rowid orders the users of an emoji.
+  CREATE TABLE IF NOT EXISTS reactions (
+    message_id     TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    emoji          TEXT NOT NULL,
+    user_id        TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at     INTEGER NOT NULL,
+    emoji_position INTEGER NOT NULL,
+    PRIMARY KEY (message_id, emoji, user_id)
+  );
+  CREATE INDEX IF NOT EXISTS reactions_by_user ON reactions (user_id);
 `
 
 export type Db = ReturnType<typeof openDb>
+
+/** The new reaction list of a message (the payload of `message:reactions`). */
+export interface ReactionsUpdate {
+  messageId: string
+  channelId: string
+  reactions: Reaction[]
+}
+
+/** A row of the message query (msgCols in openDb). */
+interface MessageRow {
+  id: string
+  channelId: string
+  userId: string
+  content: string
+  createdAt: number
+  editedAt: number | null
+  mentionsEveryone: number
+  replyToId: string | null
+  replyToUserId: string | null
+  /** The replied message's id when it still exists, else null. */
+  replyFoundId: string | null
+  replyUserId: string | null
+  replyContent: string | null
+  replyHasAttachments: number
+}
 
 /**
  * Idempotent, additive migrations for databases created by older versions.
  * (New databases already get every column from SCHEMA.)
  */
 function migrate(db: DatabaseSync): void {
-  const userCols = new Set((db.prepare('PRAGMA table_info(users)').all() as { name: string }[]).map((c) => c.name))
+  const columns = (table: string) =>
+    new Set((db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((c) => c.name))
+  const userCols = columns('users')
+  const msgCols = columns('messages')
   db.exec('BEGIN')
   try {
     // v0.2: profile pictures. NULL = no picture; otherwise the picture's version token.
@@ -94,6 +149,16 @@ function migrate(db: DatabaseSync): void {
     if (!userCols.has('role')) {
       db.exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('owner', 'admin', 'member'))")
     }
+    // v0.6: edits, replies and @everyone (message_mentions and reactions are new tables, created by SCHEMA).
+    if (!msgCols.has('edited_at')) db.exec('ALTER TABLE messages ADD COLUMN edited_at INTEGER NULL')
+    if (!msgCols.has('reply_to_id')) db.exec('ALTER TABLE messages ADD COLUMN reply_to_id TEXT NULL')
+    if (!msgCols.has('reply_to_user_id')) db.exec('ALTER TABLE messages ADD COLUMN reply_to_user_id TEXT NULL')
+    if (!msgCols.has('mentions_everyone')) {
+      db.exec('ALTER TABLE messages ADD COLUMN mentions_everyone INTEGER NOT NULL DEFAULT 0')
+    }
+    // Here rather than in SCHEMA: the column may only exist after the ALTER above.
+    db.exec(`CREATE INDEX IF NOT EXISTS messages_mentioning_everyone ON messages (channel_id, created_at)
+             WHERE mentions_everyone = 1`)
     // Exactly one owner: the oldest account, when there is none yet.
     db.exec(`
       UPDATE users SET role = 'owner'
@@ -134,7 +199,12 @@ export function openDb(dataDir: string) {
   const userCols = 'id, name, color, avatar, role'
   const userColsU = 'u.id, u.name, u.color, u.avatar, u.role'
   const chanCols = 'id, name, type, position'
-  const msgCols = 'id, channel_id AS channelId, user_id AS userId, content, created_at AS createdAt'
+  // A message row with its reply preview (r = the replied message, NULL when there is none or it was deleted).
+  const msgCols = `m.id, m.channel_id AS channelId, m.user_id AS userId, m.content, m.created_at AS createdAt,
+    m.edited_at AS editedAt, m.mentions_everyone AS mentionsEveryone, m.reply_to_id AS replyToId,
+    m.reply_to_user_id AS replyToUserId, r.id AS replyFoundId, r.user_id AS replyUserId, r.content AS replyContent,
+    (r.id IS NOT NULL AND EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = r.id)) AS replyHasAttachments`
+  const msgFrom = 'messages m LEFT JOIN messages r ON r.id = m.reply_to_id'
   const attCols = 'id, type, width, height, size'
 
   const q = {
@@ -180,15 +250,59 @@ export function openDb(dataDir: string) {
     chanRename: db.prepare('UPDATE channels SET name = ? WHERE id = ?'),
     chanDelete: db.prepare('DELETE FROM channels WHERE id = ?'),
 
-    msgInsert: db.prepare('INSERT INTO messages (id, channel_id, user_id, content, created_at) VALUES (?, ?, ?, ?, ?)'),
-    msgById: db.prepare(`SELECT ${msgCols} FROM messages WHERE id = ?`),
+    msgInsert: db.prepare(
+      `INSERT INTO messages (id, channel_id, user_id, content, created_at, reply_to_id, reply_to_user_id, mentions_everyone)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ),
+    msgById: db.prepare(`SELECT ${msgCols} FROM ${msgFrom} WHERE m.id = ?`),
+    msgEdit: db.prepare('UPDATE messages SET content = ?, edited_at = ?, mentions_everyone = ? WHERE id = ?'),
     msgDelete: db.prepare('DELETE FROM messages WHERE id = ?'),
     msgMaxCreated: db.prepare('SELECT COALESCE(MAX(created_at), 0) AS t FROM messages'),
     msgLastByOthers: db.prepare(
       'SELECT channel_id AS channelId, MAX(created_at) AS t FROM messages WHERE user_id != ? GROUP BY channel_id',
     ),
     msgHistory: db.prepare(
-      `SELECT ${msgCols} FROM messages WHERE channel_id = ? AND created_at < ? ORDER BY created_at DESC, id DESC LIMIT ?`,
+      `SELECT ${msgCols} FROM ${msgFrom} WHERE m.channel_id = ? AND m.created_at < ?
+       ORDER BY m.created_at DESC, m.id DESC LIMIT ?`,
+    ),
+    /** channelId -> newest message by someone else that names `userId` or @everyone. */
+    msgLastMention: db.prepare(
+      `SELECT channelId, MAX(t) AS t FROM (
+         SELECT m.channel_id AS channelId, m.created_at AS t FROM message_mentions mm JOIN messages m ON m.id = mm.message_id
+         WHERE mm.user_id = ? AND m.user_id != ?
+         UNION ALL
+         SELECT channel_id AS channelId, created_at AS t FROM messages WHERE mentions_everyone = 1 AND user_id != ?
+       ) GROUP BY channelId`,
+    ),
+    msgChannels: db.prepare(
+      'SELECT id, channel_id AS channelId FROM messages WHERE id IN (SELECT value FROM json_each(?))',
+    ),
+    msgForgetReplyAuthor: db.prepare('UPDATE messages SET reply_to_user_id = NULL WHERE reply_to_user_id = ?'),
+
+    mentionInsert: db.prepare('INSERT OR IGNORE INTO message_mentions (message_id, user_id) VALUES (?, ?)'),
+    mentionDeleteForMessage: db.prepare('DELETE FROM message_mentions WHERE message_id = ?'),
+    mentionDeleteForUser: db.prepare('DELETE FROM message_mentions WHERE user_id = ?'),
+    /** Mentions of a JSON array of message ids, in the order they were written. */
+    mentionsForMessages: db.prepare(
+      `SELECT message_id AS messageId, user_id AS userId FROM message_mentions
+       WHERE message_id IN (SELECT value FROM json_each(?)) ORDER BY rowid`,
+    ),
+
+    /** The emoji's position if the message already has it, else after the last one. */
+    reactionInsert: db.prepare(
+      `INSERT OR IGNORE INTO reactions (message_id, emoji, user_id, created_at, emoji_position)
+       VALUES (?1, ?2, ?3, ?4, COALESCE(
+         (SELECT emoji_position FROM reactions WHERE message_id = ?1 AND emoji = ?2 LIMIT 1),
+         (SELECT COALESCE(MAX(emoji_position), 0) + 1 FROM reactions WHERE message_id = ?1)))`,
+    ),
+    reactionDelete: db.prepare('DELETE FROM reactions WHERE message_id = ? AND emoji = ? AND user_id = ?'),
+    reactionHasEmoji: db.prepare('SELECT 1 AS found FROM reactions WHERE message_id = ? AND emoji = ? LIMIT 1'),
+    reactionEmojiCount: db.prepare('SELECT COUNT(DISTINCT emoji) AS n FROM reactions WHERE message_id = ?'),
+    reactionDeleteForUser: db.prepare('DELETE FROM reactions WHERE user_id = ? RETURNING message_id AS messageId'),
+    /** Reactions of a JSON array of message ids: by emoji position, then in the order they were added. */
+    reactionsForMessages: db.prepare(
+      `SELECT message_id AS messageId, emoji, user_id AS userId FROM reactions
+       WHERE message_id IN (SELECT value FROM json_each(?)) ORDER BY emoji_position, rowid`,
     ),
 
     attInsert: db.prepare(
@@ -235,15 +349,78 @@ export function openDb(dataDir: string) {
 
   const ids = (rows: unknown[]) => (rows as { id: string }[]).map((r) => r.id)
 
-  /** Fills `attachments` on message rows (one query for the whole page). */
-  function withAttachments(rows: Omit<Message, 'attachments'>[]): Message[] {
-    const msgs: Message[] = rows.map((r) => ({ ...r, attachments: [] }))
+  /** Groups reaction rows (in display order) by message and emoji. */
+  function groupReactions(rows: { messageId: string; emoji: string; userId: string }[]): Map<string, Reaction[]> {
+    const out = new Map<string, Map<string, string[]>>()
+    for (const { messageId, emoji, userId } of rows) {
+      let byEmoji = out.get(messageId)
+      if (!byEmoji) out.set(messageId, (byEmoji = new Map()))
+      const userIds = byEmoji.get(emoji)
+      if (userIds) userIds.push(userId)
+      else byEmoji.set(emoji, [userId])
+    }
+    return new Map([...out].map(([id, byEmoji]) => [id, [...byEmoji].map(([emoji, userIds]) => ({ emoji, userIds }))]))
+  }
+
+  /** Reaction lists of the given messages (one query); messages without reactions are absent. */
+  function reactionsOf(messageIds: string[]): Map<string, Reaction[]> {
+    if (messageIds.length === 0) return new Map()
+    const rows = q.reactionsForMessages.all(JSON.stringify(messageIds)) as unknown as {
+      messageId: string
+      emoji: string
+      userId: string
+    }[]
+    return groupReactions(rows)
+  }
+
+  /** `content` cut to REPLY_PREVIEW_LENGTH UTF-16 units, without splitting a surrogate pair. */
+  function previewText(content: string): string {
+    if (content.length <= REPLY_PREVIEW_LENGTH) return content
+    const cut = content.slice(0, REPLY_PREVIEW_LENGTH)
+    return /[\uD800-\uDBFF]$/.test(cut) ? cut.slice(0, -1) : cut
+  }
+
+  /**
+   * Turns message rows (msgCols) into complete Messages: reply preview, and attachments, reactions and
+   * mentions with one query each for the whole page.
+   */
+  function hydrate(rows: MessageRow[]): Message[] {
+    const msgs: Message[] = rows.map((r) => {
+      let replyTo: ReplyPreview | null = null
+      if (r.replyToId !== null) {
+        replyTo =
+          r.replyFoundId !== null
+            ? {
+                id: r.replyToId,
+                userId: r.replyUserId ?? '',
+                content: previewText(r.replyContent ?? ''),
+                hasAttachments: r.replyHasAttachments === 1,
+                deleted: false,
+              }
+            : { id: r.replyToId, userId: r.replyToUserId ?? '', content: '', hasAttachments: false, deleted: true }
+      }
+      return {
+        id: r.id,
+        channelId: r.channelId,
+        userId: r.userId,
+        content: r.content,
+        createdAt: r.createdAt,
+        attachments: [],
+        editedAt: r.editedAt,
+        replyTo,
+        reactions: [],
+        mentions: [],
+        mentionsEveryone: r.mentionsEveryone === 1,
+      }
+    })
     if (msgs.length === 0) return msgs
     const byId = new Map(msgs.map((m) => [m.id, m]))
-    const atts = q.attForMessages.all(JSON.stringify(msgs.map((m) => m.id))) as unknown as (Attachment & {
-      messageId: string
-    })[]
+    const idsJson = JSON.stringify(msgs.map((m) => m.id))
+    const atts = q.attForMessages.all(idsJson) as unknown as (Attachment & { messageId: string })[]
     for (const { messageId, ...a } of atts) byId.get(messageId)?.attachments.push({ ...a })
+    const mentions = q.mentionsForMessages.all(idsJson) as unknown as { messageId: string; userId: string }[]
+    for (const { messageId, userId } of mentions) byId.get(messageId)?.mentions?.push(userId)
+    for (const [id, reactions] of reactionsOf([...byId.keys()])) byId.get(id)!.reactions = reactions
     return msgs
   }
 
@@ -307,15 +484,26 @@ export function openDb(dataDir: string) {
      * and the row itself, in one transaction. Returns the ids of the deleted attachments (their files, and
      * the avatar file, are the caller's to delete), or undefined if there is no such account.
      */
-    remove(id: string): { attachmentIds: string[]; messages: number } | undefined {
+    remove(id: string): { attachmentIds: string[]; messages: number; reactions: ReactionsUpdate[] } | undefined {
       return transaction(() => {
         if (!users.get(id)) return undefined
         const attachmentIds = ids(q.attDeleteForUser.all(id, id))
+        // (Cascades to the reactions on and mentions in these messages.)
         const messages = Number(q.msgDeleteForUser.run(id).changes)
+        // Their reactions on other people's messages, whose new lists are returned to be broadcast.
+        const reacted = [
+          ...new Set((q.reactionDeleteForUser.all(id) as unknown as { messageId: string }[]).map((r) => r.messageId)),
+        ]
+        q.mentionDeleteForUser.run(id)
+        // Replies to their (now deleted) messages forget who wrote the original.
+        q.msgForgetReplyAuthor.run(id)
         q.tokenDeleteForUser.run(id)
         q.deviceDeleteForUser.run(id)
         q.userDelete.run(id)
-        return { attachmentIds, messages }
+        const lists = reactionsOf(reacted)
+        const changed = q.msgChannels.all(JSON.stringify(reacted)) as unknown as { id: string; channelId: string }[]
+        const reactions = changed.map((m) => ({ messageId: m.id, channelId: m.channelId, reactions: lists.get(m.id) ?? [] }))
+        return { attachmentIds, messages, reactions }
       })
     },
     setColor(id: string, color: string): User | undefined {
@@ -359,26 +547,68 @@ export function openDb(dataDir: string) {
   const messages = {
     /**
      * Inserts a message and claims `attachmentIds` (pending uploads of `userId`, see attachments.pending)
-     * in one transaction. Throws if any of them can't be claimed.
+     * in one transaction. Throws if any of them can't be claimed. `extra.replyTo` must be an existing message
+     * of the same channel and `extra.mentions` existing accounts other than `userId` (the caller checks).
      */
-    create(channelId: string, userId: string, content: string, attachmentIds: string[] = []): Message {
-      const msg: Message = { id: randomUUID(), channelId, userId, content, createdAt: 0, attachments: [] }
+    create(
+      channelId: string,
+      userId: string,
+      content: string,
+      attachmentIds: string[] = [],
+      extra: { replyTo?: { id: string; userId: string }; mentions?: string[]; mentionsEveryone?: boolean } = {},
+    ): Message {
+      const id = randomUUID()
       return transaction(() => {
-        msg.createdAt = nextTimestamp()
-        q.msgInsert.run(msg.id, channelId, userId, content, msg.createdAt)
+        const { replyTo, mentions = [], mentionsEveryone = false } = extra
+        q.msgInsert.run(id, channelId, userId, content, nextTimestamp(), replyTo?.id ?? null, replyTo?.userId ?? null, mentionsEveryone ? 1 : 0)
         attachmentIds.forEach((attId, position) => {
-          const att = q.attPending.get(attId, userId) as Attachment | undefined
-          if (!att || q.attClaim.run(msg.id, position, attId, userId).changes !== 1) {
+          if (!q.attPending.get(attId, userId) || q.attClaim.run(id, position, attId, userId).changes !== 1) {
             throw new Error(`attachment ${attId} is not a pending upload of ${userId}`)
           }
-          msg.attachments.push({ ...att })
         })
-        return msg
+        for (const mentioned of mentions) q.mentionInsert.run(id, mentioned)
+        return messages.get(id)!
       })
     },
     get(id: string): Message | undefined {
-      const row = q.msgById.get(id) as Omit<Message, 'attachments'> | undefined
-      return row && withAttachments([row])[0]
+      const row = q.msgById.get(id) as MessageRow | undefined
+      return row && hydrate([row])[0]
+    },
+    /** Replaces the content and mentions and sets editedAt to now. Undefined if there's no such message. */
+    edit(id: string, content: string, mentions: string[], mentionsEveryone: boolean): Message | undefined {
+      return transaction(() => {
+        if (q.msgEdit.run(content, Date.now(), mentionsEveryone ? 1 : 0, id).changes !== 1) return undefined
+        q.mentionDeleteForMessage.run(id)
+        for (const mentioned of mentions) q.mentionInsert.run(id, mentioned)
+        return messages.get(id)
+      })
+    },
+    /**
+     * Adds (`on`) or removes `userId`'s `emoji` reaction (the caller validates the emoji and that the message
+     * exists). `changed: false` when it was already so; 'tooMany' when adding a new emoji to a message that
+     * already has MAX_REACTIONS_PER_MESSAGE.
+     */
+    react(messageId: string, userId: string, emoji: string, on: boolean): { changed: boolean; reactions: Reaction[] } | 'tooMany' {
+      return transaction(() => {
+        let changed: boolean
+        if (on) {
+          const isNewEmoji = q.reactionHasEmoji.get(messageId, emoji) === undefined
+          if (isNewEmoji && (q.reactionEmojiCount.get(messageId) as { n: number }).n >= MAX_REACTIONS_PER_MESSAGE) {
+            return 'tooMany'
+          }
+          changed = q.reactionInsert.run(messageId, emoji, userId, Date.now()).changes === 1
+        } else {
+          changed = q.reactionDelete.run(messageId, emoji, userId).changes === 1
+        }
+        return { changed, reactions: reactionsOf([messageId]).get(messageId) ?? [] }
+      })
+    },
+    /** channelId -> createdAt of the newest message by someone else that mentions `userId` or @everyone. */
+    lastMentionAt(userId: string): Record<string, number> {
+      const out: Record<string, number> = {}
+      const rows = q.msgLastMention.all(userId, userId, userId) as unknown as { channelId: string; t: number }[]
+      for (const r of rows) out[r.channelId] = r.t
+      return out
     },
     /** Deletes the message and returns the ids of its attachments (their files are the caller's to delete). */
     delete(id: string): string[] {
@@ -396,8 +626,8 @@ export function openDb(dataDir: string) {
     },
     /** Newest page strictly before `before`, returned oldest-first. */
     history(channelId: string, before = Number.MAX_SAFE_INTEGER): Message[] {
-      const rows = q.msgHistory.all(channelId, before, MESSAGE_PAGE_SIZE) as unknown as Omit<Message, 'attachments'>[]
-      return withAttachments(rows.reverse())
+      const rows = q.msgHistory.all(channelId, before, MESSAGE_PAGE_SIZE) as unknown as MessageRow[]
+      return hydrate(rows.reverse())
     },
   }
 

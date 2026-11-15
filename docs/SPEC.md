@@ -185,7 +185,7 @@ The visual design is Nexo's own: dark ink background, mint accent, rounded tiles
 
 - Identity handshake (§7) during the socket.io `connect` middleware.
 - Create, read, update and delete text and voice channels. Every change is broadcast to all clients.
-- Persist messages. Serve history in pages of 50, keyed by timestamp.
+- Persist messages (with replies, edits, mentions and reactions). Serve history in pages of 50, keyed by timestamp.
 - **Presence:** in-memory map of userId to open socket count.
 - **Voice state:** in-memory map of userId to `{channelId, muted, deafened, camera, streaming, socketId}`. The client is the source of truth and re-sends its state after reconnecting. The entry is cleared when the owning socket disconnects.
 - Issue LiveKit JWTs for room `voice-<channelId>` (identity = userId, name = display name, metadata = `{color}`).
@@ -196,8 +196,20 @@ The visual design is Nexo's own: dark ink background, mint accent, rounded tiles
 users    (id TEXT PK, name TEXT UNIQUE NOCASE, color TEXT, token_hash TEXT UNIQUE, created_at INT)
 channels (id TEXT PK, name TEXT, type 'text'|'voice', position INT, created_at INT)
 messages (id TEXT PK, channel_id → channels ON DELETE CASCADE, user_id → users,
-          content TEXT, created_at INT)          INDEX (channel_id, created_at)
+          content TEXT, created_at INT,          INDEX (channel_id, created_at)
+          edited_at INT NULL, reply_to_id TEXT NULL, reply_to_user_id TEXT NULL,
+          mentions_everyone INT DEFAULT 0)       partial INDEX (channel_id, created_at) WHERE mentions_everyone
+message_mentions (message_id → messages ON DELETE CASCADE, user_id → users ON DELETE CASCADE,
+          PK (message_id, user_id))              INDEX (user_id)
+reactions (message_id → messages ON DELETE CASCADE, emoji TEXT, user_id → users ON DELETE CASCADE,
+          created_at INT, emoji_position INT, PK (message_id, emoji, user_id))
 ```
+
+`reply_to_id` has no foreign key on purpose: when the original is deleted the reply keeps the id (and
+`reply_to_user_id`, cleared when that account is removed) and reads back with a `deleted` preview.
+`emoji_position` is given when an emoji is first added to a message and shared by its rows, so an emoji keeps
+its place while anyone still has it. Older databases gain the new columns and tables in place on start
+(additive `migrate()` in `server/src/db.ts`).
 
 On first run the server seeds `#general` and `#clips-and-memes` (text) and `Lounge` and `Gaming` (voice).
 
@@ -280,8 +292,10 @@ All shared types live in `shared/protocol.ts`, imported by both the server and t
 | `channel:create` | `{name, type}` | `Channel` |
 | `channel:rename` | `{channelId, name}` | `Channel` |
 | `channel:delete` | `{channelId}` | `null` |
-| `message:send` | `{channelId, content}` | `Message` |
-| `message:delete` | `{messageId}` (own only) | `null` |
+| `message:send` | `{channelId, content, attachmentIds?, replyToId?}` (`replyToId`: a message in the same channel, else "The message you replied to was not found") | `Message` |
+| `message:edit` | `{messageId, content}` (author only; same content rules as send, `''` only with images; unchanged = no-op, no broadcast) | `Message` |
+| `message:react` | `{messageId, emoji, on}` (one emoji, `EMOJI_RE`; idempotent; ≤ `MAX_REACTIONS_PER_MESSAGE` = 20 different emoji; 10 requests per 5 s per user) | `null` |
+| `message:delete` | `{messageId}` (own only; admins/owner any) | `null` |
 | `message:history` | `{channelId, before?}` | `Message[]` (oldest first, ≤ 50) |
 | `typing` | `{channelId}` | — |
 | `voice:token` | `{channelId}` | `{url, token, room}` |
@@ -294,15 +308,29 @@ All shared types live in `shared/protocol.ts`, imported by both the server and t
 
 | Event | Payload |
 |---|---|
-| `bootstrap` | `{serverName, me, token?, users, online, channels, voice}` sent on every connect |
+| `bootstrap` | `{serverName, me, token?, users, online, channels, voice, lastMessageAt, lastMentionAt, …}` sent on every connect |
 | `user:upsert` | `User` |
 | `presence` | `string[]` of online user IDs |
 | `channel:upsert` / `channel:deleted` | `Channel` / `{channelId}` |
-| `message:new` / `message:deleted` | `Message` / `{messageId, channelId}` |
+| `message:new` / `message:deleted` | `Message` / `{messageId, channelId}` (replies to it show a deleted preview) |
+| `message:updated` | `Message` (an edit, complete: replace in place) |
+| `message:reactions` | `{messageId, channelId, reactions}` (the full new list; also sent for each message an account removal took reactions from) |
 | `typing` | `{channelId, userId}` (clients show it for about 3 s) |
 | `voice:states` | `VoiceState[]` (full list; small at this scale) |
 | `voice:moved` | `{channelId, by}` to the target's voice-owning socket only: the server already moved its state (camera/stream off, mute/deafen kept); the client leaves the old room, joins `channelId` and re-announces `voice:state` |
 | `voice:nudged` | `{by}` to the target's voice-owning socket only ("wake up" while muted or deafened) |
+
+A `Message` carries, besides `content` and `attachments`: `editedAt` (null = never edited), `replyTo` (a
+`ReplyPreview` `{id, userId, content ≤ 200 chars, hasAttachments, deleted}` or null), `reactions`
+(`[{emoji, userIds}]`, emoji in first-added order, users in the order they reacted), `mentions` and
+`mentionsEveryone`. Older servers omit them; clients default them.
+
+**Mentions.** Content names people with the token `<@userId>` (`MENTION_TOKEN_RE`), which clients insert
+from the @ autocomplete and render as "@Name", so renames keep working. The literal `@everyone` notifies
+every account (anyone may use it). The server computes `mentions` on send and on every edit: the existing
+accounts named by tokens, plus the author of the replied message, never the author, without duplicates.
+Bootstrap `lastMentionAt` (channelId → createdAt of the newest message by someone else that mentions you or
+@everyone) lets clients badge channels with an unread mention, like `lastMessageAt` for unread state.
 
 Handshake errors arrive as `connect_error` with a readable message. `UNKNOWN_TOKEN` tells the client to clear its token and show onboarding again.
 

@@ -15,8 +15,12 @@ import type {
 } from '../../shared/protocol.ts'
 import {
   ACCESS_REQUEST_TTL_MS,
+  EMOJI_RE,
+  hasEveryoneMention,
   MAX_ATTACHMENTS_PER_MESSAGE,
   MAX_MESSAGE_LENGTH,
+  MAX_REACTIONS_PER_MESSAGE,
+  MENTION_TOKEN_RE,
   NUDGE_COOLDOWN_MS,
 } from '../../shared/protocol.ts'
 import { streamIdentity } from '../../shared/stream.ts'
@@ -65,6 +69,8 @@ export interface StartOptions extends Partial<Omit<Config, 'livekit'>> {
   accessRequestSweepIntervalMs?: number
   /** Minimum ms between two nudges from the same sender to the same target. Default: NUDGE_COOLDOWN_MS. */
   nudgeCooldownMs?: number
+  /** `message:react` requests per user per window. Default: LIMITS.reactionsPerWindow / reactionWindowMs. */
+  reactionLimit?: { count: number; windowMs: number }
 }
 
 export interface NexoInstance {
@@ -113,6 +119,11 @@ export const LIMITS = {
   accessRequestsTotal: 20,
   /** Expired sign-in requests are swept (and announced as resolved) this often. */
   accessRequestSweepIntervalMs: 15 * 1000,
+  /** `message:react` requests per user (all sockets) in any window of reactionWindowMs. */
+  reactionsPerWindow: 10,
+  reactionWindowMs: 5000,
+  /** Longest emoji accepted by `message:react`, in UTF-16 units (RGI sequences are at most ~15). */
+  emojiMaxLength: 32,
 } as const
 
 export const HANDSHAKE_ERRORS = {
@@ -152,6 +163,20 @@ export const VOICE_ERRORS = {
   notMuted: "They're not muted",
   /** `You can nudge them again in N s` (N rounded up, at least 1). */
   nudgeCooldown: (ms: number) => `You can nudge them again in ${Math.max(1, Math.ceil(ms / 1000))} s`,
+} as const
+
+/** Ack errors of the message events (clients show them as toasts). */
+export const MESSAGE_ERRORS = {
+  notFound: 'Message not found',
+  empty: 'Message is empty',
+  tooLong: `Messages are limited to ${MAX_MESSAGE_LENGTH} characters`,
+  invalidContent: 'Invalid message',
+  replyNotFound: 'The message you replied to was not found',
+  editOthers: 'You can only edit your own messages',
+  invalidEmoji: 'Invalid emoji',
+  invalidReaction: 'Invalid reaction',
+  tooManyReactions: `Messages can have at most ${MAX_REACTIONS_PER_MESSAGE} different reactions`,
+  slowDown: 'Slow down',
 } as const
 
 /** admin and owner manage channels, delete any message, remove members and answer sign-in requests. */
@@ -214,6 +239,7 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
     accessRequestTtlMs,
     accessRequestSweepIntervalMs,
     nudgeCooldownMs = NUDGE_COOLDOWN_MS,
+    reactionLimit = { count: LIMITS.reactionsPerWindow, windowMs: LIMITS.reactionWindowMs },
     ...rest
   } = options
   const config: Config = { ...base, ...rest, livekit: { ...base.livekit, ...livekit } }
@@ -342,6 +368,30 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
     }
   }
 
+  /** userId -> times of their recent `message:react` requests (server-wide: shared by all of a user's sockets). */
+  const reactionTimes = new Map<string, number[]>()
+  /** Records a reaction request; false when the user is over reactionLimit. */
+  function reactionAllowed(userId: string, now: number): boolean {
+    const recent = (reactionTimes.get(userId) ?? []).filter((t) => now - t < reactionLimit.windowMs)
+    const allowed = recent.length < reactionLimit.count
+    if (allowed) recent.push(now)
+    reactionTimes.set(userId, recent)
+    return allowed
+  }
+
+  /**
+   * Who a message notifies (docs/SPEC.md "Mentions"): the existing accounts named by `<@userId>` tokens,
+   * plus the author of the replied message, never the author, without duplicates, in order of appearance.
+   * Anyone may use @everyone.
+   */
+  function mentionsIn(content: string, authorId: string, replyAuthorId?: string): { mentions: string[]; mentionsEveryone: boolean } {
+    const ids = new Set<string>()
+    for (const match of content.matchAll(MENTION_TOKEN_RE)) ids.add(match[1])
+    if (replyAuthorId) ids.add(replyAuthorId)
+    ids.delete(authorId)
+    return { mentions: [...ids].filter((id) => users.get(id)), mentionsEveryone: hasEveryoneMention(content) }
+  }
+
   /**
    * Deletes an account (docs/SPEC-ACCOUNTS.md §2): its sign-in requests, voice state, DB rows (messages,
    * uploads, logins, device links) and files, then tells everyone and disconnects its sockets.
@@ -354,7 +404,10 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
     avatarRoutes.removeFile(target.id)
     if (voiceStates.delete(target.id)) broadcastVoice()
     pruneNudges(Date.now(), target.id)
+    reactionTimes.delete(target.id)
     io.emit('user:removed', { userId: target.id })
+    // Their reactions on other people's messages are gone too.
+    for (const update of removed.reactions) io.emit('message:reactions', update)
     io.in(userRoom(target.id)).disconnectSockets(true)
     log(
       `[nexo] ${by.name} removed the account "${target.name}" (${target.role}, ${removed.messages} message${removed.messages === 1 ? '' : 's'})`,
@@ -474,6 +527,7 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
       channels: channels.all(),
       voice: voiceList(),
       lastMessageAt: messages.lastByOthers(userId),
+      lastMentionAt: messages.lastMentionAt(userId),
       accessRequests: requestsFor(me()),
     })
     // The token is delivered exactly once.
@@ -539,8 +593,14 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
         if (!Array.isArray(p.attachmentIds) || !p.attachmentIds.every(isStr)) return fail(ack, 'Invalid attachments')
         attachmentIds = p.attachmentIds
       }
-      if (!content && attachmentIds.length === 0) return fail(ack, 'Message is empty')
-      if (content.length > MAX_MESSAGE_LENGTH) return fail(ack, `Messages are limited to ${MAX_MESSAGE_LENGTH} characters`)
+      if (!content && attachmentIds.length === 0) return fail(ack, MESSAGE_ERRORS.empty)
+      if (content.length > MAX_MESSAGE_LENGTH) return fail(ack, MESSAGE_ERRORS.tooLong)
+      let replyTo: { id: string; userId: string } | undefined
+      if (p.replyToId !== undefined && p.replyToId !== null) {
+        const original = isStr(p.replyToId) ? messages.get(p.replyToId) : undefined
+        if (!original || original.channelId !== channel.id) return fail(ack, MESSAGE_ERRORS.replyNotFound)
+        replyTo = { id: original.id, userId: original.userId }
+      }
       if (attachmentIds.length > MAX_ATTACHMENTS_PER_MESSAGE) {
         return fail(ack, `Messages can have at most ${MAX_ATTACHMENTS_PER_MESSAGE} images`)
       }
@@ -549,14 +609,47 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
       if (!attachmentIds.every((id) => attachments.pending(id, userId))) {
         return fail(ack, 'An image upload expired or was not found. Remove it and add it again')
       }
-      const msg = messages.create(channel.id, userId, content, attachmentIds)
+      const msg = messages.create(channel.id, userId, content, attachmentIds, {
+        replyTo,
+        ...mentionsIn(content, userId, replyTo?.userId),
+      })
       io.emit('message:new', msg)
       ok(ack, msg)
     }))
 
+    socket.on('message:edit', guard('message:edit', (p, ack) => {
+      const msg = isObj(p) && isStr(p.messageId) ? messages.get(p.messageId) : undefined
+      if (!msg) return fail(ack, MESSAGE_ERRORS.notFound)
+      if (msg.userId !== userId) return fail(ack, MESSAGE_ERRORS.editOthers)
+      if (!isStr(p.content)) return fail(ack, MESSAGE_ERRORS.invalidContent)
+      const content = p.content.trim()
+      if (!content && msg.attachments.length === 0) return fail(ack, MESSAGE_ERRORS.empty)
+      if (content.length > MAX_MESSAGE_LENGTH) return fail(ack, MESSAGE_ERRORS.tooLong)
+      if (content === msg.content) return ok(ack, msg)
+      const { mentions, mentionsEveryone } = mentionsIn(content, userId, msg.replyTo?.userId)
+      const updated = messages.edit(msg.id, content, mentions, mentionsEveryone)
+      if (!updated) return fail(ack, MESSAGE_ERRORS.notFound)
+      io.emit('message:updated', updated)
+      ok(ack, updated)
+    }))
+
+    socket.on('message:react', guard('message:react', (p, ack) => {
+      const msg = isObj(p) && isStr(p.messageId) ? messages.get(p.messageId) : undefined
+      if (!msg) return fail(ack, MESSAGE_ERRORS.notFound)
+      if (typeof p.on !== 'boolean') return fail(ack, MESSAGE_ERRORS.invalidReaction)
+      if (!isStr(p.emoji) || p.emoji.length > LIMITS.emojiMaxLength || !EMOJI_RE.test(p.emoji)) {
+        return fail(ack, MESSAGE_ERRORS.invalidEmoji)
+      }
+      if (!reactionAllowed(userId, Date.now())) return fail(ack, MESSAGE_ERRORS.slowDown)
+      const result = messages.react(msg.id, userId, p.emoji, p.on)
+      if (result === 'tooMany') return fail(ack, MESSAGE_ERRORS.tooManyReactions)
+      if (result.changed) io.emit('message:reactions', { messageId: msg.id, channelId: msg.channelId, reactions: result.reactions })
+      ok(ack, null)
+    }))
+
     socket.on('message:delete', guard('message:delete', (p, ack) => {
       const msg = isObj(p) && isStr(p.messageId) ? messages.get(p.messageId) : undefined
-      if (!msg) return fail(ack, 'Message not found')
+      if (!msg) return fail(ack, MESSAGE_ERRORS.notFound)
       const own = msg.userId === userId
       if (!own && !isAdmin()) return fail(ack, PERMISSION_ERRORS.deleteOthersMessages)
       attachmentRoutes.removeFiles(messages.delete(msg.id))
