@@ -197,6 +197,7 @@ describe('voice extras', () => {
         deafened: false,
         camera: false,
         streaming: false,
+        watching: [],
       })
       await notOthers
       // The target's client rejoins and re-announces from the same socket: still its own state.

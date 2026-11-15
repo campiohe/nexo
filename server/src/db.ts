@@ -17,7 +17,11 @@ const SCHEMA = `
     token_hash  TEXT NOT NULL UNIQUE,
     created_at  INTEGER NOT NULL,
     avatar      TEXT NULL,
-    role        TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('owner', 'admin', 'member'))
+    role        TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('owner', 'admin', 'member')),
+    -- v0.7 (added by migrate() to older databases): custom status text (NULL = none), and whether the
+    -- profile picture is an animated GIF.
+    status_text     TEXT NULL,
+    avatar_animated INTEGER NOT NULL DEFAULT 0
   );
 
   CREATE TABLE IF NOT EXISTS channels (
@@ -114,6 +118,14 @@ export interface ReactionsUpdate {
   reactions: Reaction[]
 }
 
+/** A row of the user query (userCols in openDb). */
+interface UserRow extends Omit<User, 'avatarAnimated'> {
+  avatarAnimated: number
+}
+const toUser = ({ avatarAnimated, ...u }: UserRow): User => ({ ...u, avatarAnimated: avatarAnimated === 1 })
+const toUserOpt = (row: unknown): User | undefined => (row ? toUser(row as UserRow) : undefined)
+const toUsers = (rows: unknown[]): User[] => (rows as UserRow[]).map(toUser)
+
 /** A row of the message query (msgCols in openDb). */
 interface MessageRow {
   id: string
@@ -148,6 +160,11 @@ function migrate(db: DatabaseSync): void {
     // v0.5: roles.
     if (!userCols.has('role')) {
       db.exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('owner', 'admin', 'member'))")
+    }
+    // v0.7: custom status text and animated (GIF) profile pictures.
+    if (!userCols.has('status_text')) db.exec('ALTER TABLE users ADD COLUMN status_text TEXT NULL')
+    if (!userCols.has('avatar_animated')) {
+      db.exec('ALTER TABLE users ADD COLUMN avatar_animated INTEGER NOT NULL DEFAULT 0')
     }
     // v0.6: edits, replies and @everyone (message_mentions and reactions are new tables, created by SCHEMA).
     if (!msgCols.has('edited_at')) db.exec('ALTER TABLE messages ADD COLUMN edited_at INTEGER NULL')
@@ -196,8 +213,9 @@ export function openDb(dataDir: string) {
   db.exec(SCHEMA)
   migrate(db)
 
-  const userCols = 'id, name, color, avatar, role'
-  const userColsU = 'u.id, u.name, u.color, u.avatar, u.role'
+  const userCols = 'id, name, color, avatar, role, status_text AS statusText, avatar_animated AS avatarAnimated'
+  const userColsU =
+    'u.id, u.name, u.color, u.avatar, u.role, u.status_text AS statusText, u.avatar_animated AS avatarAnimated'
   const chanCols = 'id, name, type, position'
   // A message row with its reply preview (r = the replied message, NULL when there is none or it was deleted).
   const msgCols = `m.id, m.channel_id AS channelId, m.user_id AS userId, m.content, m.created_at AS createdAt,
@@ -220,7 +238,8 @@ export function openDb(dataDir: string) {
          CASE WHEN EXISTS (SELECT 1 FROM users WHERE role = 'owner') THEN 'member' ELSE 'owner' END)`,
     ),
     userSetColor: db.prepare('UPDATE users SET color = ? WHERE id = ?'),
-    userSetAvatar: db.prepare('UPDATE users SET avatar = ? WHERE id = ?'),
+    userSetStatusText: db.prepare('UPDATE users SET status_text = ? WHERE id = ?'),
+    userSetAvatar: db.prepare('UPDATE users SET avatar = ?, avatar_animated = ? WHERE id = ?'),
     userSetRole: db.prepare('UPDATE users SET role = ? WHERE id = ?'),
     userOwner: db.prepare(`SELECT ${userCols} FROM users WHERE role = 'owner' ORDER BY created_at LIMIT 1`),
     userDelete: db.prepare('DELETE FROM users WHERE id = ?'),
@@ -434,12 +453,12 @@ export function openDb(dataDir: string) {
   }
 
   const users = {
-    all: (): User[] => q.usersAll.all() as unknown as User[],
-    get: (id: string): User | undefined => q.userById.get(id) as User | undefined,
+    all: (): User[] => toUsers(q.usersAll.all()),
+    get: (id: string): User | undefined => toUserOpt(q.userById.get(id)),
     /** The account a login (device token hash) belongs to. Looks only at user_tokens. */
-    byTokenHash: (hash: string): User | undefined => q.userByToken.get(hash) as User | undefined,
-    byName: (name: string): User | undefined => q.userByName.get(name) as User | undefined,
-    owner: (): User | undefined => q.userOwner.get() as User | undefined,
+    byTokenHash: (hash: string): User | undefined => toUserOpt(q.userByToken.get(hash)),
+    byName: (name: string): User | undefined => toUserOpt(q.userByName.get(name)),
+    owner: (): User | undefined => toUserOpt(q.userOwner.get()),
     /**
      * Creates an account with its first login. The first account on a server becomes the owner, later ones
      * members. Throws a UNIQUE violation (see isUniqueViolation) if the name is taken.
@@ -506,13 +525,21 @@ export function openDb(dataDir: string) {
         return { attachmentIds, messages, reactions }
       })
     },
-    setColor(id: string, color: string): User | undefined {
-      q.userSetColor.run(color, id)
-      return users.get(id)
+    /**
+     * Changes the given profile fields in one transaction (`statusText` null clears it; the caller validates
+     * and normalizes). Undefined if there's no such account.
+     */
+    updateProfile(id: string, patch: { color?: string; statusText?: string | null }): User | undefined {
+      return transaction(() => {
+        if (patch.color !== undefined) q.userSetColor.run(patch.color, id)
+        if (patch.statusText !== undefined) q.userSetStatusText.run(patch.statusText, id)
+        return users.get(id)
+      })
     },
-    /** `avatar` is the picture's version token, or null to clear it. */
-    setAvatar(id: string, avatar: string | null): User | undefined {
-      q.userSetAvatar.run(avatar, id)
+    setColor: (id: string, color: string): User | undefined => users.updateProfile(id, { color }),
+    /** `avatar` is the picture's version token, or null to clear it (which also clears `animated`). */
+    setAvatar(id: string, avatar: string | null, animated = false): User | undefined {
+      q.userSetAvatar.run(avatar, avatar !== null && animated ? 1 : 0, id)
       return users.get(id)
     },
   }
@@ -656,7 +683,7 @@ export function openDb(dataDir: string) {
     },
     isLinked: (userId: string, address: string): boolean => q.deviceLinked.get(userId, address) !== undefined,
     /** Accounts linked to `address`, most recently seen first. */
-    users: (address: string): User[] => q.deviceUsers.all(address) as unknown as User[],
+    users: (address: string): User[] => toUsers(q.deviceUsers.all(address)),
   }
 
   const serverId = (q.metaGet.get('server_id') as { value: string }).value

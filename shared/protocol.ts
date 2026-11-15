@@ -40,9 +40,12 @@ export type PresenceStatus = 'online' | 'idle' | 'dnd'
 
 /** What someone is playing, detected by their client (opt-in). */
 export interface Activity {
-  /** Display name, e.g. "Counter-Strike 2" (1..ACTIVITY_NAME_MAX chars, trimmed by the server). */
+  /**
+   * Display name, e.g. "Counter-Strike 2" (1..ACTIVITY_NAME_MAX UTF-16 units). The server normalizes it like
+   * statusText (trimmed, whitespace collapsed, control characters removed) and cuts longer names to the limit.
+   */
   name: string
-  /** When they started (ms epoch; the server clamps it to now). */
+  /** When they started (ms epoch; the server clamps it to [now - 7 days, now]). */
   startedAt: number
 }
 export const ACTIVITY_NAME_MAX = 64
@@ -114,7 +117,59 @@ export interface Message {
   mentions?: string[]
   /** The content contains the `@everyone` token. */
   mentionsEveryone?: boolean
+  /** Pinned to its channel (`message:pin`): by whom and when. null/absent = not pinned. */
+  pinned?: { by: string; at: number } | null
 }
+
+export const MAX_PINS_PER_CHANNEL = 50
+
+/** One page of `message:search` results, newest first. */
+export interface SearchResult {
+  messages: Message[]
+  /** Older matches exist: ask again with `before` = the last message's createdAt. */
+  hasMore: boolean
+}
+export const SEARCH_PAGE_SIZE = 25
+export const SEARCH_QUERY_MAX = 200
+
+/**
+ * A link preview (GET /api/embed). Only for allowlisted providers fetched through their oEmbed endpoints by
+ * the server; the server never fetches arbitrary URLs.
+ */
+export interface Embed {
+  /** The link as it appears in the message. */
+  url: string
+  /** e.g. 'YouTube', 'Twitch', 'Spotify'. */
+  provider: string
+  kind: 'video' | 'audio' | 'post'
+  title: string
+  author?: string
+  /** https image on the provider's CDN (loaded directly by clients). */
+  thumbnail?: { url: string; width: number; height: number }
+}
+/** Previews shown per message (the first N distinct links that have one). */
+export const MAX_EMBEDS_PER_MESSAGE = 3
+
+/** A soundboard clip (docs/SPEC.md). Audio at GET /sounds/:id. */
+export interface Sound {
+  id: string
+  /** 1..SOUND_NAME_MAX characters. */
+  name: string
+  /** Optional single emoji (EMOJI_RE) shown on the button. */
+  emoji: string | null
+  uploaderId: string
+  /** As measured by the uploader's client, 1..SOUND_MAX_MS. */
+  durationMs: number
+  createdAt: number
+}
+export const SOUND_NAME_MAX = 32
+export const SOUND_MAX_MS = 5000
+export const SOUND_MAX_BYTES = 512 * 1024
+export const MAX_SOUNDS = 100
+/** Minimum time between two `sound:play` from the same user. */
+export const SOUND_COOLDOWN_MS = 2000
+export type SoundType = 'audio/ogg' | 'audio/mpeg' | 'audio/wav' | 'audio/webm'
+export const SOUND_TYPES: readonly SoundType[] = ['audio/ogg', 'audio/mpeg', 'audio/wav', 'audio/webm']
 
 /**
  * Mentions in message content (docs/SPEC.md): `<@userId>` for a person (rendered as "@Name", so renames
@@ -203,6 +258,8 @@ export interface Bootstrap {
   lastMentionAt?: Record<string, number>
   /** userId -> presence, for online users whose presence isn't DEFAULT_PRESENCE. Older servers omit it. */
   presence?: Record<string, Presence>
+  /** The soundboard, oldest first. Older servers omit it. */
+  sounds?: Sound[]
 }
 
 /** Sent in the socket.io handshake `auth` field. */
@@ -263,6 +320,33 @@ export interface ClientToServerEvents {
    * Broadcasts `message:reactions` when something changed.
    */
   'message:react': (p: { messageId: string; emoji: string; on: boolean }, ack: Ack<null>) => void
+  /**
+   * Pin or unpin. Anyone may pin (up to MAX_PINS_PER_CHANNEL per channel); unpinning is for whoever pinned
+   * it, the message's author, or admins/owner. Idempotent. Broadcasts `message:updated` with `pinned` set.
+   */
+  'message:pin': (p: { messageId: string; pinned: boolean }, ack: Ack<null>) => void
+  /** A channel's pinned messages, most recently pinned first. */
+  'message:pins': (p: { channelId: string }, ack: Ack<Message[]>) => void
+  /**
+   * Full-text search (case and accent insensitive; each word matches as a prefix, all words must match).
+   * Optional filters: one channel, one author. `before` pages to older results. `query` may be empty only
+   * when `authorId` is given. Fails for a query over SEARCH_QUERY_MAX characters.
+   */
+  'message:search': (
+    p: { query: string; channelId?: string; authorId?: string; before?: number },
+    ack: Ack<SearchResult>,
+  ) => void
+  /**
+   * Admins/owner: set the order of all channels of one type. `ids` must contain every channel of that type
+   * exactly once. Broadcasts `channel:upsert` for each channel whose position changed.
+   */
+  'channel:reorder': (p: { type: ChannelType; ids: string[] }, ack: Ack<null>) => void
+  /**
+   * Play a soundboard clip to your voice channel. You must be in voice; at most one per SOUND_COOLDOWN_MS
+   * (ack error otherwise). The server broadcasts `sound:played` to the sockets of everyone in that channel;
+   * each client plays it locally (not through anyone's microphone), unless deafened.
+   */
+  'sound:play': (p: { soundId: string }, ack: Ack<null>) => void
   'message:history': (p: { channelId: string; before?: number }, ack: Ack<Message[]>) => void
   typing: (p: { channelId: string }) => void
   'voice:token': (p: { channelId: string }, ack: Ack<VoiceCredentials>) => void
@@ -270,7 +354,8 @@ export interface ClientToServerEvents {
   'voice:streamToken': (p: { channelId: string }, ack: Ack<StreamCredentials>) => void
   'voice:state': (p: VoiceStatePatch) => void
   /**
-   * Change any of: color, custom status text (trimmed; '' or null clears; > STATUS_TEXT_MAX fails).
+   * Change any of (at least one): color, custom status text (normalized: NFC, whitespace runs collapsed to one
+   * space, control characters removed, trimmed; '' or null clears; > STATUS_TEXT_MAX UTF-16 units fails).
    * Broadcasts `user:upsert`.
    */
   'profile:update': (p: { color?: string; statusText?: string | null }, ack: Ack<User>) => void
@@ -308,6 +393,11 @@ export interface ServerToClientEvents {
   bootstrap: (b: Bootstrap) => void
   'user:upsert': (u: User) => void
   presence: (online: string[]) => void
+  /** A soundboard clip was added (POST /api/sounds) or changed. */
+  'sound:upsert': (s: Sound) => void
+  'sound:deleted': (p: { soundId: string }) => void
+  /** `userId` played a clip in voice channel `channelId` (only sent to that channel's members). */
+  'sound:played': (p: { soundId: string; userId: string; channelId: string }) => void
   /** `userId`'s presence changed (DEFAULT_PRESENCE when they went back to plain online or went offline). */
   'presence:changed': (p: { userId: string; presence: Presence }) => void
   'channel:upsert': (c: Channel) => void
@@ -408,3 +498,19 @@ export const MAX_ATTACHMENTS_PER_MESSAGE = 4
 
 export const MESSAGE_PAGE_SIZE = 50
 export const MAX_MESSAGE_LENGTH = 4000
+
+// ---- Link previews (HTTP, not socket.io) ----
+// GET /api/embed?url=<encoded url>   Authorization: Bearer <device token>
+//     → 200 { embed: Embed } | 204 (no preview for this link) | 400 bad url | 401 | 429 too many requests
+// Only allowlisted providers (YouTube, Twitch, Spotify, SoundCloud, …) via their oEmbed endpoints; results
+// are cached by the server. Clients cache too and show at most MAX_EMBEDS_PER_MESSAGE per message.
+
+// ---- Soundboard (HTTP, not socket.io) ----
+// POST   /api/sounds?name=<name>&emoji=<emoji>&durationMs=<ms>   Authorization: Bearer <device token>
+//        body = audio (Content-Type one of SOUND_TYPES, <= SOUND_MAX_BYTES; magic bytes checked)
+//        → 201 { sound: Sound } (+ `sound:upsert` broadcast) | 400 | 401 | 409 board full (MAX_SOUNDS)
+//          | 413 | 415 | 429
+// DELETE /api/sounds/:id   uploader or admins/owner → 204 (+ `sound:deleted`)
+// GET    /sounds/:id       → the audio (no auth; unguessable id; cached forever)
+// Clients trim/convert clips to <= SOUND_MAX_MS before uploading and play them with Web Audio
+// (fetch + decodeAudioData), since the renderer CSP's media-src doesn't allow server URLs.

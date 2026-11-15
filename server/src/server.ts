@@ -6,8 +6,11 @@ import { AccessToken, TrackSource } from 'livekit-server-sdk'
 import type {
   AccessRequest,
   Ack,
+  Activity,
   ChannelType,
   ClientToServerEvents,
+  Presence,
+  PresenceStatus,
   Role,
   ServerToClientEvents,
   User,
@@ -15,13 +18,17 @@ import type {
 } from '../../shared/protocol.ts'
 import {
   ACCESS_REQUEST_TTL_MS,
+  ACTIVITY_NAME_MAX,
+  DEFAULT_PRESENCE,
   EMOJI_RE,
   hasEveryoneMention,
   MAX_ATTACHMENTS_PER_MESSAGE,
   MAX_MESSAGE_LENGTH,
   MAX_REACTIONS_PER_MESSAGE,
+  MAX_WATCHING,
   MENTION_TOKEN_RE,
   NUDGE_COOLDOWN_MS,
+  STATUS_TEXT_MAX,
 } from '../../shared/protocol.ts'
 import { streamIdentity } from '../../shared/stream.ts'
 import { loadConfig, type Config } from './config.ts'
@@ -71,6 +78,8 @@ export interface StartOptions extends Partial<Omit<Config, 'livekit'>> {
   nudgeCooldownMs?: number
   /** `message:react` requests per user per window. Default: LIMITS.reactionsPerWindow / reactionWindowMs. */
   reactionLimit?: { count: number; windowMs: number }
+  /** `presence:update` events per user per window. Default: LIMITS.presenceUpdatesPerWindow / presenceWindowMs. */
+  presenceLimit?: { count: number; windowMs: number }
 }
 
 export interface NexoInstance {
@@ -124,6 +133,11 @@ export const LIMITS = {
   reactionWindowMs: 5000,
   /** Longest emoji accepted by `message:react`, in UTF-16 units (RGI sequences are at most ~15). */
   emojiMaxLength: 32,
+  /** `presence:update` events per user (all sockets) in any window of presenceWindowMs; excess is dropped. */
+  presenceUpdatesPerWindow: 20,
+  presenceWindowMs: 60_000,
+  /** Oldest accepted activity start: `startedAt` is clamped to [now - this, now]. */
+  activityMaxAgeMs: 7 * 24 * 60 * 60 * 1000,
 } as const
 
 export const HANDSHAKE_ERRORS = {
@@ -179,6 +193,15 @@ export const MESSAGE_ERRORS = {
   slowDown: 'Slow down',
 } as const
 
+/** Ack errors of `profile:update`. */
+export const PROFILE_ERRORS = {
+  nothingToUpdate: 'Nothing to update',
+  invalidColor: 'Invalid color',
+  invalidStatusText: 'Invalid status',
+  statusTextTooLong: `Status is limited to ${STATUS_TEXT_MAX} characters`,
+  userNotFound: 'User not found',
+} as const
+
 /** admin and owner manage channels, delete any message, remove members and answer sign-in requests. */
 export const isAdminRole = (role: Role | undefined): boolean => role === 'admin' || role === 'owner'
 
@@ -217,6 +240,61 @@ export function normalizeChannelName(name: unknown, type: ChannelType): string |
   return n.length > 0 ? n : null
 }
 
+/**
+ * Free text shown to others (custom status, activity names): NFC, any whitespace run (newlines, tabs…) becomes
+ * one space, other control/format/unassigned characters (\p{C}: bidi overrides, zero-width spaces…) are
+ * removed except the zero-width joiner that emoji sequences need, then trimmed. Lengths are then checked in
+ * UTF-16 units, like an <input maxLength>.
+ */
+export function normalizeDisplayText(text: string): string {
+  return text
+    .normalize('NFC')
+    .replace(/\s+/g, ' ')
+    .replace(/(?!\u200d)\p{C}/gu, '')
+    .replace(/ {2,}/g, ' ')
+    .trim()
+}
+
+/** `text` cut to `max` UTF-16 units without splitting a surrogate pair, then trimmed. */
+function truncate(text: string, max: number): string {
+  if (text.length <= max) return text
+  const cut = text.slice(0, max)
+  return (/[\uD800-\uDBFF]$/.test(cut) ? cut.slice(0, -1) : cut).trim()
+}
+
+const PRESENCE_STATUSES: readonly string[] = ['online', 'idle', 'dnd'] satisfies PresenceStatus[]
+
+/**
+ * A valid activity from an untrusted payload, or undefined: the name normalized (normalizeDisplayText),
+ * non-empty and cut to ACTIVITY_NAME_MAX; `startedAt` a finite number, clamped to [now - maxAgeMs, now].
+ */
+export function parseActivity(raw: unknown, now: number, maxAgeMs: number = LIMITS.activityMaxAgeMs): Activity | undefined {
+  if (!isObj(raw) || !isStr(raw.name) || typeof raw.startedAt !== 'number' || !Number.isFinite(raw.startedAt)) return undefined
+  const name = truncate(normalizeDisplayText(raw.name), ACTIVITY_NAME_MAX)
+  if (!name) return undefined
+  return { name, startedAt: Math.min(now, Math.max(now - maxAgeMs, Math.round(raw.startedAt))) }
+}
+
+const samePresence = (a: Presence, b: Presence) =>
+  a.status === b.status &&
+  (a.activity === b.activity ||
+    (a.activity !== null && b.activity !== null && a.activity.name === b.activity.name && a.activity.startedAt === b.activity.startedAt))
+
+/** Sliding-window rate limiter: `allow(key, now)` records an event and says whether it is within `count` per `windowMs`. */
+function rateLimiter(limit: { count: number; windowMs: number }) {
+  const times = new Map<string, number[]>()
+  return {
+    allow(key: string, now: number): boolean {
+      const recent = (times.get(key) ?? []).filter((t) => now - t < limit.windowMs)
+      const allowed = recent.length < limit.count
+      if (allowed) recent.push(now)
+      times.set(key, recent)
+      return allowed
+    },
+    forget: (key: string) => times.delete(key),
+  }
+}
+
 function ok<T>(ack: unknown, data: T) {
   if (typeof ack === 'function') (ack as Ack<T>)({ ok: true, data })
 }
@@ -240,6 +318,7 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
     accessRequestSweepIntervalMs,
     nudgeCooldownMs = NUDGE_COOLDOWN_MS,
     reactionLimit = { count: LIMITS.reactionsPerWindow, windowMs: LIMITS.reactionWindowMs },
+    presenceLimit = { count: LIMITS.presenceUpdatesPerWindow, windowMs: LIMITS.presenceWindowMs },
     ...rest
   } = options
   const config: Config = { ...base, ...rest, livekit: { ...base.livekit, ...livekit } }
@@ -368,16 +447,40 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
     }
   }
 
-  /** userId -> times of their recent `message:react` requests (server-wide: shared by all of a user's sockets). */
-  const reactionTimes = new Map<string, number[]>()
-  /** Records a reaction request; false when the user is over reactionLimit. */
-  function reactionAllowed(userId: string, now: number): boolean {
-    const recent = (reactionTimes.get(userId) ?? []).filter((t) => now - t < reactionLimit.windowMs)
-    const allowed = recent.length < reactionLimit.count
-    if (allowed) recent.push(now)
-    reactionTimes.set(userId, recent)
-    return allowed
+  /** `message:react` requests per user (server-wide: shared by all of a user's sockets). */
+  const reactionRate = rateLimiter(reactionLimit)
+  /** `presence:update` events per user (all sockets). */
+  const presenceRate = rateLimiter(presenceLimit)
+
+  /**
+   * userId -> presence, only for online users whose presence isn't DEFAULT_PRESENCE (docs/SPEC.md §5.1).
+   * Per account: the latest `presence:update` from any of its sockets wins. Dropped when the last socket goes.
+   */
+  const presences = new Map<string, Presence>()
+  /** Stores a user's presence and broadcasts `presence:changed` if it differs from what others know. */
+  function setPresence(userId: string, next: Presence) {
+    if (samePresence(presences.get(userId) ?? DEFAULT_PRESENCE, next)) return
+    if (samePresence(next, DEFAULT_PRESENCE)) presences.delete(userId)
+    else presences.set(userId, next)
+    io.emit('presence:changed', { userId, presence: next })
   }
+
+  /**
+   * The `watching` list of a voice state from an untrusted payload: userIds currently in voice in `channelId`
+   * (per voiceStates), not `userId` itself, without duplicates, at most MAX_WATCHING. Anything else → [].
+   */
+  function sanitizeWatching(raw: unknown, userId: string, channelId: string): string[] {
+    if (!Array.isArray(raw)) return []
+    const out: string[] = []
+    for (const id of raw) {
+      if (out.length >= MAX_WATCHING) break
+      if (!isStr(id) || id === userId || out.includes(id)) continue
+      if (voiceStates.get(id)?.channelId === channelId) out.push(id)
+    }
+    return out
+  }
+  const sameList = (a: readonly string[] | undefined, b: readonly string[]) =>
+    !!a && a.length === b.length && a.every((v, i) => v === b[i])
 
   /**
    * Who a message notifies (docs/SPEC.md "Mentions"): the existing accounts named by `<@userId>` tokens,
@@ -404,7 +507,10 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
     avatarRoutes.removeFile(target.id)
     if (voiceStates.delete(target.id)) broadcastVoice()
     pruneNudges(Date.now(), target.id)
-    reactionTimes.delete(target.id)
+    reactionRate.forget(target.id)
+    presenceRate.forget(target.id)
+    // No presence:changed: user:removed drops everything clients know about the account.
+    presences.delete(target.id)
     io.emit('user:removed', { userId: target.id })
     // Their reactions on other people's messages are gone too.
     for (const update of removed.reactions) io.emit('message:reactions', update)
@@ -529,6 +635,7 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
       lastMessageAt: messages.lastByOthers(userId),
       lastMentionAt: messages.lastMentionAt(userId),
       accessRequests: requestsFor(me()),
+      presence: Object.fromEntries([...presences].filter(([id]) => connections.has(id))),
     })
     // The token is delivered exactly once.
     delete socket.data.newToken
@@ -640,7 +747,7 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
       if (!isStr(p.emoji) || p.emoji.length > LIMITS.emojiMaxLength || !EMOJI_RE.test(p.emoji)) {
         return fail(ack, MESSAGE_ERRORS.invalidEmoji)
       }
-      if (!reactionAllowed(userId, Date.now())) return fail(ack, MESSAGE_ERRORS.slowDown)
+      if (!reactionRate.allow(userId, Date.now())) return fail(ack, MESSAGE_ERRORS.slowDown)
       const result = messages.react(msg.id, userId, p.emoji, p.on)
       if (result === 'tooMany') return fail(ack, MESSAGE_ERRORS.tooManyReactions)
       if (result.changed) io.emit('message:reactions', { messageId: msg.id, channelId: msg.channelId, reactions: result.reactions })
@@ -747,6 +854,7 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
         deafened: p.deafened === true,
         camera: p.camera === true,
         streaming: p.streaming === true,
+        watching: sanitizeWatching(p.watching, userId, channel.id),
         socketId: socket.id,
       }
       const unchanged =
@@ -756,7 +864,8 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
         current.muted === next.muted &&
         current.deafened === next.deafened &&
         current.camera === next.camera &&
-        current.streaming === next.streaming
+        current.streaming === next.streaming &&
+        sameList(current.watching, next.watching)
       // The latest socket to announce a voice state owns it (e.g. joining from a second device).
       voiceStates.set(userId, next)
       if (!unchanged) broadcastVoice()
@@ -778,8 +887,9 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
       if (!channel || channel.type !== 'voice') return fail(ack, VOICE_ERRORS.channelNotFound)
       if (current.channelId === channel.id) return ok(ack, null)
       const from = channels.get(current.channelId ?? '')?.name ?? current.channelId
-      // In place: mute/deafen and the owning socket are kept; camera and stream end with the old room.
-      voiceStates.set(target.id, { ...current, channelId: channel.id, camera: false, streaming: false })
+      // In place: mute/deafen and the owning socket are kept; camera, stream and watched streams end with the
+      // old room.
+      voiceStates.set(target.id, { ...current, channelId: channel.id, camera: false, streaming: false, watching: [] })
       broadcastVoice()
       io.of('/').sockets.get(current.socketId)?.emit('voice:moved', { channelId: channel.id, by: userId })
       log(`[nexo] ${me().name} moved "${target.name}" from "${from}" to "${channel.name}"`)
@@ -809,11 +919,36 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
     // --- profile ---
 
     socket.on('profile:update', guard('profile:update', (p, ack) => {
-      if (!isObj(p) || !isStr(p.color) || !COLOR_RE.test(p.color)) return fail(ack, 'Invalid color')
-      const updated = users.setColor(userId, p.color.toLowerCase())
-      if (!updated) return fail(ack, 'User not found')
+      if (!isObj(p) || (p.color === undefined && p.statusText === undefined)) return fail(ack, PROFILE_ERRORS.nothingToUpdate)
+      const patch: { color?: string; statusText?: string | null } = {}
+      if (p.color !== undefined) {
+        if (!isStr(p.color) || !COLOR_RE.test(p.color)) return fail(ack, PROFILE_ERRORS.invalidColor)
+        patch.color = p.color.toLowerCase()
+      }
+      if (p.statusText !== undefined) {
+        if (p.statusText !== null && !isStr(p.statusText)) return fail(ack, PROFILE_ERRORS.invalidStatusText)
+        const text = p.statusText === null ? '' : normalizeDisplayText(p.statusText)
+        if (text.length > STATUS_TEXT_MAX) return fail(ack, PROFILE_ERRORS.statusTextTooLong)
+        patch.statusText = text || null
+      }
+      const updated = users.updateProfile(userId, patch)
+      if (!updated) return fail(ack, PROFILE_ERRORS.userNotFound)
       publishUser(updated)
       ok(ack, updated)
+    }))
+
+    // --- presence (status, activity) ---
+
+    socket.on('presence:update', guard('presence:update', (p) => {
+      if (!isObj(p)) return
+      const now = Date.now()
+      // Dropped silently: clients re-send their full presence after every reconnect.
+      if (!presenceRate.allow(userId, now)) return
+      const next: Presence = { ...(presences.get(userId) ?? DEFAULT_PRESENCE) }
+      if (isStr(p.status) && PRESENCE_STATUSES.includes(p.status)) next.status = p.status as PresenceStatus
+      if (p.activity === null) next.activity = null
+      else if (p.activity !== undefined) next.activity = parseActivity(p.activity, now) ?? next.activity
+      setPresence(userId, next)
     }))
 
     // --- accounts (docs/SPEC-ACCOUNTS.md §2) ---
@@ -870,7 +1005,11 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
         voiceStates.delete(userId)
         broadcastVoice()
       }
-      if (n <= 0) broadcastPresence()
+      if (n <= 0) {
+        // Clients clear what they showed (status, activity) for someone who went offline.
+        setPresence(userId, DEFAULT_PRESENCE)
+        broadcastPresence()
+      }
       log(`[nexo] ${me().name} disconnected (${reason})`)
     })
   })

@@ -186,14 +186,22 @@ The visual design is Nexo's own: dark ink background, mint accent, rounded tiles
 - Identity handshake (§7) during the socket.io `connect` middleware.
 - Create, read, update and delete text and voice channels. Every change is broadcast to all clients.
 - Persist messages (with replies, edits, mentions and reactions). Serve history in pages of 50, keyed by timestamp.
-- **Presence:** in-memory map of userId to open socket count.
-- **Voice state:** in-memory map of userId to `{channelId, muted, deafened, camera, streaming, socketId}`. The client is the source of truth and re-sends its state after reconnecting. The entry is cleared when the owning socket disconnects.
+- **Presence:** in-memory map of userId to open socket count (online/offline), plus a map of userId to
+  `Presence` `{status: 'online'|'idle'|'dnd', activity: {name, startedAt} | null}` for online users whose
+  presence isn't `DEFAULT_PRESENCE` (`{status: 'online', activity: null}`). Per account: the latest
+  `presence:update` from any of its sockets wins. When the account's last socket disconnects the entry is
+  dropped and `presence:changed` with `DEFAULT_PRESENCE` is broadcast, so clients clear it; removing the
+  account drops it silently (`user:removed` is enough). Bootstrap `presence` carries the non-default entries.
+- **Voice state:** in-memory map of userId to `{channelId, muted, deafened, camera, streaming, watching, socketId}`. The client is the source of truth and re-sends its state after reconnecting. The entry is cleared when the owning socket disconnects.
 - Issue LiveKit JWTs for room `voice-<channelId>` (identity = userId, name = display name, metadata = `{color}`).
 
 ### 5.2 Data model (SQLite)
 
 ```sql
-users    (id TEXT PK, name TEXT UNIQUE NOCASE, color TEXT, token_hash TEXT UNIQUE, created_at INT)
+users    (id TEXT PK, name TEXT UNIQUE NOCASE, color TEXT, token_hash TEXT UNIQUE, created_at INT,
+          avatar TEXT NULL, role 'owner'|'admin'|'member',
+          status_text TEXT NULL,                  custom status, NULL = none
+          avatar_animated INT DEFAULT 0)          1 = the profile picture is a GIF
 channels (id TEXT PK, name TEXT, type 'text'|'voice', position INT, created_at INT)
 messages (id TEXT PK, channel_id → channels ON DELETE CASCADE, user_id → users,
           content TEXT, created_at INT,          INDEX (channel_id, created_at)
@@ -217,7 +225,7 @@ Voice and presence state stay in memory on purpose. They are temporary and rebui
 
 ### 5.3 Why socket.io and not REST
 
-All operations are small and need live fan-out. A single socket connection with acks handles request and response (`emit(event, payload, ack)`) as well as broadcasts, and socket.io adds reconnection and buffering. Plain HTTP is used only where it fits better than a socket: `GET /health`, and profile pictures (`PUT`/`DELETE /api/avatar` with the device token as a bearer token, and cacheable `GET /avatars/:userId?v=`). Uploaded image bytes don't belong on the realtime socket.
+All operations are small and need live fan-out. A single socket connection with acks handles request and response (`emit(event, payload, ack)`) as well as broadcasts, and socket.io adds reconnection and buffering. Plain HTTP is used only where it fits better than a socket: `GET /health`, and profile pictures (`PUT`/`DELETE /api/avatar` with the device token as a bearer token, and cacheable `GET /avatars/:userId?v=`). Pictures are WebP, PNG or JPEG up to 512 KB, or an animated GIF up to 2 MB (`AVATAR_ANIMATED_MAX_BYTES`; the user gets `avatarAnimated: true`, any other upload or a delete sets it back to false). The file's magic bytes must match its `Content-Type`, and the served type is sniffed from the stored file. Uploaded image bytes don't belong on the realtime socket.
 
 ---
 
@@ -299,18 +307,20 @@ All shared types live in `shared/protocol.ts`, imported by both the server and t
 | `message:history` | `{channelId, before?}` | `Message[]` (oldest first, ≤ 50) |
 | `typing` | `{channelId}` | — |
 | `voice:token` | `{channelId}` | `{url, token, room}` |
-| `voice:state` | `{channelId \| null, muted, deafened, camera, streaming}` | — |
+| `voice:state` | `{channelId \| null, muted, deafened, camera, streaming, watching?}` (`watching`: userIds whose stream you watch; the server keeps only ids in voice in the same channel, not yours, deduplicated, at most `MAX_WATCHING` = 16; missing = `[]`; `voice:move` clears it) | — |
 | `voice:move` | `{userId, channelId}` (admins/owner; admins can't move the owner; same channel = no-op) | `null` |
 | `voice:nudge` | `{userId}` (target in voice and muted or deafened; not yourself; once per `NUDGE_COOLDOWN_MS` = 15 s per sender → target) | `null` |
-| `profile:update` | `{color}` | `User` |
+| `profile:update` | `{color?, statusText?}`, at least one ("Nothing to update"). `color` `#rrggbb` ("Invalid color"). `statusText` string or null ("Invalid status"): normalized (NFC, whitespace runs → one space, other `\p{C}` removed except the emoji ZWJ, trimmed), `''`/null clears it, longer than `STATUS_TEXT_MAX` = 64 UTF-16 units → "Status is limited to 64 characters". Broadcasts `user:upsert` | `User` |
+| `presence:update` | `{status?, activity?}` (no ack). Omitted fields keep their value; invalid ones are ignored (`status` not in `online`/`idle`/`dnd`; `activity` not `null` or `{name, startedAt}` with a non-empty name and finite `startedAt`). The activity name is normalized like status text and cut to `ACTIVITY_NAME_MAX` = 64; `startedAt` is clamped to [now − 7 days, now]. 20 updates per account per minute, excess dropped silently. Broadcasts `presence:changed` only when it changed | — |
 
 ### Server → Client
 
 | Event | Payload |
 |---|---|
-| `bootstrap` | `{serverName, me, token?, users, online, channels, voice, lastMessageAt, lastMentionAt, …}` sent on every connect |
+| `bootstrap` | `{serverName, me, token?, users, online, channels, voice, lastMessageAt, lastMentionAt, presence, …}` sent on every connect (`presence`: userId → `Presence` for online users whose presence isn't the default) |
 | `user:upsert` | `User` |
 | `presence` | `string[]` of online user IDs |
+| `presence:changed` | `{userId, presence}` (`DEFAULT_PRESENCE` when they went back to plain online or offline) |
 | `channel:upsert` / `channel:deleted` | `Channel` / `{channelId}` |
 | `message:new` / `message:deleted` | `Message` / `{messageId, channelId}` (replies to it show a deleted preview) |
 | `message:updated` | `Message` (an edit, complete: replace in place) |

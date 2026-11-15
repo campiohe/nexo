@@ -123,9 +123,9 @@ images over the same port (3001).
 
 | Request | Auth | Result |
 |---|---|---|
-| `PUT /api/avatar` (body = image, `Content-Type` `image/webp`/`png`/`jpeg`, ≤ 512 KB) | `Authorization: Bearer <device token>` | `200 {user}` + `user:upsert` broadcast |
-| `DELETE /api/avatar` | same | `200 {user}` + `user:upsert` broadcast |
-| `GET /avatars/<userId>?v=<user.avatar>` | none | the image, cached long-term (the version changes on every upload) |
+| `PUT /api/avatar` (body = image, `Content-Type` `image/webp`/`png`/`jpeg` ≤ 512 KB, or `image/gif` ≤ 2 MB) | `Authorization: Bearer <device token>` | `200 {user}` + `user:upsert` broadcast (`avatarAnimated` true for a GIF, false otherwise) |
+| `DELETE /api/avatar` | same | `200 {user}` (avatar null, `avatarAnimated` false) + `user:upsert` broadcast |
+| `GET /avatars/<userId>?v=<user.avatar>` | none | the image with its sniffed `Content-Type`, cached long-term (the version changes on every upload) |
 
 The server checks the file's magic bytes against its `Content-Type`. It doesn't decode images, so it needs
 no native image libraries. Errors come back as JSON `{error}`: 400 empty, 401 bad token, 413 too big,

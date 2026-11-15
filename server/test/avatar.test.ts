@@ -10,7 +10,7 @@ import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { io as connectClient, type Socket as ClientSocket } from 'socket.io-client'
 import type { Bootstrap, ClientToServerEvents, HandshakeAuth, ServerToClientEvents, User } from '../../shared/protocol.ts'
-import { AVATAR_MAX_BYTES } from '../../shared/protocol.ts'
+import { AVATAR_ANIMATED_MAX_BYTES, AVATAR_MAX_BYTES } from '../../shared/protocol.ts'
 import { start, type NexoInstance, type StartOptions } from '../src/server.ts'
 
 type Client = ClientSocket<ServerToClientEvents, ClientToServerEvents>
@@ -75,6 +75,8 @@ function nextUpsert(socket: Client, match: (u: User) => boolean): Promise<User> 
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52, 1, 2, 3])
 const JPEG = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 16, 0x4a, 0x46, 0x49, 0x46, 0, 1, 9, 9])
 const WEBP = new Uint8Array([...Buffer.from('RIFF'), 20, 0, 0, 0, ...Buffer.from('WEBPVP8 '), 4, 5, 6, 7])
+const GIF = new Uint8Array([...Buffer.from('GIF89a'), 160, 0, 160, 0, 0xf7, 0, 0, 1, 2, 3, 0x3b])
+const GIF87 = new Uint8Array([...Buffer.from('GIF87a'), 1, 0, 1, 0, 0, 0, 0, 0x3b])
 const token12 = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex').slice(0, 12)
 
 function put(url: string, token: string | null, type: string, body: BodyInit) {
@@ -211,7 +213,7 @@ describe('avatar HTTP API', () => {
     const text = new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg"></svg>')
     let res = await put(url, alice.token, 'image/png', text)
     assert.equal(res.status, 415)
-    assert.match(await errorOf(res), /not a WebP, PNG or JPEG/)
+    assert.match(await errorOf(res), /not a WebP, PNG, JPEG or GIF/)
 
     res = await put(url, alice.token, 'image/webp', PNG)
     assert.equal(res.status, 415, 'declared type must match the bytes')
@@ -221,8 +223,12 @@ describe('avatar HTTP API', () => {
     assert.equal(res.status, 415)
     await errorOf(res)
 
-    res = await put(url, alice.token, 'image/gif', new TextEncoder().encode('GIF89a......'))
+    res = await put(url, alice.token, 'image/avif', new TextEncoder().encode('....ftypavif'))
     assert.equal(res.status, 415)
+    await errorOf(res)
+
+    res = await put(url, alice.token, 'image/gif', new TextEncoder().encode('GIF90a......'))
+    assert.equal(res.status, 415, 'unknown GIF version')
     await errorOf(res)
 
     // Unchanged.
@@ -320,6 +326,119 @@ describe('avatar HTTP API', () => {
   })
 })
 
+describe('animated (GIF) profile pictures', () => {
+  let server: NexoInstance
+  let url: string
+  let alice: { socket: Client; boot: Bootstrap; token: string }
+  let bob: { socket: Client; boot: Bootstrap; token: string }
+
+  before(async () => {
+    server = await boot()
+    url = server.url
+    const a = await connect(url, { name: 'Alice', color: '#ff0000' })
+    alice = { ...a, token: a.boot.token! }
+    const b = await connect(url, { name: 'Bob', color: '#00ff00' })
+    bob = { ...b, token: b.boot.token! }
+  })
+  after(() => server.close())
+
+  test('users start with avatarAnimated: false', () => {
+    assert.equal(alice.boot.me.avatarAnimated, false)
+    assert.ok(bob.boot.users.every((u) => u.avatarAnimated === false))
+  })
+
+  test('GIF upload: avatarAnimated true, broadcast, served as image/gif, persisted', async () => {
+    const meId = alice.boot.me.id
+    const upsert = nextUpsert(bob.socket, (u) => u.id === meId && u.avatarAnimated === true)
+    const res = await put(url, alice.token, 'image/gif', GIF)
+    assert.equal(res.status, 200)
+    const { user } = (await res.json()) as { user: User }
+    assert.equal(user.avatar, token12(GIF))
+    assert.equal(user.avatarAnimated, true)
+    assert.deepEqual(await upsert, user)
+
+    const img = await fetch(`${url}/avatars/${meId}?v=${user.avatar}`)
+    assert.equal(img.status, 200)
+    assert.equal(img.headers.get('content-type'), 'image/gif')
+    assert.deepEqual(new Uint8Array(await img.arrayBuffer()), GIF)
+
+    const again = await connect(url, { token: bob.token })
+    assert.equal(again.boot.users.find((u) => u.id === meId)?.avatarAnimated, true)
+    again.socket.close()
+
+    // GIF87a too.
+    const old = await put(url, alice.token, 'image/gif', GIF87)
+    assert.equal(old.status, 200)
+    assert.equal(((await old.json()) as { user: User }).user.avatarAnimated, true)
+  })
+
+  test('a static upload clears avatarAnimated; so does delete', async () => {
+    const meId = alice.boot.me.id
+    let res = await put(url, alice.token, 'image/png', PNG)
+    assert.equal(res.status, 200)
+    let { user } = (await res.json()) as { user: User }
+    assert.equal(user.avatarAnimated, false)
+    assert.equal((await fetch(`${url}/avatars/${meId}?v=${user.avatar}`)).headers.get('content-type'), 'image/png')
+
+    assert.equal((await put(url, alice.token, 'image/gif', GIF)).status, 200)
+    res = await del(url, alice.token)
+    ;({ user } = (await res.json()) as { user: User })
+    assert.equal(user.avatar, null)
+    assert.equal(user.avatarAnimated, false)
+  })
+
+  test('declared type must match the bytes (GIF vs PNG) → 415', async () => {
+    let res = await put(url, alice.token, 'image/png', GIF)
+    assert.equal(res.status, 415)
+    assert.equal(await errorOf(res), 'The file is image/gif, not image/png')
+
+    res = await put(url, alice.token, 'image/gif', PNG)
+    assert.equal(res.status, 415)
+    assert.equal(await errorOf(res), 'The file is image/png, not image/gif')
+  })
+
+  test('GIFs may be up to AVATAR_ANIMATED_MAX_BYTES; static pictures keep AVATAR_MAX_BYTES', async () => {
+    // A GIF bigger than the static limit is fine.
+    const mid = new Uint8Array(AVATAR_MAX_BYTES * 2)
+    mid.set(GIF)
+    let res = await put(url, bob.token, 'image/gif', mid)
+    assert.equal(res.status, 200)
+    assert.equal(((await res.json()) as { user: User }).user.avatarAnimated, true)
+
+    const max = new Uint8Array(AVATAR_ANIMATED_MAX_BYTES)
+    max.set(GIF)
+    assert.equal((await put(url, bob.token, 'image/gif', max)).status, 200, 'exactly at the limit')
+
+    const big = new Uint8Array(AVATAR_ANIMATED_MAX_BYTES + 1)
+    big.set(GIF)
+    res = await put(url, bob.token, 'image/gif', big)
+    assert.equal(res.status, 413)
+    assert.equal(await errorOf(res), 'Animated profile pictures are limited to 2 MB')
+
+    // Streamed without Content-Length.
+    const chunk = new Uint8Array(256 * 1024)
+    chunk.set(GIF)
+    let sent = 0
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent > AVATAR_ANIMATED_MAX_BYTES * 1.5) return controller.close()
+        sent += chunk.length
+        controller.enqueue(chunk)
+      },
+    })
+    res = await put(url, bob.token, 'image/gif', stream)
+    assert.equal(res.status, 413)
+    await errorOf(res)
+
+    // A PNG of the GIF's size is still too big.
+    const png = new Uint8Array(AVATAR_MAX_BYTES * 2)
+    png.set(PNG)
+    res = await put(url, bob.token, 'image/png', png)
+    assert.equal(res.status, 413)
+    assert.equal(await errorOf(res), 'Profile pictures are limited to 512 KB')
+  })
+})
+
 describe('avatar rate limit', () => {
   let server: NexoInstance
 
@@ -386,5 +505,6 @@ describe('users.avatar migration', () => {
     const cols = (check.prepare('PRAGMA table_info(users)').all() as { name: string }[]).map((c) => c.name)
     check.close()
     assert.equal(cols.filter((c) => c === 'avatar').length, 1)
+    assert.equal(cols.filter((c) => c === 'avatar_animated').length, 1)
   })
 })
