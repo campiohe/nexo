@@ -12,17 +12,56 @@ import { MemberList } from './MemberList'
 import { UpdateBanner } from './UpdateBanner'
 import { AccessRequestBanners } from './AccessRequestBanners'
 import { HashIcon, SpeakerIcon, UsersIcon } from './icons'
+import { PinIcon } from './chatIcons'
+import { SearchBox } from './SearchBox'
+import { SearchPanel } from './SearchPanel'
+import { PinsPanel } from './PinsPanel'
+import { useChatPanels } from '../store/chatPanels'
+import { domKeyMatches, isTypingTarget } from '../lib/keybinds'
+import { useKeybinds } from '../voice/prefs'
+import '../styles/panels.css'
 
 export function MainLayout() {
   const membersOpen = useUi((s) => s.membersOpen)
+  // Search results / pinned messages take the member list's place while open.
+  const panel = useChatPanels((s) => s.panel)
+  useChatShortcuts()
   return (
-    <div className={`layout ${membersOpen ? 'has-members' : ''}`}>
+    <div className={`layout ${panel ? 'has-panel' : membersOpen ? 'has-members' : ''}`}>
       <Sidebar />
       <Center />
-      {membersOpen && <MemberList />}
+      {panel === 'search' ? <SearchPanel /> : panel === 'pins' ? <PinsPanel /> : membersOpen && <MemberList />}
       <PipLayer />
     </div>
   )
+}
+
+/** Ctrl/Cmd+F focuses the search box; Escape closes the side panel (unless something else uses it). */
+function useChatShortcuts() {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return
+      const ui = useUi.getState()
+      const blocked = ui.settingsOpen || ui.switcherOpen || !!document.querySelector('.modal-backdrop')
+      if (e.code === 'KeyF' && (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey) {
+        // A user-assigned in-app shortcut on the same keys wins.
+        const { quickSwitcher, openSettings } = useKeybinds.getState()
+        if (blocked || domKeyMatches(quickSwitcher, e) || domKeyMatches(openSettings, e)) return
+        e.preventDefault()
+        useChatPanels.getState().focusSearch()
+        return
+      }
+      if (e.key === 'Escape' && useChatPanels.getState().panel && !blocked) {
+        const t = e.target
+        // Typing somewhere else (composer, editor) keeps its own Escape.
+        if (isTypingTarget(t) && !(t instanceof Element && t.closest('.side-panel'))) return
+        e.preventDefault()
+        useChatPanels.getState().openPanel(null)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
 }
 
 function Center() {
@@ -31,6 +70,8 @@ function Center() {
   const connection = useApp((s) => s.connection)
   const membersOpen = useUi((s) => s.membersOpen)
   const toggleMembers = useUi((s) => s.toggleMembers)
+  const panel = useChatPanels((s) => s.panel)
+  const membersShown = membersOpen && !panel
   const inThisVoice = useVoice((s) => !!channel && s.channelId === channel.id)
   const canManage = useApp((s) => canManageChannels(s.me))
 
@@ -61,18 +102,38 @@ function Center() {
           </>
         )}
         <span className="grow" />
-        <kbd className="kbd-hint" title="Jump to a channel">
-          Ctrl K
-        </kbd>
+        {channel?.type === 'text' && (
+          <button
+            className={`icon-btn ${panel === 'pins' ? 'is-active' : ''}`}
+            onClick={() => useChatPanels.getState().openPanel(panel === 'pins' ? null : 'pins')}
+            aria-pressed={panel === 'pins'}
+            aria-label="Pinned messages"
+            title="Pinned messages"
+          >
+            <PinIcon size={18} />
+          </button>
+        )}
         <button
-          className={`icon-btn ${membersOpen ? 'is-active' : ''}`}
-          onClick={toggleMembers}
-          aria-pressed={membersOpen}
+          className={`icon-btn ${membersShown ? 'is-active' : ''}`}
+          onClick={() => {
+            // With a side panel open, the button brings the member list back.
+            if (panel) {
+              useChatPanels.getState().openPanel(null)
+              if (!membersOpen) toggleMembers()
+            } else {
+              toggleMembers()
+            }
+          }}
+          aria-pressed={membersShown}
           aria-label="Toggle member list"
-          title={membersOpen ? 'Hide members' : 'Show members'}
+          title={membersShown ? 'Hide members' : 'Show members'}
         >
           <UsersIcon size={18} />
         </button>
+        <SearchBox />
+        <kbd className="kbd-hint" title="Jump to a channel">
+          Ctrl K
+        </kbd>
       </header>
       {connection !== 'connected' && (
         <div className="connection-banner" role="status">

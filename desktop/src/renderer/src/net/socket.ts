@@ -8,13 +8,25 @@ import type {
   Message,
   ServerToClientEvents,
 } from '@shared/protocol'
-import { MESSAGE_PAGE_SIZE } from '@shared/protocol'
-import { defaultChannelId, mergeMessages, sortChannels, useApp, type ChannelMessages } from '../store/app'
+import { MESSAGE_PAGE_SIZE, REPLY_PREVIEW_LENGTH } from '@shared/protocol'
+import {
+  defaultChannelId,
+  forgetDeletedMessage,
+  mapMessage,
+  mergeMessages,
+  sortChannels,
+  useApp,
+  type ChannelMessages,
+} from '../store/app'
 import { settings } from '../store/settings'
 import { migrateLogin } from '../store/logins'
 import { handleNotRecognized, resetSignIn, saveNewLogin } from '../store/signin'
 import { forgetChannel, loadReadState, noteDeleted, noteMessage, resetUnread } from '../store/unread'
 import { addAccessRequest, applyUserRemoved, dropAccessRequest, setAccessRequests } from '../store/admin'
+import { notifyMessage } from '../lib/notify'
+import { applyPresenceChanged, pruneOffline, setBootstrapPresence } from '../store/presence'
+import { removeSound, resetSounds, setBootstrapSounds, upsertSound } from '../store/sounds'
+import { chatPanelsMessageDeleted, chatPanelsMessageUpdated, resetChatPanels } from '../store/chatPanels'
 
 export type NexoSocket = Socket<ServerToClientEvents, ClientToServerEvents>
 
@@ -183,6 +195,12 @@ function wire(s: NexoSocket) {
 
   s.on('presence', (ids) => {
     useApp.setState({ online: toSet(ids) })
+    pruneOffline(ids)
+  })
+
+  s.on('presence:changed', ({ userId, presence }) => {
+    if (socket !== s || !presence || typeof presence !== 'object') return
+    applyPresenceChanged(userId, presence)
   })
 
   s.on('channel:upsert', (c) => {
@@ -208,6 +226,7 @@ function wire(s: NexoSocket) {
 
   s.on('message:new', (m) => {
     noteMessage(m, useApp.getState().me?.id)
+    notifyMessage(m)
     useApp.setState((st) => {
       const cm = st.messages[m.channelId]
       const patch: Partial<typeof st> = {}
@@ -227,13 +246,48 @@ function wire(s: NexoSocket) {
   })
 
   s.on('message:deleted', ({ messageId, channelId }) => {
+    forgetDeletedMessage(messageId)
+    chatPanelsMessageDeleted(messageId)
     const st = useApp.getState()
     const cm = st.messages[channelId]
-    const deleted = cm?.items.find((x) => x.id === messageId)
-    if (!cm || !deleted) return
-    const items = cm.items.filter((x) => x.id !== messageId)
+    if (!cm) return
+    const deleted = cm.items.find((x) => x.id === messageId)
+    // Loaded replies to it keep their preview line, shown as "Original message was deleted".
+    const replies = cm.items.some((x) => x.replyTo?.id === messageId)
+    if (!deleted && !replies) return
+    const items = cm.items
+      .filter((x) => x.id !== messageId)
+      .map((x) =>
+        x.replyTo?.id === messageId
+          ? { ...x, replyTo: { ...x.replyTo, content: '', hasAttachments: false, deleted: true } }
+          : x,
+      )
     useApp.setState({ messages: { ...st.messages, [channelId]: { ...cm, items } } })
-    noteDeleted(channelId, deleted, items, st.me?.id)
+    if (deleted) noteDeleted(channelId, deleted, items, st.me?.id)
+  })
+
+  s.on('message:updated', (m) => {
+    chatPanelsMessageUpdated(m)
+    useApp.setState((st) => {
+      const cm = st.messages[m.channelId]
+      if (!cm) return {}
+      // Replace in place, and refresh the preview of loaded replies to it.
+      const items = cm.items.map((x) => {
+        if (x.id === m.id) return m
+        if (x.replyTo?.id === m.id && !x.replyTo.deleted)
+          return { ...x, replyTo: { ...x.replyTo, content: cutPreview(m.content) } }
+        return x
+      })
+      return { messages: { ...st.messages, [m.channelId]: { ...cm, items } } }
+    })
+  })
+
+  s.on('message:reactions', ({ messageId, channelId, reactions }) => {
+    // Not loaded: ignored (history loads bring the current list).
+    useApp.setState((st) => {
+      const messages = mapMessage(st.messages, channelId, messageId, (m) => ({ ...m, reactions }))
+      return messages === st.messages ? {} : { messages }
+    })
   })
 
   s.on('typing', ({ channelId, userId }) => {
@@ -255,6 +309,24 @@ function wire(s: NexoSocket) {
       .catch((err) => console.warn('[nexo] voice move failed', err))
   })
 
+  // ---- soundboard (store/sounds.ts; playback in voice/soundboard.ts, lazy like voice/session) ----
+  s.on('sound:upsert', (sound) => {
+    if (socket !== s) return
+    upsertSound(sound)
+  })
+
+  s.on('sound:deleted', ({ soundId }) => {
+    if (socket !== s) return
+    removeSound(soundId)
+  })
+
+  s.on('sound:played', (p) => {
+    if (socket !== s) return
+    void import('../voice/soundboard')
+      .then((m) => m.handleSoundPlayed(p))
+      .catch((err) => console.warn('[nexo] soundboard playback failed', err))
+  })
+
   s.on('voice:nudged', ({ by }) => {
     if (socket !== s) return
     void import('../voice/voiceActions')
@@ -266,6 +338,7 @@ function wire(s: NexoSocket) {
   s.on('user:removed', ({ userId }) => {
     if (socket !== s) return
     applyUserRemoved(userId)
+    stripReactionsOf(userId)
   })
 
   s.on('access:request', (r) => {
@@ -327,12 +400,15 @@ async function handleBootstrap(b: Bootstrap) {
     messages: sameIdentity ? messages : {},
     typing: {},
   })
+  setBootstrapPresence(b.presence)
+  setBootstrapSounds(b.sounds)
   resetSignIn() // signed in: any onboarding "Welcome back" / sign-in request state is obsolete
   loadReadState(
     url,
     b.me.id,
     b.lastMessageAt,
     channels.filter((c) => c.type === 'text').map((c) => c.id),
+    b.lastMentionAt,
   )
   useApp.getState().selectChannel(selected)
   setAccessRequests(b.accessRequests)
@@ -380,7 +456,10 @@ async function handleUnknownToken() {
   const url = currentUrl
   disconnect()
   await settings.setToken(url, null)
+  // The same session stores as store/app.ts logout / changeServer (presence: lib/presenceSync.ts, on `me`).
   resetUnread()
+  resetChatPanels()
+  resetSounds()
   useApp.setState({
     view: 'onboarding',
     connection: 'idle',
@@ -388,6 +467,36 @@ async function handleUnknownToken() {
     me: null,
     onboardingNotice:
       "This server doesn't recognize this device anymore (its data may have been reset). Pick a name to join again.",
+  })
+}
+
+/** Like the server's ReplyPreview content: the first REPLY_PREVIEW_LENGTH characters, never half a surrogate pair. */
+function cutPreview(content: string): string {
+  if (content.length <= REPLY_PREVIEW_LENGTH) return content
+  const end = /[\uD800-\uDBFF]/.test(content[REPLY_PREVIEW_LENGTH - 1]) ? REPLY_PREVIEW_LENGTH - 1 : REPLY_PREVIEW_LENGTH
+  return content.slice(0, end)
+}
+
+/** A removed account (safety net; the server also sends `message:reactions`): take its reactions off every loaded message (dropping reactions left empty). */
+function stripReactionsOf(userId: string) {
+  useApp.setState((st) => {
+    let messages: typeof st.messages | null = null
+    for (const [cid, cm] of Object.entries(st.messages)) {
+      if (!cm.items.some((m) => m.reactions?.some((r) => r.userIds.includes(userId)))) continue
+      const items = cm.items.map((m) =>
+        m.reactions?.some((r) => r.userIds.includes(userId))
+          ? {
+              ...m,
+              reactions: m.reactions
+                .map((r) => ({ ...r, userIds: r.userIds.filter((u) => u !== userId) }))
+                .filter((r) => r.userIds.length > 0),
+            }
+          : m,
+      )
+      messages ??= { ...st.messages }
+      messages[cid] = { ...cm, items }
+    }
+    return messages ? { messages } : {}
   })
 }
 

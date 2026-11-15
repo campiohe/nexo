@@ -1,0 +1,68 @@
+/* Settings → Appearance (AppearanceSettings.tsx) and the compact message density. Colors come from tokens.css. */
+
+/* ---------- settings ---------- */
+
+.appearance-group { display: flex; flex-direction: column; gap: 10px; }
+.appearance-row { display: flex; align-items: flex-start; gap: 16px; }
+.appearance-zoom-value { flex: none; min-width: 48px; text-align: right; font: 600 13px var(--mono); color: var(--text-0); }
+
+.theme-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.theme-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 8px 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-0);
+  cursor: pointer;
+  transition: border-color 0.15s var(--ease), box-shadow 0.15s var(--ease);
+}
+.theme-card:hover { border-color: var(--line-strong); }
+.theme-card.is-selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.theme-card:has(input:focus-visible) { box-shadow: var(--focus-ring); }
+.theme-card-label { display: flex; align-items: center; gap: 8px; padding: 0 2px; font-weight: 600; }
+.theme-card-radio {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--text-2);
+  border-radius: 50%;
+  transition: border-color 0.15s var(--ease), border-width 0.15s var(--ease);
+}
+.theme-card.is-selected .theme-card-radio { border-color: var(--accent); border-width: 5px; }
+
+/* Preview: a mock app per palette (data-theme on .tp-app picks the palette). System: dark, with light cut in diagonally. */
+.theme-preview {
+  position: relative;
+  display: flex;
+  height: 76px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+.tp-app { flex: 1; display: flex; min-width: 0; background: var(--bg-2); }
+.theme-preview.is-system .tp-app + .tp-app { position: absolute; inset: 0; clip-path: polygon(58% 0, 100% 0, 100% 100%, 42% 100%); }
+.tp-side { display: flex; flex-direction: column; gap: 5px; width: 30%; padding: 8px 6px; background: var(--bg-1); border-right: 1px solid var(--line); }
+.tp-bar { height: 5px; border-radius: 3px; background: var(--bg-3); }
+.tp-bar.is-active { background: var(--bg-4); }
+.tp-main { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; gap: 6px; min-width: 0; padding: 8px; }
+.tp-msg { display: flex; align-items: center; gap: 5px; }
+.tp-dot { flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--accent); }
+.tp-dot.is-alt { background: var(--warn); }
+.tp-line { height: 4px; border-radius: 2px; background: var(--text-2); opacity: 0.6; }
+.tp-msg:nth-child(1) .tp-line { width: 70%; }
+.tp-msg:nth-child(2) .tp-line { width: 48%; }
+.tp-composer { height: 10px; margin-top: 2px; border-radius: 3px; background: var(--bg-3); border: 1px solid var(--line); }
+
+/* ---------- compact message density (<html data-density="compact">) ---------- */
+
+:root[data-density='compact'] .message { grid-template-columns: 44px minmax(0, 1fr); padding-right: 40px; }
+:root[data-density='compact'] .message.is-head { margin-top: 6px; padding-top: 1px; }
+:root[data-density='compact'] .day-separator { margin: 8px 20px 4px; }
+:root[data-density='compact'] .message-content { line-height: 1.375; }
+:root[data-density='compact'] .message-gutter { padding-top: 1px; }
+/* Avatar sizes are inline styles (Avatar.tsx), hence !important. */
+:root[data-density='compact'] .message-gutter .avatar { width: 24px !important; height: 24px !important; font-size: 10px !important; }
+:root[data-density='compact'] .channel-intro { padding-top: 16px; }

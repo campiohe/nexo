@@ -116,16 +116,16 @@ Benchmarks and their tools: [docs/benchmarks](benchmarks) (`native/tools/gpu-bur
 
 ## Server HTTP API
 
-Besides socket.io ([SPEC §8](SPEC.md#8-wire-protocol-socketio)), the server serves profile pictures and chat
-images over the same port (3001).
+Besides socket.io ([SPEC §8](SPEC.md#8-wire-protocol-socketio)), the server serves profile pictures, chat
+images, link previews and soundboard clips over the same port (3001).
 
 **Profile pictures** are stored as `DATA_DIR/avatars/<userId>`:
 
 | Request | Auth | Result |
 |---|---|---|
-| `PUT /api/avatar` (body = image, `Content-Type` `image/webp`/`png`/`jpeg`, ≤ 512 KB) | `Authorization: Bearer <device token>` | `200 {user}` + `user:upsert` broadcast |
-| `DELETE /api/avatar` | same | `200 {user}` + `user:upsert` broadcast |
-| `GET /avatars/<userId>?v=<user.avatar>` | none | the image, cached long-term (the version changes on every upload) |
+| `PUT /api/avatar` (body = image, `Content-Type` `image/webp`/`png`/`jpeg` ≤ 512 KB, or `image/gif` ≤ 2 MB) | `Authorization: Bearer <device token>` | `200 {user}` + `user:upsert` broadcast (`avatarAnimated` true for a GIF, false otherwise) |
+| `DELETE /api/avatar` | same | `200 {user}` (avatar null, `avatarAnimated` false) + `user:upsert` broadcast |
+| `GET /avatars/<userId>?v=<user.avatar>` | none | the image with its sniffed `Content-Type`, cached long-term (the version changes on every upload) |
 
 The server checks the file's magic bytes against its `Content-Type`. It doesn't decode images, so it needs
 no native image libraries. Errors come back as JSON `{error}`: 400 empty, 401 bad token, 413 too big,
@@ -139,6 +139,27 @@ no native image libraries. Errors come back as JSON `{error}`: 400 empty, 401 ba
 | `GET /attachments/<id>` | none (the id is a random UUID) | the image, cached long-term |
 
 Uploads that no message claims within an hour are deleted. The limit is 20 uploads per minute per user.
+
+**Link previews** (allowlisted oEmbed providers only: YouTube, Spotify, SoundCloud, Vimeo, Reddit; see
+[SPEC §5.3](SPEC.md#53-why-socketio-and-not-rest) for the exact link patterns and rules):
+
+| Request | Auth | Result |
+|---|---|---|
+| `GET /api/embed?url=<link>` | `Authorization: Bearer <device token>` | `200 {embed}`, `204` no preview, `400` not an http(s) link, `429` over 30 provider lookups per minute |
+
+The server only ever requests the provider's fixed oEmbed endpoint with a canonical link (4 s timeout,
+redirects refused, 256 KB cap) and caches results in memory (24 h, misses 1 h). Tests inject the fetch
+(`StartOptions.embedFetch`) and never touch the network.
+
+**Soundboard** clips are stored as `DATA_DIR/sounds/<id>`:
+
+| Request | Auth | Result |
+|---|---|---|
+| `POST /api/sounds?name=<name>&emoji=<emoji>` (body = 16-bit PCM WAV, `Content-Type: audio/wav`, ≤ 512 KB; the server parses the header and measures the duration, ≤ 5000 ms; a `durationMs` parameter is ignored) | `Authorization: Bearer <device token>` | `201 {sound}` + `sound:upsert` broadcast; 409 when the board has 100 sounds; 10 uploads per minute per user |
+| `DELETE /api/sounds/<id>` | same; uploader or admins/owner | `204` + `sound:deleted` broadcast (403 for others) |
+| `GET /sounds/<id>` | none (the id is a random UUID) | the audio with its stored `Content-Type`, cached long-term, `Access-Control-Allow-Origin: *` |
+
+Playing a clip is the socket event `sound:play` (see SPEC §8).
 
 ## Tests
 

@@ -16,6 +16,9 @@ import { setHotkeyHandler, type GlobalToggleAction } from './voice/ptt'
 import { restartLastShare, useVoice } from './voice/session'
 // Side effect: join / leave sounds for the voice channel you're in.
 import './voice/presenceSounds'
+// Side effect: sends your status / activity (presence:update) and tracks auto-idle and game detection.
+import './lib/presenceSync'
+import { ProfileCardLayer } from './components/ProfileCard'
 
 let started = false
 
@@ -103,6 +106,7 @@ export function App() {
           <MainLayout />
           <SettingsModal />
           <QuickSwitcher />
+          <ProfileCardLayer />
           {volumePopover && (
             <UserVolumePopover
               // Remount per open so a new right-click repositions it from scratch.

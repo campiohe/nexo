@@ -22,6 +22,7 @@ import {
   type TrackPublishOptions,
   type VideoEncoding,
 } from 'livekit-client'
+import { MAX_WATCHING } from '@shared/protocol'
 import { isStreamIdentity, streamIdentity } from '@shared/stream'
 import { emit, onConnected, request } from '@renderer/net/socket'
 import { toast } from '@renderer/lib/toast'
@@ -433,8 +434,31 @@ function announce(): void {
     deafened: s.deafened,
     camera: s.camera,
     streaming: s.sharing,
+    watching: watchingList(),
   })
 }
+
+/** Owners whose stream we watch, minus our own preview (the server only wants other people's streams). */
+function watchingList(): string[] {
+  const self = room?.localParticipant.identity
+  return Object.keys(useParticipants.getState().watching)
+    .filter((id) => id !== self)
+    .slice(0, MAX_WATCHING)
+}
+
+// Streamers see who's watching them: re-announce whenever the watched set changes (watchStream,
+// stopWatching, a stream ending, our own preview excluded). Leaving resets it after `room` is cleared,
+// so that never re-announces a channel we just left.
+useParticipants.subscribe((s, prev) => {
+  if (s.watching === prev.watching) return
+  const self = room?.localParticipant.identity
+  const others = (w: Record<string, true>) =>
+    Object.keys(w)
+      .filter((id) => id !== self)
+      .sort()
+      .join(',')
+  if (others(s.watching) !== others(prev.watching)) announce()
+})
 
 function announceLeft(): void {
   const s = useVoice.getState()

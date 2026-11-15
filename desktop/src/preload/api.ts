@@ -305,8 +305,84 @@ export const UPDATE_STATUSES: readonly UpdateStatus[] = [
   'error',
 ]
 
+/** A native notification for a chat message (renderer -> main). At most one per channel is kept on screen. */
+export interface ChatNotification {
+  /** Channel it belongs to: a newer notification for the same channel replaces the old one; clicking opens it. */
+  channelId: string
+  /** e.g. "Ana in #general" (main trims it to 128 characters). */
+  title: string
+  /** Plain text (main trims it to 256 characters). */
+  body: string
+  /** `data:image/png;base64,…` (the author's avatar, ≤ 256 KB), or null for the app icon. */
+  icon: string | null
+}
+
+/** Unread state for the taskbar / dock / tray (renderer -> main). */
+export interface UnreadBadge {
+  /** Unread mentions over all channels (0 clears the badge). */
+  mentions: number
+  /**
+   * Windows taskbar overlay: a small `data:image/png;base64,…` (the red count bubble, drawn by the renderer),
+   * or null for none.
+   */
+  overlay: string | null
+  /** Accessible description of the overlay, e.g. "3 unread mentions". */
+  description: string
+}
+
 /** secrets.read(): `unreadable` = the entry exists but no copy of it could be decrypted/read. */
 export type SecretRead = { status: 'ok'; value: string } | { status: 'missing' } | { status: 'unreadable' }
+
+/** A game the user added in Settings → Activity: its executable and the name others see. */
+export interface CustomGame {
+  /** Executable name as listed by the OS, e.g. "MyGame-Win64-Shipping.exe" (never a path). */
+  exe: string
+  /** What others see ("Playing <name>"), 1..64 characters. */
+  name: string
+}
+
+/** "Playing X" detection settings, stored by main in <userData>/activity.json (per device). */
+export interface ActivitySettings {
+  /** Opt-in (default false): detect running games and share their name. Nothing runs while false. */
+  shareActivity: boolean
+  customGames: CustomGame[]
+}
+
+/** The game main currently detects (display name only), or null. */
+export interface DetectedActivity {
+  name: string
+  /** When it was first detected (ms epoch). */
+  startedAt: number
+}
+
+export interface PresenceBridgeState {
+  /** No keyboard/mouse input for the auto-idle threshold (or the screen is locked). */
+  idle: boolean
+  activity: DetectedActivity | null
+  settings: ActivitySettings
+}
+
+/** Settings → Appearance → Theme. 'system' follows the OS light/dark setting live. */
+export type ThemeChoice = 'system' | 'dark' | 'light'
+
+export const THEME_CHOICES: readonly ThemeChoice[] = ['system', 'dark', 'light']
+
+/** UI zoom levels (webContents zoom factor), stepped through by Ctrl+= / Ctrl+- and Ctrl+mouse wheel. */
+export const ZOOM_STEPS: readonly number[] = [0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2]
+
+/** What changed the zoom: a shortcut / the wheel (the renderer shows the new level briefly) or Settings. */
+export type ZoomSource = 'keyboard' | 'wheel' | 'settings'
+
+export interface ZoomEvent {
+  factor: number
+  source: ZoomSource
+}
+
+export interface AppearanceState {
+  /** Main's copy of the theme (the renderer's localStorage copy is the one applied before the first paint). */
+  theme: ThemeChoice
+  zoom: number
+}
 
 export interface NexoBridge {
   platform: 'win32' | 'darwin' | 'linux'
@@ -373,6 +449,18 @@ export interface NexoBridge {
    */
   requestAttention(): void
 
+  /** Native chat notifications through the main process (the renderer's web Notification stays denied). */
+  notifications: {
+    /** Show (or replace this channel's) notification. Ignored where the OS has no notifications. */
+    show(n: ChatNotification): void
+    /** Remove the notification of a channel (it was read), or every one with null. */
+    clear(channelId: string | null): void
+    /** Taskbar overlay (Windows), dock / launcher badge count (macOS / Linux) and the tray icon's red dot. */
+    setBadge(badge: UnreadBadge): void
+    /** A notification was clicked: main already showed and focused the window; open `channelId`. */
+    onOpen(cb: (channelId: string) => void): () => void
+  }
+
   /**
    * Global hotkeys (work while other apps, e.g. games, have focus). One system-wide hook runs while any
    * binding is set.
@@ -420,6 +508,39 @@ export interface NexoBridge {
     onAction(cb: (action: TrayAction) => void): () => void
   }
 
+  /**
+   * Presence helpers in main: system idle (powerMonitor) and opt-in game detection. Missing on older
+   * preloads: callers must check.
+   */
+  presence: {
+    getState(): Promise<PresenceBridgeState>
+    /** Change the activity settings; resolves with the saved settings (rejects on invalid input). */
+    setSettings(patch: Partial<ActivitySettings>): Promise<ActivitySettings>
+    /**
+     * Executable names of the user's running programs (system processes left out), for "Add a game".
+     * Stays on this machine.
+     */
+    listProcesses(): Promise<string[]>
+    /** Idle state changes (true after the threshold without input, false on the next input). */
+    onIdle(cb: (idle: boolean) => void): () => void
+    /** The detected game changed (null = none, or sharing was turned off). */
+    onActivity(cb: (activity: DetectedActivity | null) => void): () => void
+  }
+
+  /** Theme and zoom (main process side). Missing on older preloads: callers must check. */
+  appearance: {
+    getState(): Promise<AppearanceState>
+    /**
+     * Remember the theme choice (nativeTheme.themeSource, so OS-drawn scrollbars / menus / title bar follow it)
+     * and paint the window background `background` (#rrggbb, the page's --bg-0) so resizes don't flash.
+     */
+    setTheme(theme: ThemeChoice, background: string): void
+    /** Set the zoom factor (snapped to ZOOM_STEPS); resolves with the factor applied. */
+    setZoom(factor: number): Promise<number>
+    /** Zoom changed (keyboard shortcut, Ctrl+wheel or setZoom). */
+    onZoom(cb: (e: ZoomEvent) => void): () => void
+  }
+
   /** Auto-update (main process). */
   updates: {
     getState(): Promise<UpdateState>
@@ -442,6 +563,10 @@ export const IPC = {
   secretSet: 'nexo:secrets:set',
   openExternal: 'nexo:open-external',
   requestAttention: 'nexo:window:request-attention',
+  notifyShow: 'nexo:notify:show',
+  notifyClear: 'nexo:notify:clear',
+  notifyBadge: 'nexo:notify:badge',
+  notifyOpen: 'nexo:notify:open', // main → renderer (channelId)
   pttSetBinding: 'nexo:ptt:set-binding', // legacy: sets the 'ptt' slot only
   hotkeysSetBindings: 'nexo:hotkeys:set-bindings',
   hotkeysCapture: 'nexo:hotkeys:capture',
@@ -463,4 +588,13 @@ export const IPC = {
   nativeShareStop: 'nexo:native-share:stop',
   nativeShareRelease: 'nexo:native-share:release',
   nativeShareEvent: 'nexo:native-share:event', // main → renderer (NativeShareEvent)
+  presenceGetState: 'nexo:presence:get-state',
+  presenceSetSettings: 'nexo:presence:set-settings',
+  presenceListProcesses: 'nexo:presence:list-processes',
+  presenceIdle: 'nexo:presence:idle', // main → renderer (boolean)
+  presenceActivity: 'nexo:presence:activity', // main → renderer (DetectedActivity | null)
+  appearanceGet: 'nexo:appearance:get',
+  appearanceSetTheme: 'nexo:appearance:set-theme',
+  appearanceSetZoom: 'nexo:appearance:set-zoom',
+  appearanceZoom: 'nexo:appearance:zoom', // main → renderer (ZoomEvent)
 } as const

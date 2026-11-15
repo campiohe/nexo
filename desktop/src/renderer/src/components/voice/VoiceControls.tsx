@@ -8,6 +8,7 @@ import { getSharePreset, useMicLive, useVoice } from '../../voice/session'
 import { useParticipants } from '../../voice/participants'
 import { CameraButton, DeafenButton, LeaveButton, MuteButton, QualityBars, ShareButton } from './ControlButtons'
 import { SharePickerHost } from './SharePicker'
+import { SoundboardButton } from './Soundboard'
 import { AlertIcon, CloseIcon } from './icons'
 import './voice.css'
 
@@ -123,6 +124,7 @@ export function VoiceControls() {
         <DeafenButton />
         <CameraButton />
         <ShareButton />
+        <SoundboardButton />
         <LeaveButton />
       </div>
       <SharePickerHost />

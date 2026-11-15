@@ -1,6 +1,11 @@
-import type { User, VoiceState } from '@shared/protocol'
+import type { Presence, User, VoiceState } from '@shared/protocol'
+import { DEFAULT_PRESENCE } from '@shared/protocol'
 import { useApp } from '../store/app'
-import { useUi } from '../store/ui'
+import { anchorOf, useUi } from '../store/ui'
+import { usePresence, usePresenceStore } from '../store/presence'
+import { activityLabel } from '../lib/activity'
+import { GamepadIcon } from './peopleIcons'
+import '../styles/people.css'
 import { canMoveMember, hasRoles, roleOf } from '../lib/permissions'
 import { Avatar } from './Avatar'
 import { RoleBadge } from './MembersSection'
@@ -15,6 +20,8 @@ export function MemberList() {
   const meId = me?.id
   // Servers older than roles send none: show no badges there.
   const roles = useApp((s) => hasRoles(s.me))
+  const presences = usePresenceStore((s) => s.byUser)
+  const ownPresence = usePresence(meId)
 
   const voiceByUser = new Map(voice.map((v) => [v.userId, v]))
   const all = Object.values(users).sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
@@ -28,10 +35,27 @@ export function MemberList() {
     // The voice user card: volume and actions for others; for yourself only "Move to" (admins / owner).
     const canAdjust = !!v && (u.id !== meId || (hasOtherVoiceChannel && canMoveMember(me, u)))
     const role = roleOf(u)
+    const presence: Presence | null = !isOnline ? null : u.id === meId ? ownPresence : (presences[u.id] ?? DEFAULT_PRESENCE)
+    const activity = presence?.activity ?? null
+    const statusText = isOnline ? u.statusText?.trim() : undefined
+    // Second line: what they're playing, else their custom status, else the voice channel they're in.
+    const sub = activity ? (
+      <span className="people-sub" title={activityLabel(activity)}>
+        <GamepadIcon size={12} />
+        <span className="people-sub-text">
+          Playing <strong>{activity.name}</strong>
+        </span>
+      </span>
+    ) : statusText ? (
+      <span className="people-sub" title={statusText}>
+        <span className="people-sub-text">{statusText}</span>
+      </span>
+    ) : null
     return (
       <li
         key={u.id}
-        className={`member ${isOnline ? '' : 'is-offline'} ${canAdjust ? 'has-menu' : ''}`}
+        className={`member people-click ${isOnline ? '' : 'is-offline'} ${canAdjust ? 'has-menu' : ''}`}
+        onClick={(e) => useUi.getState().openProfileCard(u.id, anchorOf(e.currentTarget), 'left')}
         onContextMenu={
           canAdjust
             ? (e) => {
@@ -42,7 +66,7 @@ export function MemberList() {
         }
         title={canAdjust ? (u.id === meId ? 'Right-click to move to another channel' : 'Right-click for volume and actions') : undefined}
       >
-        <Avatar user={u} size={30} online={isOnline} />
+        <Avatar user={u} size={30} online={isOnline} status={presence?.status} />
         <div className="member-text">
           <span className="member-name-row">
             <span className="member-name">
@@ -51,13 +75,19 @@ export function MemberList() {
             </span>
             {roles && role !== 'member' && <RoleBadge role={role} compact />}
           </span>
-          {v && (
-            <span className="member-sub">
-              <SpeakerIcon size={12} /> {channelName(v.channelId)}
-            </span>
-          )}
+          {sub ??
+            (v && (
+              <span className="member-sub">
+                <SpeakerIcon size={12} /> {channelName(v.channelId)}
+              </span>
+            ))}
         </div>
         {v?.streaming && <span className="live-pill">LIVE</span>}
+        {v && sub && (
+          <span className="member-voice-icon" title={`In ${channelName(v.channelId)}`} aria-label={`In ${channelName(v.channelId)}`} role="img">
+            <SpeakerIcon size={13} />
+          </span>
+        )}
       </li>
     )
   }

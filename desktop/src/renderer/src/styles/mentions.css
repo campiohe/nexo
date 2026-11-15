@@ -1,0 +1,40 @@
+/* Mentions: pills in messages (MessageContent) and the unread-mention badge on channel rows (Sidebar). */
+
+.mention {
+  --mention-color: var(--accent);
+  display: inline;
+  padding: 0 3px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--mention-color) 16%, transparent);
+  color: color-mix(in srgb, var(--mention-color) var(--mention-tint), var(--text-0));
+  font-weight: 600;
+  white-space: nowrap;
+  box-decoration-break: clone;
+  transition: background 0.12s var(--ease);
+}
+.mention:hover { background: color-mix(in srgb, var(--mention-color) 26%, transparent); }
+/* You: stronger tint and a thin ring, like a highlighter. */
+.mention.is-me {
+  background: color-mix(in srgb, var(--mention-color) 30%, transparent);
+  color: var(--text-0);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--mention-color) 55%, transparent);
+}
+.mention.is-everyone { --mention-color: var(--warn); }
+.mention.is-unknown { --mention-color: var(--text-2); font-style: italic; font-weight: 500; }
+
+/* Unread mentions on a channel row: red pill at the right edge (hidden under the actions on hover). */
+.mention-badge {
+  flex: none;
+  min-width: 18px;
+  height: 18px;
+  margin-left: auto;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: #f23f43;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 18px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}

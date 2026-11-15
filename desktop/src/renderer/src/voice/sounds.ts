@@ -1,11 +1,21 @@
 // Short synthesized UI sounds for mute / unmute / deafen / undeafen, someone joining / leaving your voice
-// channel, a "wake up" nudge and sign-in requests (no audio files: Web Audio only).
+// channel, a "wake up" nudge, sign-in requests and chat notifications (no audio files: Web Audio only).
 // They play on the selected speaker through one lazily created AudioContext that is suspended again
 // once idle, so nothing runs between sounds. The context only feeds its own destination, never the
 // mic / WebRTC graph, so nobody in the call (or watching a stream) hears them.
 import { useDevicePrefs } from './devices'
 
-export type VoiceSound = 'mute' | 'unmute' | 'deafen' | 'undeafen' | 'join' | 'leave' | 'nudge' | 'request'
+export type VoiceSound =
+  | 'mute'
+  | 'unmute'
+  | 'deafen'
+  | 'undeafen'
+  | 'join'
+  | 'leave'
+  | 'nudge'
+  | 'request'
+  | 'message'
+  | 'mention'
 
 interface Note {
   /** Hz. */
@@ -14,6 +24,8 @@ interface Note {
   at: number
   /** Length including the decay, seconds. */
   dur: number
+  /** Level relative to PEAK (default 1). */
+  gain?: number
 }
 
 /** Modest peak level (the speaker test in Settings uses 0.25). */
@@ -70,6 +82,18 @@ const SOUNDS: Record<VoiceSound, readonly Note[]> = {
     { freq: 659, at: 0, dur: 0.1 },
     { freq: 880, at: 0.09, dur: 0.1 },
     { freq: 1319, at: 0.18, dur: 0.15 },
+  ],
+  // A chat message in a channel you're not looking at (lib/notify.ts): a soft, quick low-to-high "bloop"
+  // (G5 C6), ~200 ms, quieter than the rest.
+  message: [
+    { freq: 784, at: 0, dur: 0.11, gain: 0.7 },
+    { freq: 1047, at: 0.05, dur: 0.15, gain: 0.7 },
+  ],
+  // Someone mentioned you: a brighter major arpeggio (C6 E6 G6) with a longer top note, ~340 ms.
+  mention: [
+    { freq: 1047, at: 0, dur: 0.09 },
+    { freq: 1319, at: 0.06, dur: 0.09 },
+    { freq: 1568, at: 0.12, dur: 0.22 },
   ],
 }
 
@@ -136,7 +160,7 @@ function schedule(c: AudioContext, notes: readonly Note[]): number {
     const g = c.createGain()
     // From silence, up to the peak, exponential decay back to (practically) silence: no clicks.
     g.gain.setValueAtTime(0, start)
-    g.gain.linearRampToValueAtTime(PEAK, start + ATTACK)
+    g.gain.linearRampToValueAtTime(PEAK * (n.gain ?? 1), start + ATTACK)
     g.gain.exponentialRampToValueAtTime(FLOOR, stop - RELEASE)
     g.gain.linearRampToValueAtTime(0, stop)
     osc.connect(g)
@@ -153,8 +177,8 @@ function schedule(c: AudioContext, notes: readonly Note[]): number {
 }
 
 /**
- * Play a mute / deafen confirmation, voice join / leave, nudge or sign-in request sound on the selected
- * speaker (no-op when sound effects are off).
+ * Play a mute / deafen confirmation, voice join / leave, nudge, sign-in request or chat notification sound
+ * on the selected speaker (no-op when sound effects are off).
  * Independent of deafen: remote voices are silenced on their own <audio> elements, not here.
  */
 export function playVoiceSound(sound: VoiceSound): void {

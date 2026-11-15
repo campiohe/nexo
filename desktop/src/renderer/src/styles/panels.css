@@ -1,0 +1,192 @@
+/* Chat side panels (search results, pinned messages), the header search box and pin markers. Colors come
+   from tokens.css. */
+
+/* ---------- layout: a side panel takes the member list's column ---------- */
+
+.layout { --panel-w: clamp(300px, 32vw, 420px); }
+.layout.has-panel { grid-template-columns: var(--sidebar-w) minmax(0, 1fr) var(--panel-w); }
+
+/* ---------- header search box ---------- */
+
+.search-box { position: relative; flex: none; display: flex; align-items: center; }
+.search-input {
+  width: 160px;
+  height: 28px;
+  padding: 0 26px 0 9px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: var(--bg-0);
+  color: var(--text-0);
+  font-size: 13px;
+  transition: width 0.18s var(--ease), border-color 0.15s var(--ease), box-shadow 0.15s var(--ease);
+}
+.search-input::placeholder { color: var(--text-2); }
+.search-input:hover { border-color: var(--line); }
+.search-box.is-focused .search-input, .search-box.has-value .search-input { width: 240px; }
+.search-input:focus, .search-input:focus-visible {
+  border-color: var(--accent);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.search-box-icon {
+  position: absolute;
+  right: 5px;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--text-2);
+  pointer-events: none;
+}
+.search-box-icon.is-clear { pointer-events: auto; cursor: pointer; }
+.search-box-icon.is-clear:hover { color: var(--text-0); background: var(--hover); }
+/* The composer's autocomplete popup, opened below the box instead of above. */
+.search-box .mention-popup { top: calc(100% + 6px); bottom: auto; left: auto; right: 0; width: 260px; z-index: 30; }
+.search-option-key { font-family: var(--mono); }
+.search-option-hint { margin-left: auto; flex: none; font-size: 12px; color: var(--text-2); }
+
+@media (max-width: 960px) {
+  .search-input { width: 120px; }
+  .search-box.is-focused .search-input, .search-box.has-value .search-input { width: 180px; }
+  .center-header .kbd-hint { display: none; }
+}
+
+/* ---------- side panel ---------- */
+
+.side-panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg-1);
+  border-left: 1px solid var(--line);
+  animation: slide-in 0.16s var(--ease);
+}
+.side-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: var(--header-h);
+  padding: 0 8px 0 14px;
+  border-bottom: 1px solid var(--line);
+  color: var(--text-2);
+  flex: none;
+}
+.side-panel-title { font-size: 14px; color: var(--text-0); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.side-panel-sub { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--text-2); }
+.side-panel-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+  flex: none;
+}
+.side-panel-chip {
+  max-width: 100%;
+  padding: 2px 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--bg-3);
+  color: var(--text-1);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.side-panel-chip strong { font-weight: 650; }
+.side-panel-chip.is-text { color: var(--text-0); }
+.side-panel-toggle { display: inline-flex; align-items: center; gap: 6px; color: var(--text-1); cursor: pointer; white-space: nowrap; }
+.side-panel-toggle input { margin: 0; accent-color: var(--accent); cursor: inherit; }
+.side-panel-toggle.is-disabled { opacity: 0.5; cursor: default; }
+.side-panel-scroll { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding: 10px 8px 12px; }
+.side-panel-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 36px 16px;
+  color: var(--text-1);
+  text-align: center;
+}
+.side-panel-empty > svg { color: var(--text-2); margin-bottom: 4px; }
+.side-panel-empty.is-error { padding: 16px; color: var(--danger); }
+.side-panel-more { align-self: center; margin: 4px 0; }
+
+/* A message in a panel: click jumps to it. */
+.panel-msg {
+  position: relative;
+  flex: none;
+  padding: 8px 10px 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-2);
+  cursor: pointer;
+  transition: border-color 0.12s var(--ease), background 0.12s var(--ease);
+}
+.panel-msg:hover { border-color: var(--line-strong, #39415a); }
+.panel-msg-channel {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 5px;
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 650;
+}
+.panel-msg-channel span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.panel-msg-row { display: grid; grid-template-columns: 32px minmax(0, 1fr); gap: 10px; }
+.panel-msg-body { min-width: 0; }
+.panel-msg-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; line-height: 1.3; margin-bottom: 1px; }
+.panel-msg-author { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 650; }
+.panel-msg-time { flex: none; font-size: 11px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.panel-msg .message-content { max-height: 15em; overflow: hidden; font-size: 13.5px; }
+.panel-msg .message-content.is-jumbo { font-size: inherit; }
+.panel-msg-meta { margin-top: 2px; font-size: 12px; font-style: italic; color: var(--text-2); }
+.panel-msg-actions {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+.panel-msg:hover .panel-msg-actions, .panel-msg:focus-within .panel-msg-actions { opacity: 1; }
+.panel-msg-btn {
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg-1);
+  color: var(--text-1);
+  font-size: 11px;
+  font-weight: 650;
+  transition: background 0.12s var(--ease), color 0.12s var(--ease), border-color 0.12s var(--ease);
+}
+.panel-msg-btn:hover { background: var(--bg-3); color: var(--text-0); }
+.panel-msg-btn.is-danger:hover { border-color: color-mix(in srgb, var(--danger) 35%, transparent); background: var(--danger-soft); color: var(--danger); }
+
+.pinned-item { display: flex; flex-direction: column; gap: 3px; flex: none; }
+.pinned-by { display: flex; align-items: center; gap: 4px; padding-left: 4px; font-size: 11px; color: var(--text-2); }
+
+/* Search hits (MessageContent `highlight`). */
+mark.search-hit {
+  padding: 0 1px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--warn) 32%, transparent);
+  color: inherit;
+  box-decoration-break: clone;
+}
+
+/* ---------- pinned messages in the list ---------- */
+
+.message-pin-mark { display: inline-flex; align-self: center; color: var(--text-2); cursor: default; }
+.message.is-pinned .message-gutter { position: relative; }
+/* Continuation rows: the pin sits where the hover time shows, and gives way to it on hover. */
+.message-pin-mark.is-gutter { position: absolute; inset: 0; display: grid; place-items: center; }
+.message:hover .message-pin-mark.is-gutter, .message:focus-visible .message-pin-mark.is-gutter { visibility: hidden; }

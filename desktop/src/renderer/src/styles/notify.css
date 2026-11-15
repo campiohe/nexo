@@ -1,0 +1,2 @@
+/* Settings → Notifications (SettingsModal.tsx). */
+.settings-actions-row { display: flex; gap: 8px; margin-top: 12px; }

@@ -184,20 +184,85 @@ The visual design is Nexo's own: dark ink background, mint accent, rounded tiles
 ### 5.1 Responsibilities
 
 - Identity handshake (§7) during the socket.io `connect` middleware.
-- Create, read, update and delete text and voice channels. Every change is broadcast to all clients.
-- Persist messages. Serve history in pages of 50, keyed by timestamp.
-- **Presence:** in-memory map of userId to open socket count.
-- **Voice state:** in-memory map of userId to `{channelId, muted, deafened, camera, streaming, socketId}`. The client is the source of truth and re-sends its state after reconnecting. The entry is cleared when the owning socket disconnects.
+- Create, read, update, reorder and delete text and voice channels. Every change is broadcast to all clients.
+- Persist messages (with replies, edits, mentions, reactions and pins). Serve history in pages of 50, keyed by
+  timestamp, and full-text search (SQLite FTS5, §5.2) in pages of 25.
+- **Presence:** in-memory map of userId to open socket count (online/offline), plus a `Presence`
+  `{status: 'online'|'idle'|'dnd', activity: {name, startedAt} | null}` per socket (`DEFAULT_PRESENCE` =
+  `{status: 'online', activity: null}` until that device sends `presence:update`; each device reports only
+  its own state). The account's presence is the aggregate over its connected sockets: status `dnd` if any
+  socket is dnd, else `online` if any is online, else `idle`; activity = the one with the latest `startedAt`.
+  It is recomputed on every update, connect and disconnect, and `presence:changed` is broadcast only when the
+  aggregate changed (`DEFAULT_PRESENCE` when the last socket leaves, so clients clear it); removing the
+  account drops it silently (`user:removed` is enough). Bootstrap `presence` carries the non-default
+  aggregates. Clients never adopt the aggregate as their own (per-device) status.
+- **Voice state:** in-memory map of userId to `{channelId, muted, deafened, camera, streaming, watching, socketId}`. The client is the source of truth and re-sends its state after reconnecting. The entry is cleared when the owning socket disconnects.
 - Issue LiveKit JWTs for room `voice-<channelId>` (identity = userId, name = display name, metadata = `{color}`).
+- **Soundboard:** stores up to `MAX_SOUNDS` = 100 short clips (`sounds` table + `DATA_DIR/sounds/<id>`) and
+  relays `sound:play` to the voice members of the caller's channel (§8). Cooldowns live in memory.
+- **Link previews:** answers `GET /api/embed` from allowlisted oEmbed providers only, with an in-memory cache
+  (§5.3).
 
 ### 5.2 Data model (SQLite)
 
 ```sql
-users    (id TEXT PK, name TEXT UNIQUE NOCASE, color TEXT, token_hash TEXT UNIQUE, created_at INT)
+users    (id TEXT PK, name TEXT UNIQUE NOCASE, color TEXT, token_hash TEXT UNIQUE, created_at INT,
+          avatar TEXT NULL, role 'owner'|'admin'|'member',
+          status_text TEXT NULL,                  custom status, NULL = none
+          avatar_animated INT DEFAULT 0)          1 = the profile picture is a GIF
 channels (id TEXT PK, name TEXT, type 'text'|'voice', position INT, created_at INT)
 messages (id TEXT PK, channel_id → channels ON DELETE CASCADE, user_id → users,
-          content TEXT, created_at INT)          INDEX (channel_id, created_at)
+          content TEXT, created_at INT,          INDEX (channel_id, created_at)
+          edited_at INT NULL, reply_to_id TEXT NULL, reply_to_user_id TEXT NULL,
+          mentions_everyone INT DEFAULT 0,       partial INDEX (channel_id, created_at) WHERE mentions_everyone
+          pinned_by TEXT NULL, pinned_at INT NULL) partial INDEX (channel_id, pinned_at) WHERE pinned_at NOT NULL
+                                                 INDEX (user_id, created_at), INDEX (created_at),
+                                                 partial INDEX (edited_at) WHERE edited_at NOT NULL
+message_search_ids (id INTEGER PK, message_id TEXT UNIQUE,   stable integer id of each message for the index
+          indexed_edit INT NULL)                 the message's edited_at when its text was indexed
+message_search     FTS5 (body), content='', contentless_delete=1, tokenize='unicode61 remove_diacritics 2';
+                   rowid = message_search_ids.id; trigger message_search_on_delete AFTER DELETE ON messages
+message_mentions (message_id → messages ON DELETE CASCADE, user_id → users ON DELETE CASCADE,
+          PK (message_id, user_id))              INDEX (user_id)
+reactions (message_id → messages ON DELETE CASCADE, emoji TEXT, user_id → users ON DELETE CASCADE,
+          created_at INT, emoji_position INT, PK (message_id, emoji, user_id))
+sounds   (id TEXT PK, name TEXT, emoji TEXT NULL, uploader_id → users ON DELETE CASCADE,
+          duration_ms INT, type TEXT, size INT, created_at INT)   INDEX (uploader_id); file DATA_DIR/sounds/<id>
 ```
+
+`reply_to_id` has no foreign key on purpose: when the original is deleted the reply keeps the id (and
+`reply_to_user_id`, cleared when that account is removed) and reads back with a `deleted` preview.
+**Pins.** `pinned_at` is kept strictly increasing (like `created_at`), so "most recently pinned first" has
+no ties. When the pinner's account is removed the pin stays with `pinned_by = ''` (it was put there for the
+channel, not for that person); its author or an admin can still unpin it.
+
+**Search index.** `messages` has a TEXT primary key, so its implicit rowid can be renumbered by `VACUUM` and
+can't key an external-content FTS table. Each message instead gets a stable `message_search_ids.id`
+(INTEGER PRIMARY KEY), which is its rowid in `message_search`, a contentless FTS5 index (no second copy of
+the text). The indexed text is the content in NFC with `<@userId>` mention tokens removed (ids are hex runs
+that would match ordinary words). `messages.create` / `messages.edit` write the entry; the
+`message_search_on_delete` trigger removes it however the message goes (`message:delete`, channel delete
+cascade, account removal), so no code path can leave a stale entry. On every start `migrate()` indexes
+messages that have no entry (the whole table once, on a database from before pins/search: about 0.1 s per
+20 000 messages; afterwards only messages written by an older server after a downgrade), reindexes messages
+whose `edited_at` differs from their entry's `indexed_edit` (edited by an older server after a downgrade;
+found through the partial index on `edited_at`) and drops entries whose message is gone; when there's
+nothing to do this costs a few milliseconds. Queries never reach `MATCH`
+raw: they're split into words (runs of `\p{L}\p{N}\p{Co}` after NFC, like the tokenizer, first 10 kept),
+each becomes `"word"*` and they're joined with `AND`. Results join back to `messages`, are ordered by the
+index rowid descending and limited to `SEARCH_PAGE_SIZE + 1` (for `hasMore`), so FTS5 walks its matches
+newest first and stops early instead of collecting and sorting all of them. That works because ids are
+handed out in `created_at` order: new messages are always the newest, the backfill goes in `created_at`
+order, and messages an older server wrote after a downgrade are newer than everything indexed before. A
+`before` is turned into an id bound (the id of the first message at or after it, via `INDEX (created_at)`),
+and `created_at < before` is kept too, so pages never overlap. (Only an older server whose clock went
+backwards could write a message out of order; it may then show up out of place.) With 200 000 messages a
+one-letter query takes about 5 ms on any page (150 ms when ordered by `created_at`). Filters that match
+little (a quiet channel or author) still walk the word's matches, so `message:search` is rate-limited.
+
+`emoji_position` is given when an emoji is first added to a message and shared by its rows, so an emoji keeps
+its place while anyone still has it. Older databases gain the new columns and tables in place on start
+(additive `migrate()` in `server/src/db.ts`).
 
 On first run the server seeds `#general` and `#clips-and-memes` (text) and `Lounge` and `Gaming` (voice).
 
@@ -205,7 +270,55 @@ Voice and presence state stay in memory on purpose. They are temporary and rebui
 
 ### 5.3 Why socket.io and not REST
 
-All operations are small and need live fan-out. A single socket connection with acks handles request and response (`emit(event, payload, ack)`) as well as broadcasts, and socket.io adds reconnection and buffering. Plain HTTP is used only where it fits better than a socket: `GET /health`, and profile pictures (`PUT`/`DELETE /api/avatar` with the device token as a bearer token, and cacheable `GET /avatars/:userId?v=`). Uploaded image bytes don't belong on the realtime socket.
+All operations are small and need live fan-out. A single socket connection with acks handles request and response (`emit(event, payload, ack)`) as well as broadcasts, and socket.io adds reconnection and buffering. Plain HTTP is used only where it fits better than a socket: `GET /health`, and profile pictures (`PUT`/`DELETE /api/avatar` with the device token as a bearer token, and cacheable `GET /avatars/:userId?v=`). Pictures are WebP, PNG or JPEG up to 512 KB, or an animated GIF up to 2 MB (`AVATAR_ANIMATED_MAX_BYTES`; the user gets `avatarAnimated: true`, any other upload or a delete sets it back to false). The file's magic bytes must match its `Content-Type`, and the served type is sniffed from the stored file. Uploaded image bytes don't belong on the realtime socket.
+
+**Link previews** (`GET /api/embed?url=<link>`, device token as bearer token → `200 {embed}` | `204` no
+preview | `400 "Invalid link"` | `401` | `429`). This is an SSRF boundary: the server never fetches the link
+itself, only a fixed oEmbed endpoint of an allowlisted provider, with a canonical link rebuilt from the parsed
+one as a query parameter.
+
+| Provider | Links (hosts matched exactly) | oEmbed endpoint | `kind` |
+|---|---|---|---|
+| YouTube | `(www\|m\|music.)youtube.com/watch?v=<id>`, `/shorts/<id>`, `/live/<id>`, `/embed/<id>`, `youtu.be/<id>` → `https://www.youtube.com/watch?v=<id>` | `https://www.youtube.com/oembed?format=json&url=` | video |
+| Spotify | `open.spotify.com/[intl-xx/](track\|album\|playlist\|episode\|show)/<id>` | `https://open.spotify.com/oembed?url=` | audio |
+| SoundCloud | `(www\|m.)soundcloud.com/<user>/<track>`, `/<user>/sets/<set>` | `https://soundcloud.com/oembed?format=json&url=` | audio |
+| Vimeo | `(www.)vimeo.com/<id>[/<hash>]`, `/channels/<name>/<id>` | `https://vimeo.com/api/oembed.json?url=` | video |
+| Reddit | `(www\|old\|new\|m.)reddit.com/r/<sub>/comments/<id>[/<slug>]` | `https://www.reddit.com/oembed?url=` | post |
+
+Twitch (its oEmbed endpoint went away with the v5 API) and X/Twitter (HTML-only answers) aren't supported.
+Rules: only `http:`/`https:` (else 400; also over 2048 characters); links with credentials, an explicit
+port, another host (lookalikes such as `youtube.com.evil.com`, IP literals, `localhost`) or a path that
+doesn't match → 204 without any request. The request has a 4 s timeout, refuses redirects, reads at most
+256 KB and must be JSON. The answer becomes plain text (control/format characters removed, whitespace
+collapsed): `title` ≤ 200 characters (none → 204), `author` ≤ 100 from `author_name`, and `thumbnail` only
+for an https URL on the provider's CDN (`ytimg.com`, `scdn.co`/`spotifycdn.com`, `sndcdn.com`,
+`vimeocdn.com`, `redditmedia.com`/`redd.it`), sizes defaulted when missing. Provider HTML is never returned.
+`embed.url` echoes the link as asked. Results are cached in memory by canonical link (LRU, 500 entries; 24 h
+for previews, 1 h for misses and failures), and concurrent requests for the same link share one lookup. Each
+user may start 30 lookups per minute (cache hits and links without a provider don't count) → 429.
+
+**Soundboard** (`POST /api/sounds?name=&emoji=` with the audio as body, `DELETE /api/sounds/:id`,
+`GET /sounds/:id`). Uploads need the device token and must be 16-bit PCM WAV: `Content-Type` `audio/wav`
+(`SOUND_TYPES`; else 415 "Sounds must be 16-bit PCM WAV audio (Content-Type audio/wav)"), at most
+`SOUND_MAX_BYTES` = 512 KB (413 "Sounds are limited to 512 KB"). The server walks the RIFF chunks
+(bounds-checked) and needs a `fmt ` chunk with PCM format 1, 1–2 channels, 8000–96000 Hz, 16 bits, followed
+by a `data` chunk that fits in the file (else 415 "The file is not a valid WAV audio file"). The duration is
+measured: data bytes / (rate × channels × 2). Over `SOUND_MAX_MS` = 5 s (+ 50 ms for encoder rounding;
+judged on the header's claim, so a truncated file claiming an hour is also refused) → 400 "Sounds are
+limited to 5 seconds"; no samples → 400 "The sound has no audio". The stored `durationMs` is the measured one
+(clamped to 5000); a `durationMs` query parameter (still sent by the desktop client, which older servers require) is ignored. Clips stored
+by older servers in other formats (OGG, MP3, WebM) keep being served with their type.
+`name` is normalized like status text and must be 1..`SOUND_NAME_MAX` = 32 UTF-16 units (400 "Give the
+sound a name" / "Sound names are limited to 32 characters"); `emoji` is optional, one `EMOJI_RE` emoji (400
+"Invalid emoji"). A board with `MAX_SOUNDS` = 100 sounds →
+409 "The soundboard is full (100 sounds). Delete one first" (checked again atomically with the insert).
+10 uploads per user per minute → 429. The file is written to a temp file and renamed into place. Success:
+`201 {sound}` and a `sound:upsert` broadcast. `DELETE` is for the uploader or admins/owner (403 "Only the
+uploader or admins can delete this sound", 404 unknown) → 204 and `sound:deleted`. `GET /sounds/:id` needs
+no auth (random UUID; other ids → 404 before touching the disk) and serves the stored type with
+`cache-control: public, max-age=31536000, immutable` and `access-control-allow-origin: *` (clients fetch
+and decode it with Web Audio). Removing an account deletes its sounds (rows, files, a `sound:deleted` each).
+Files without a row and temp files are removed at start.
 
 ---
 
@@ -280,29 +393,55 @@ All shared types live in `shared/protocol.ts`, imported by both the server and t
 | `channel:create` | `{name, type}` | `Channel` |
 | `channel:rename` | `{channelId, name}` | `Channel` |
 | `channel:delete` | `{channelId}` | `null` |
-| `message:send` | `{channelId, content}` | `Message` |
-| `message:delete` | `{messageId}` (own only) | `null` |
+| `message:send` | `{channelId, content, attachmentIds?, replyToId?}` (`replyToId`: a message in the same channel, else "The message you replied to was not found") | `Message` |
+| `message:edit` | `{messageId, content}` (author only; same content rules as send, `''` only with images; unchanged = no-op, no broadcast) | `Message` |
+| `message:react` | `{messageId, emoji, on}` (one emoji, `EMOJI_RE`; idempotent; ≤ `MAX_REACTIONS_PER_MESSAGE` = 20 different emoji; 10 requests per 5 s per user) | `null` |
+| `message:delete` | `{messageId}` (own only; admins/owner any) | `null` |
 | `message:history` | `{channelId, before?}` | `Message[]` (oldest first, ≤ 50) |
+| `message:pin` | `{messageId, pinned}` (anyone pins, up to `MAX_PINS_PER_CHANNEL` = 50 per channel: "This channel has 50 pinned messages. Unpin one first"; unpinning is for the pinner, the author or admins/owner: "Only the person who pinned it, its author or an admin can unpin it"; `pinned` not a boolean: "Invalid pin"; idempotent, no broadcast when nothing changed; otherwise broadcasts `message:updated`) | `null` |
+| `message:pins` | `{channelId}` (a text channel, else "Channel not found") | `Message[]` (most recently pinned first, ≤ 50) |
+| `message:search` | `{query, channelId?, authorId?, before?}`: case/accent-insensitive full-text search, every word must match as a prefix (§5.2). `query` ≤ `SEARCH_QUERY_MAX` = 200 characters ("Search is limited to 200 characters"); a query with no words ("", only punctuation) is allowed only with `authorId` (= that author's messages), else "Type at least one word to search". `channelId` must be a text channel ("Channel not found"). `before`: only messages created before it (paging). At most 10 searches per user (all devices) per 10 s: "Slow down: too many searches" | `SearchResult` `{messages, hasMore}` (newest first, ≤ `SEARCH_PAGE_SIZE` = 25; next page: `before` = last `createdAt`) |
+| `channel:reorder` | `{type, ids}` (admins/owner; `ids` = every channel of that type exactly once, else "The channel list changed, try again"; positions become 0..n−1 in one transaction; broadcasts `channel:upsert` for each channel whose position changed) | `null` |
 | `typing` | `{channelId}` | — |
 | `voice:token` | `{channelId}` | `{url, token, room}` |
-| `voice:state` | `{channelId \| null, muted, deafened, camera, streaming}` | — |
+| `voice:state` | `{channelId \| null, muted, deafened, camera, streaming, watching?}` (`watching`: userIds whose stream you watch; the server only checks the shape: strings ≤ 64 characters, not yours, deduplicated, at most `MAX_WATCHING` = 16, an array longer than 64 is ignored; clients count a viewer only for a streamer in the same channel; missing = `[]`; `voice:move` clears it) | — |
 | `voice:move` | `{userId, channelId}` (admins/owner; admins can't move the owner; same channel = no-op) | `null` |
 | `voice:nudge` | `{userId}` (target in voice and muted or deafened; not yourself; once per `NUDGE_COOLDOWN_MS` = 15 s per sender → target) | `null` |
-| `profile:update` | `{color}` | `User` |
+| `sound:play` | `{soundId}` ("Sound not found"; you must be in voice: "Join a voice channel to play sounds"; once per `SOUND_COOLDOWN_MS` = 2 s per user: "Wait a moment before playing another sound"). Sends `sound:played` to the voice-owning socket of everyone in your voice channel, you included | `null` |
+| `profile:update` | `{color?, statusText?}`, at least one ("Nothing to update"). `color` `#rrggbb` ("Invalid color"). `statusText` string or null ("Invalid status"): normalized (NFC, whitespace runs → one space, other `\p{C}` removed except the emoji ZWJ, trimmed), `''`/null clears it, longer than `STATUS_TEXT_MAX` = 64 UTF-16 units → "Status is limited to 64 characters". Broadcasts `user:upsert` | `User` |
+| `presence:update` | `{status?, activity?}` (no ack). Omitted fields keep their value; invalid ones are ignored (`status` not in `online`/`idle`/`dnd`; `activity` not `null` or `{name, startedAt}` with a non-empty name and finite `startedAt`). The activity name is normalized like status text and cut to `ACTIVITY_NAME_MAX` = 64; `startedAt` is clamped to [now − 7 days, now]. Per connection (the account's presence is the aggregate over its sockets, see above). 20 updates per socket per minute; excess updates are delayed (merged) until the window allows, not lost. Broadcasts `presence:changed` only when the aggregate changed | — |
 
 ### Server → Client
 
 | Event | Payload |
 |---|---|
-| `bootstrap` | `{serverName, me, token?, users, online, channels, voice}` sent on every connect |
+| `bootstrap` | `{serverName, me, token?, users, online, channels, voice, lastMessageAt, lastMentionAt, presence, sounds, …}` sent on every connect (`presence`: userId → `Presence` for online users whose presence isn't the default; `sounds`: the soundboard, oldest first) |
 | `user:upsert` | `User` |
 | `presence` | `string[]` of online user IDs |
+| `presence:changed` | `{userId, presence}` (`DEFAULT_PRESENCE` when they went back to plain online or offline) |
 | `channel:upsert` / `channel:deleted` | `Channel` / `{channelId}` |
-| `message:new` / `message:deleted` | `Message` / `{messageId, channelId}` |
+| `message:new` / `message:deleted` | `Message` / `{messageId, channelId}` (replies to it show a deleted preview) |
+| `message:updated` | `Message` (an edit, pin or unpin, complete: replace in place) |
+| `message:reactions` | `{messageId, channelId, reactions}` (the full new list; also sent for each message an account removal took reactions from) |
 | `typing` | `{channelId, userId}` (clients show it for about 3 s) |
 | `voice:states` | `VoiceState[]` (full list; small at this scale) |
 | `voice:moved` | `{channelId, by}` to the target's voice-owning socket only: the server already moved its state (camera/stream off, mute/deafen kept); the client leaves the old room, joins `channelId` and re-announces `voice:state` |
 | `voice:nudged` | `{by}` to the target's voice-owning socket only ("wake up" while muted or deafened) |
+| `sound:upsert` / `sound:deleted` | `Sound` / `{soundId}` (a clip was added / deleted, also by an account removal) |
+| `sound:played` | `{soundId, userId, channelId}` to the voice-owning sockets in that channel only; each client plays it locally (not through anyone's microphone) unless deafened |
+
+A `Message` carries, besides `content` and `attachments`: `editedAt` (null = never edited), `replyTo` (a
+`ReplyPreview` `{id, userId, content ≤ 200 chars, hasAttachments, deleted}` or null), `reactions`
+(`[{emoji, userIds}]`, emoji in first-added order, users in the order they reacted), `mentions`,
+`mentionsEveryone` and `pinned` (`{by, at}` or null; `by` is '' once the pinner's account was removed).
+Older servers omit them; clients default them.
+
+**Mentions.** Content names people with the token `<@userId>` (`MENTION_TOKEN_RE`), which clients insert
+from the @ autocomplete and render as "@Name", so renames keep working. The literal `@everyone` notifies
+every account (anyone may use it). The server computes `mentions` on send and on every edit: the existing
+accounts named by tokens, plus the author of the replied message, never the author, without duplicates.
+Bootstrap `lastMentionAt` (channelId → createdAt of the newest message by someone else that mentions you or
+@everyone) lets clients badge channels with an unread mention, like `lastMessageAt` for unread state.
 
 Handshake errors arrive as `connect_error` with a readable message. `UNKNOWN_TOKEN` tells the client to clear its token and show onboarding again.
 

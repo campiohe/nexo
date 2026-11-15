@@ -413,6 +413,7 @@ describe('Nexo protocol', () => {
       deafened: false,
       camera: false,
       streaming: true,
+      watching: [],
     })
 
     const left = nextEvent(bob.socket, 'voice:states', (s) => !findVoice(s, alice.boot.me.id))
@@ -577,7 +578,15 @@ describe('Nexo protocol', () => {
     const second = await connect(url, { token: alice.token })
     const upsert = nextEvent(bob.socket, 'user:upsert', (u) => u.id === alice.boot.me.id)
     const updated = await requestOk<User>(alice.socket, 'profile:update', { color: '#ABCDEF' })
-    assert.deepEqual(updated, { id: alice.boot.me.id, name: 'Alice', color: '#abcdef', avatar: null, role: 'owner' })
+    assert.deepEqual(updated, {
+      id: alice.boot.me.id,
+      name: 'Alice',
+      color: '#abcdef',
+      avatar: null,
+      role: 'owner',
+      statusText: null,
+      avatarAnimated: false,
+    })
     assert.deepEqual(await upsert, updated)
 
     // The other socket mints tokens with the new color.
@@ -587,7 +596,7 @@ describe('Nexo protocol', () => {
     second.socket.close()
 
     assert.equal(await requestErr(alice.socket, 'profile:update', { color: 'blue' }), 'Invalid color')
-    assert.equal(await requestErr(alice.socket, 'profile:update', null), 'Invalid color')
+    assert.equal(await requestErr(alice.socket, 'profile:update', null), 'Nothing to update')
   })
 
   // ----- robustness -----

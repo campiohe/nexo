@@ -1,0 +1,44 @@
+/* Animated profile pictures: GIF badge, animated crop previews. */
+
+.avatar-preview { position: relative; display: inline-flex; flex: none; }
+.avatar-preview > .avatar-gif-badge { position: absolute; right: -2px; bottom: 2px; }
+
+.avatar-gif-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--bg-3);
+  color: var(--text-0);
+  border: 2px solid var(--bg-0);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  line-height: 1;
+  cursor: default;
+  user-select: none;
+}
+
+.crop-preview-anim { position: relative; display: block; overflow: hidden; flex: none; }
+.crop-preview-anim img {
+  position: absolute;
+  top: 0;
+  left: 0;
+  max-width: none;
+  transform-origin: 0 0;
+  pointer-events: none;
+  user-select: none;
+}
+
+.crop-anim-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 280px;
+  margin: 0;
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.35;
+}
+.crop-anim-note .avatar-gif-badge { flex: none; border-color: transparent; }

@@ -1,5 +1,27 @@
-/* Design tokens shared by every renderer component. Add tokens here; don't hardcode colors in components. */
+/* Design tokens shared by every renderer component. Add tokens here; don't hardcode colors in components.
+ *
+ * Themes: <html data-theme="dark|light"> (set before the first paint by lib/appearance.ts). Dark is the default
+ * palette. Each palette block is also matched by any element carrying data-theme, so a subtree can show the other
+ * theme (Settings → Appearance previews). Every color token must be defined in BOTH palette blocks. */
+
+/* ---------- non-color tokens ---------- */
 :root {
+  --radius-sm: 6px;
+  --radius: 10px;
+  --radius-lg: 16px;
+  --font: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+  --mono: 'JetBrains Mono', 'Cascadia Code', ui-monospace, monospace;
+  --sidebar-w: 248px;
+  --members-w: 220px;
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --header-h: 52px;
+}
+
+/* ---------- dark palette (default) ----------
+ * The last selector: overlays drawn on top of video / stream tiles stay dark in the light theme. */
+:root,
+[data-theme='dark'],
+[data-theme='light'] :is(.vx-tile-label, .vx-tile-btn, .vx-stream:not(.is-unwatched), .vx-tile:fullscreen) {
   color-scheme: dark;
   --bg-0: #0b0d11;        /* app background / gutters */
   --bg-1: #12151b;        /* sidebar, panels */
@@ -7,6 +29,8 @@
   --bg-3: #212632;        /* inputs, hover */
   --bg-4: #2a3040;        /* active / pressed */
   --line: #262b37;
+  --line-hover: #333a4a;  /* hovered input / control border */
+  --line-strong: #39415a; /* focused / hovered border, scrollbar thumb hover */
   --text-0: #eef1f6;
   --text-1: #b4bccb;
   --text-2: #7c8598;
@@ -17,28 +41,10 @@
   --warn: #ffb547;
   --danger: #ff5c5c;
   --speaking: #3ee6b0;
-  --radius-sm: 6px;
-  --radius: 10px;
-  --radius-lg: 16px;
-  --shadow: 0 8px 30px rgb(0 0 0 / 0.45);
-  --font: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
-  --mono: 'JetBrains Mono', 'Cascadia Code', ui-monospace, monospace;
-  --sidebar-w: 248px;
-  --members-w: 220px;
-}
+  --danger-text: #ffb3b3; /* body text inside an error callout */
+  --warn-text: #ffe0ad;   /* body text inside a warning callout */
 
-*, *::before, *::after { box-sizing: border-box; }
-html, body, #root { height: 100%; margin: 0; }
-body {
-  background: var(--bg-0);
-  color: var(--text-0);
-  font: 14px/1.45 var(--font);
-  -webkit-font-smoothing: antialiased;
-  user-select: none;
-}
-
-/* Added by workstream C (derived tokens; existing values unchanged). */
-:root {
+  /* Derived (workstream C) */
   --accent-soft: rgb(62 230 176 / 0.14);
   --accent-glow: rgb(62 230 176 / 0.35);
   --live-soft: rgb(255 77 109 / 0.16);
@@ -46,6 +52,95 @@ body {
   --warn-soft: rgb(255 181 71 / 0.14);
   --hover: rgb(255 255 255 / 0.045);
   --focus-ring: 0 0 0 2px var(--bg-0), 0 0 0 4px var(--accent);
-  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
-  --header-h: 52px;
+
+  /* Surfaces & effects */
+  --message-hover: rgb(255 255 255 / 0.025);
+  --focus-glow: rgb(255 255 255 / 0.03);     /* soft halo around a focused composer */
+  --edge-highlight: rgb(255 255 255 / 0.12); /* hairline inside color swatches */
+  --chip-bg: rgb(0 0 0 / 0.25);
+  --overlay: rgb(5 7 10 / 0.72);             /* modal backdrop */
+  --scrim: rgb(0 0 0 / 0.6);                 /* share picker backdrop */
+  --splash-glow: #141924;
+  --spoiler-bg: #0b0d11;
+  --spoiler-hover: #07080b;
+  --spoiler-shown: rgb(255 255 255 / 0.07);
+  --mention-tint: 55%;                       /* how much of the user's color a mention's text keeps */
+  --shadow: 0 8px 30px rgb(0 0 0 / 0.45);
+  --shadow-pop: 0 6px 20px rgb(0 0 0 / 0.45);
+  --shadow-sm: 0 4px 14px rgb(0 0 0 / 0.35);
+  --shadow-xs: 0 2px 8px rgb(0 0 0 / 0.4);
+  --header-shadow: 0 1px 0 rgb(0 0 0 / 0.2);
 }
+
+/* ---------- light palette ----------
+ * Same brand hues, deepened so text meets WCAG AA (4.5:1) on bg-0…bg-3: accent/warn/danger double as text colors. */
+:root[data-theme='light'],
+[data-theme='light'] {
+  color-scheme: light;
+  --bg-0: #dde1e7;
+  --bg-1: #edf0f3;
+  --bg-2: #f8f9fa;
+  --bg-3: #e3e7ec;
+  --bg-4: #d3d8e0;
+  --line: #d3d8df;
+  --line-hover: #c3c9d3;
+  --line-strong: #b1b8c4;
+  --text-0: #161a22;
+  --text-1: #3f4756;
+  --text-2: #586172;
+  --accent: #067656;
+  --accent-strong: #05634a;
+  --accent-ink: #ffffff;
+  --live: #cf1743;
+  --warn: #9a5a00;
+  --danger: #c22020;
+  --speaking: #0d9f73;
+  --danger-text: #9b1c1c;
+  --warn-text: #6e4200;
+
+  --accent-soft: rgb(6 118 86 / 0.12);
+  --accent-glow: rgb(6 118 86 / 0.28);
+  --live-soft: rgb(207 23 67 / 0.12);
+  --danger-soft: rgb(194 32 32 / 0.1);
+  --warn-soft: rgb(154 90 0 / 0.12);
+  --hover: rgb(22 26 34 / 0.05);
+  --focus-ring: 0 0 0 2px var(--bg-0), 0 0 0 4px var(--accent);
+
+  --message-hover: rgb(22 26 34 / 0.03);
+  --focus-glow: rgb(22 26 34 / 0.04);
+  --edge-highlight: rgb(0 0 0 / 0.1);
+  --chip-bg: rgb(22 26 34 / 0.06);
+  --overlay: rgb(28 33 43 / 0.45);
+  --scrim: rgb(28 33 43 / 0.5);
+  --splash-glow: #ffffff;
+  --spoiler-bg: #c4cad4;
+  --spoiler-hover: #b5bcc8;
+  --spoiler-shown: rgb(22 26 34 / 0.07);
+  --mention-tint: 45%;
+  --shadow: 0 8px 30px rgb(22 30 45 / 0.16);
+  --shadow-pop: 0 6px 20px rgb(22 30 45 / 0.18);
+  --shadow-sm: 0 4px 14px rgb(22 30 45 / 0.12);
+  --shadow-xs: 0 2px 8px rgb(22 30 45 / 0.16);
+  --header-shadow: 0 1px 0 rgb(22 30 45 / 0.04);
+}
+
+/* Dark overlays on media inherit the light page's text color otherwise. */
+[data-theme='light'] :is(.vx-tile-label, .vx-tile-btn, .vx-stream:not(.is-unwatched), .vx-tile:fullscreen) { color: var(--text-0); }
+
+/* User-picked name colors are bright pastels made for the dark theme: darken them on light backgrounds
+   (AA on --bg-2 for every SWATCHES color). They're set inline, so a filter is the only CSS-side handle. */
+[data-theme='light'] :is(.message-author, .message-reply-author, .members-admin-name, .welcome-name, .mention-option-name, .profile-name) {
+  filter: brightness(0.55) saturate(1.2);
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html, body, #root { height: 100%; margin: 0; }
+body {
+  color: var(--text-0);
+  font: 14px/1.45 var(--font);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+/* Until lib/appearance.ts sets data-theme, no page background: the window's own background color (set by main
+   from the saved theme) shows instead, so a light theme never flashes dark (or the reverse) on startup. */
+:root[data-theme] body { background: var(--bg-0); }

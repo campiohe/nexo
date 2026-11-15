@@ -4,19 +4,21 @@ import { app, BrowserWindow, ipcMain, Menu, type MenuItemConstructorOptions } fr
 import { join, resolve } from 'node:path'
 import icon from '../../resources/icon.png?asset'
 import { IPC } from '../preload/api'
+import { attachAppearance, installAppearance, savedZoom, windowBackground } from './appearance'
 import { installCapture } from './capture'
 import { devMode, isDev, platform, preloadArguments } from './platform'
 import { getPrefs, installPrefs } from './prefs'
+import { installPresence } from './presence'
 import { installHotkeys } from './hotkeys'
 import { installMainLog, logLine } from './log'
 import { installNativeShare, releaseNativeShare } from './native-media'
+import { closeAllNotifications, installNotifications } from './notifications'
 import { installSecrets } from './secrets'
 import { installSecurity, isAppUrl, openExternalSafe, rendererEntry } from './security'
 import { destroyTray, hasTray, installTray, maybeShowTrayHint, setTrayUpdateReady } from './tray'
 import { installUpdate, installUpdater } from './updater'
 import { loadWindowState, trackWindowState } from './window-state'
 
-const BACKGROUND = '#0b0d11'
 let mainWindow: BrowserWindow | null = null
 /**
  * Set on every real quit path (tray Quit, Cmd+Q / app menu, app.quit(), Windows shutdown/log-off, and
@@ -35,7 +37,8 @@ function createMainWindow(): BrowserWindow {
     minHeight: 600,
     show: false,
     title: 'Nexo',
-    backgroundColor: BACKGROUND,
+    // The saved theme's --bg-0 (lib/appearance.ts in the renderer keeps it in sync afterwards).
+    backgroundColor: windowBackground(),
     autoHideMenuBar: true,
     // Windows/macOS take the icon from the executable/bundle; Linux needs it on the window.
     ...(platform === 'linux' ? { icon } : {}),
@@ -53,10 +56,13 @@ function createMainWindow(): BrowserWindow {
       // Keep voice/stream timers and audio processing at full speed while the window is hidden in the tray.
       backgroundThrottling: false,
       additionalArguments: preloadArguments(),
+      // Saved UI zoom (Ctrl+= / Ctrl+-), so the first paint is already at the right size.
+      zoomFactor: savedZoom(),
     },
   })
   if (state.maximized) win.maximize()
   trackWindowState(win)
+  attachAppearance(win)
 
   win.once('ready-to-show', () => win.show())
   // requestAttention(): Windows stops flashing on focus by itself; stop it explicitly everywhere else.
@@ -204,7 +210,11 @@ if (!app.requestSingleInstanceLock()) {
   app.on('before-quit', () => {
     isQuitting = true
   })
-  app.on('will-quit', destroyTray)
+  app.on('will-quit', () => {
+    destroyTray()
+    // Their click would start Nexo again without the channel: take them out of the Action Center.
+    closeAllNotifications()
+  })
 
   void app.whenReady().then(() => {
     installSecurity()
@@ -212,8 +222,10 @@ if (!app.requestSingleInstanceLock()) {
     installCapture()
     installSecrets()
     installPrefs()
+    installAppearance()
     installHotkeys({ getWindow: () => mainWindow, focusWindow: raiseMainWindow })
     installNativeShare({ getWindow: () => mainWindow })
+    installPresence({ getWindow: () => mainWindow })
     ipcMain.on(IPC.openExternal, (event, url: unknown) => {
       if (isAppUrl(event.senderFrame?.url)) openExternalSafe(url)
     })
@@ -232,6 +244,7 @@ if (!app.requestSingleInstanceLock()) {
 
     mainWindow = createMainWindow()
     installTray({ getWindow: () => mainWindow, showWindow: focusMainWindow, installUpdate })
+    installNotifications({ getWindow: () => mainWindow, showWindow: focusMainWindow })
 
     // macOS: clicking the Dock icon re-shows the window (hidden to the tray or closed).
     app.on('activate', focusMainWindow)

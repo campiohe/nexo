@@ -5,7 +5,13 @@ import { contextBridge, ipcRenderer } from 'electron'
 import {
   IPC,
   type AppPrefs,
+  type ActivitySettings,
+  type AppearanceState,
+  type ThemeChoice,
+  type ZoomEvent,
   type CaptureSource,
+  type ChatNotification,
+  type DetectedActivity,
   type GlobalHotkeyAction,
   type HotkeyBindings,
   type HotkeyEvent,
@@ -16,9 +22,11 @@ import {
   type NativeShareEvent,
   type NexoBridge,
   type PttBinding,
+  type PresenceBridgeState,
   type PttStatus,
   type SecretRead,
   type TrayAction,
+  type UnreadBadge,
   GLOBAL_HOTKEY_ACTIONS,
   type UpdateState,
   UPDATE_STATUSES,
@@ -45,6 +53,14 @@ function subscribe<T>(channel: string, accept: (v: unknown) => v is T, cb: (v: T
   return () => {
     ipcRenderer.removeListener(channel, listener)
   }
+}
+
+const isChannelId = (v: unknown): v is string => typeof v === 'string' && v.length > 0 && v.length <= 128
+
+function isZoomEvent(v: unknown): v is ZoomEvent {
+  if (typeof v !== 'object' || v === null) return false
+  const e = v as Record<string, unknown>
+  return typeof e.factor === 'number' && Number.isFinite(e.factor) && (e.source === 'keyboard' || e.source === 'wheel' || e.source === 'settings')
 }
 
 const isTrayAction = (v: unknown): v is TrayAction => TRAY_ACTIONS.includes(v as TrayAction)
@@ -135,6 +151,15 @@ async function startNativeShare(opts: unknown): Promise<{ shareId: number }> {
   return { shareId: result.shareId }
 }
 
+// ── Presence (idle, game detection) ─────────────────────────────────────────────────────────────────────
+
+const isBool = (v: unknown): v is boolean => typeof v === 'boolean'
+
+function isDetectedActivity(v: unknown): v is DetectedActivity | null {
+  if (v === null) return true
+  return isObj(v) && typeof v.name === 'string' && v.name.length > 0 && typeof v.startedAt === 'number' && Number.isFinite(v.startedAt)
+}
+
 const bridge: NexoBridge = {
   platform,
   supportsSystemAudio: arg('system-audio') === '1',
@@ -166,6 +191,13 @@ const bridge: NexoBridge = {
 
   requestAttention: (): void => ipcRenderer.send(IPC.requestAttention),
 
+  notifications: {
+    show: (n: ChatNotification): void => ipcRenderer.send(IPC.notifyShow, n),
+    clear: (channelId: string | null): void => ipcRenderer.send(IPC.notifyClear, channelId),
+    setBadge: (badge: UnreadBadge): void => ipcRenderer.send(IPC.notifyBadge, badge),
+    onOpen: (cb: (channelId: string) => void): (() => void) => subscribe(IPC.notifyOpen, isChannelId, cb),
+  },
+
   hotkeys: {
     setBindings: (bindings: HotkeyBindings): Promise<HotkeyStatus> =>
       ipcRenderer.invoke(IPC.hotkeysSetBindings, bindings),
@@ -195,6 +227,23 @@ const bridge: NexoBridge = {
   tray: {
     setVoiceState: (state): void => ipcRenderer.send(IPC.trayVoiceState, state),
     onAction: (cb: (action: TrayAction) => void): (() => void) => subscribe(IPC.trayAction, isTrayAction, cb),
+  },
+
+  presence: {
+    getState: (): Promise<PresenceBridgeState> => ipcRenderer.invoke(IPC.presenceGetState),
+    setSettings: (patch: Partial<ActivitySettings>): Promise<ActivitySettings> =>
+      ipcRenderer.invoke(IPC.presenceSetSettings, patch),
+    listProcesses: (): Promise<string[]> => ipcRenderer.invoke(IPC.presenceListProcesses),
+    onIdle: (cb: (idle: boolean) => void): (() => void) => subscribe(IPC.presenceIdle, isBool, cb),
+    onActivity: (cb: (activity: DetectedActivity | null) => void): (() => void) =>
+      subscribe(IPC.presenceActivity, isDetectedActivity, cb),
+  },
+
+  appearance: {
+    getState: (): Promise<AppearanceState> => ipcRenderer.invoke(IPC.appearanceGet),
+    setTheme: (theme: ThemeChoice, background: string): void => ipcRenderer.send(IPC.appearanceSetTheme, theme, background),
+    setZoom: (factor: number): Promise<number> => ipcRenderer.invoke(IPC.appearanceSetZoom, factor),
+    onZoom: (cb: (e: ZoomEvent) => void): (() => void) => subscribe(IPC.appearanceZoom, isZoomEvent, cb),
   },
 
   updates: {

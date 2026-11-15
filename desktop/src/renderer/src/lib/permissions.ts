@@ -31,6 +31,11 @@ export function canDeleteMessage(me: Me, msg: Pick<Message, 'userId'>): boolean 
   return !!me && (msg.userId === me.id || isStaff(me))
 }
 
+/** Anyone pins; unpinning is for whoever pinned it, the message's author, or admins and the owner. */
+export function canUnpinMessage(me: Me, msg: Pick<Message, 'userId' | 'pinned'>): boolean {
+  return !!me && (msg.pinned?.by === me.id || msg.userId === me.id || isStaff(me))
+}
+
 /** Admins remove members; only the owner removes admins; nobody removes the owner or themselves. */
 export function canRemove(me: Me, target: Pick<User, 'id' | 'role'> | null | undefined): boolean {
   if (!me || !target || target.id === me.id) return false

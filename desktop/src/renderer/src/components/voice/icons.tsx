@@ -179,3 +179,30 @@ export const ReturnIcon = (p: IconProps) => (
     <path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" />
   </Svg>
 )
+
+/** Soundboard: two beamed notes. */
+export const SoundboardIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M9 18V5l12-2v13" />
+    <circle cx="6" cy="18" r="3" />
+    <circle cx="18" cy="16" r="3" />
+  </Svg>
+)
+
+export const PlayIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M7 4.5v15l12.5-7.5L7 4.5z" fill="currentColor" />
+  </Svg>
+)
+
+export const StopIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" />
+  </Svg>
+)
+
+export const UploadIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M12 15V4M7 9l5-5 5 5M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4" />
+  </Svg>
+)

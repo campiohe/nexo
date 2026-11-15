@@ -2,8 +2,9 @@
 //   PUT    /api/avatar           upload (Authorization: Bearer <device token>)
 //   DELETE /api/avatar           remove
 //   GET    /avatars/:userId?v=   serve
-// Images live in <dataDir>/avatars/<userId>. The DB stores only a short content hash (the version token).
-// Validation is magic-byte based: no image decoding, no native libraries.
+// Images live in <dataDir>/avatars/<userId>. The DB stores only a short content hash (the version token) and
+// whether the picture is an animated GIF (users.avatar_animated); the served Content-Type is sniffed from the
+// file. Validation is magic-byte based: no image decoding, no native libraries.
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { createHash, randomBytes } from 'node:crypto'
 import { mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs'
@@ -11,7 +12,7 @@ import { readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import type { User } from '../../shared/protocol.ts'
-import { AVATAR_MAX_BYTES } from '../../shared/protocol.ts'
+import { AVATAR_ANIMATED_MAX_BYTES, AVATAR_MAX_BYTES } from '../../shared/protocol.ts'
 import type { Db } from './db.ts'
 import {
   HttpError,
@@ -26,17 +27,25 @@ import {
   sendJson,
 } from './http.ts'
 
-export type ImageType = 'image/webp' | 'image/png' | 'image/jpeg'
-const IMAGE_TYPES: readonly string[] = ['image/webp', 'image/png', 'image/jpeg'] satisfies ImageType[]
+export type ImageType = 'image/webp' | 'image/png' | 'image/jpeg' | 'image/gif'
+const IMAGE_TYPES: readonly string[] = ['image/webp', 'image/png', 'image/jpeg', 'image/gif'] satisfies ImageType[]
+
+/** Size limit of a picture of the given (declared) type: GIFs may be animated, so they get more room. */
+const maxBytesFor = (type: string) => (type === 'image/gif' ? AVATAR_ANIMATED_MAX_BYTES : AVATAR_MAX_BYTES)
+const tooLargeFor = (type: string) => () =>
+  type === 'image/gif'
+    ? new HttpError(413, `Animated profile pictures are limited to ${Math.round(AVATAR_ANIMATED_MAX_BYTES / 1024 / 1024)} MB`)
+    : new HttpError(413, `Profile pictures are limited to ${Math.round(AVATAR_MAX_BYTES / 1024)} KB`)
 
 const PNG_SIG = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
 const startsWith = (buf: Uint8Array, bytes: number[], offset = 0) =>
   buf.length >= offset + bytes.length && bytes.every((b, i) => buf[offset + i] === b)
 const ascii = (s: string) => [...s].map((c) => c.charCodeAt(0))
 
-/** Detects the image type from its first bytes, or null if it isn't a PNG, JPEG or WebP. */
+/** Detects the image type from its first bytes, or null if it isn't a PNG, JPEG, WebP or GIF. */
 export function sniffImage(buf: Uint8Array): ImageType | null {
   if (startsWith(buf, PNG_SIG)) return 'image/png'
+  if (startsWith(buf, ascii('GIF87a')) || startsWith(buf, ascii('GIF89a'))) return 'image/gif'
   if (startsWith(buf, [0xff, 0xd8, 0xff])) return 'image/jpeg'
   if (startsWith(buf, ascii('RIFF')) && startsWith(buf, ascii('WEBP'), 8)) return 'image/webp'
   return null
@@ -46,7 +55,6 @@ export function sniffImage(buf: Uint8Array): ImageType | null {
 export const avatarToken = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex').slice(0, 12)
 
 const CORS_HEADERS = corsHeaders('PUT, DELETE')
-const tooLarge = () => new HttpError(413, `Profile pictures are limited to ${Math.round(AVATAR_MAX_BYTES / 1024)} KB`)
 
 export interface AvatarRoutesOptions {
   dataDir: string
@@ -86,16 +94,21 @@ export function createAvatarRoutes(opts: AvatarRoutesOptions) {
     const user = authenticate(req, users, opts.hashToken)
     const declared = declaredType(req)
     if (!IMAGE_TYPES.includes(declared)) {
-      throw new HttpError(415, 'Profile pictures must be WebP, PNG or JPEG (Content-Type image/webp, image/png or image/jpeg)')
+      throw new HttpError(
+        415,
+        'Profile pictures must be WebP, PNG, JPEG or GIF (Content-Type image/webp, image/png, image/jpeg or image/gif)',
+      )
     }
-    if (declaredLength(req) > AVATAR_MAX_BYTES) throw tooLarge()
+    const maxBytes = maxBytesFor(declared)
+    const tooLarge = tooLargeFor(declared)
+    if (declaredLength(req) > maxBytes) throw tooLarge()
     rateLimit(user.id)
 
-    const body = await readBody(req, AVATAR_MAX_BYTES, tooLarge)
+    const body = await readBody(req, maxBytes, tooLarge)
     if (body.length === 0) throw new HttpError(400, 'The upload is empty')
     const actual = sniffImage(body)
     if (actual !== declared) {
-      throw new HttpError(415, actual ? `The file is ${actual}, not ${declared}` : 'The file is not a WebP, PNG or JPEG image')
+      throw new HttpError(415, actual ? `The file is ${actual}, not ${declared}` : 'The file is not a WebP, PNG, JPEG or GIF image')
     }
 
     // Atomic replace: readers see either the old picture or the new one, never a partial file.
@@ -107,7 +120,8 @@ export function createAvatarRoutes(opts: AvatarRoutesOptions) {
       await rm(tmp, { force: true }).catch(() => {})
       throw err
     }
-    const updated = users.setAvatar(user.id, avatarToken(body))
+    // A GIF may have a single frame; clients still treat it as animated (it only costs a hover/speaking check).
+    const updated = users.setAvatar(user.id, avatarToken(body), actual === 'image/gif')
     if (!updated) {
       // The account was removed during the upload.
       await rm(fileFor(user.id), { force: true })
@@ -191,7 +205,7 @@ export function createAvatarRoutes(opts: AvatarRoutesOptions) {
       return false
     }
 
-    finish(req, res, work, { label: 'avatar', cors: CORS_HEADERS, drainBytes: AVATAR_MAX_BYTES * 4 })
+    finish(req, res, work, { label: 'avatar', cors: CORS_HEADERS, drainBytes: AVATAR_ANIMATED_MAX_BYTES * 2 })
     return true
   }
 
