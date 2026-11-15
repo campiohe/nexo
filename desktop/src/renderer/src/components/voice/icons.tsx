@@ -163,3 +163,19 @@ export const ExpandIcon = (p: IconProps) => (
     <path d="M14 4h6v6M10 20H4v-6M20 4l-7 7M4 20l7-7" />
   </Svg>
 )
+
+/** Picture-in-picture / pop out: a small window inside a screen. */
+export const PopOutIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="2" y="4" width="20" height="16" rx="2" />
+    <rect x="12" y="12" width="7" height="5" rx="1" />
+  </Svg>
+)
+
+/** Back / return (curved arrow). */
+export const ReturnIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M9 14 4 9l5-5" />
+    <path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" />
+  </Svg>
+)

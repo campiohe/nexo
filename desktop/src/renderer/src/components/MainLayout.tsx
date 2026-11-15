@@ -3,6 +3,7 @@ import { useApp } from '../store/app'
 import { useUi } from '../store/ui'
 import { useVoice } from '../voice/session'
 import { VoiceStage } from './voice/VoiceStage'
+import { PipLayer } from './voice/PipPlayer'
 import { toast } from '../lib/toast'
 import { canManageChannels } from '../lib/permissions'
 import { Sidebar } from './Sidebar'
@@ -19,6 +20,7 @@ export function MainLayout() {
       <Sidebar />
       <Center />
       {membersOpen && <MemberList />}
+      <PipLayer />
     </div>
   )
 }

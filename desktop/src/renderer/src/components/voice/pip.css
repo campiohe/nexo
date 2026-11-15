@@ -1,0 +1,75 @@
+/* Floating picture-in-picture player (PipPlayer.tsx). Kept out of voice.css on purpose. */
+
+.pip {
+  --pip-gap: 16px;
+  --pip-bottom: var(--pip-gap);
+  position: fixed;
+  z-index: 40; /* above the layout, below modals (100) and toasts (200) */
+  width: min(320px, calc(100vw - var(--sidebar-w) - 2 * var(--pip-gap)));
+  min-width: 200px;
+  aspect-ratio: 16 / 9;
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: #000;
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+  cursor: pointer;
+  touch-action: none;
+  transition: transform 0.22s var(--ease), box-shadow 0.15s;
+  animation: pip-in 0.18s var(--ease);
+}
+/* Text channels: keep the composer (and its send/attach buttons) uncovered. */
+.pip.is-over-chat { --pip-bottom: 104px; }
+
+/* Corners of the area right of the sidebar (never over the user panel / voice controls). */
+.pip.is-tl { top: calc(var(--header-h) + var(--pip-gap)); left: calc(var(--sidebar-w) + var(--pip-gap)); }
+.pip.is-tr { top: calc(var(--header-h) + var(--pip-gap)); right: var(--pip-gap); }
+.pip.is-bl { bottom: var(--pip-bottom); left: calc(var(--sidebar-w) + var(--pip-gap)); }
+.pip.is-br { bottom: var(--pip-bottom); right: var(--pip-gap); }
+
+.pip[data-dragging] { transition: none; cursor: grabbing; box-shadow: 0 14px 40px rgb(0 0 0 / 0.55); }
+.pip.is-speaking::after {
+  content: ''; position: absolute; inset: 0; z-index: 3; pointer-events: none;
+  border-radius: inherit; box-shadow: inset 0 0 0 2px var(--speaking);
+}
+
+@keyframes pip-in {
+  from { opacity: 0; scale: 0.94; }
+}
+
+.pip-overlay {
+  position: absolute; inset: 0; z-index: 2;
+  display: flex; flex-direction: column; justify-content: space-between;
+  padding: 8px;
+  background:
+    linear-gradient(to bottom, rgb(0 0 0 / 0.55), transparent 40%),
+    linear-gradient(to top, rgb(0 0 0 / 0.55), transparent 40%);
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.pip:hover .pip-overlay, .pip:focus-within .pip-overlay { opacity: 1; }
+.pip[data-dragging] .pip-overlay { opacity: 0; }
+
+.pip-top, .pip-bottom { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.pip-name {
+  min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: #fff;
+  font-size: 12.5px; font-weight: 650;
+  text-shadow: 0 1px 2px rgb(0 0 0 / 0.6);
+}
+.pip-grow { flex: 1; }
+.pip .vx-tile-btn { flex: none; }
+.pip .vx-tile-btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+/* Element behind the OS picture-in-picture window: present and sized (adaptiveStream), never seen. */
+.pip-popout-host {
+  position: fixed; top: 0; left: 0; z-index: -1;
+  opacity: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pip { transition: none; animation: none; }
+}
