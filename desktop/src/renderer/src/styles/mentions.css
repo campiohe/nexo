@@ -6,7 +6,7 @@
   padding: 0 3px;
   border-radius: 4px;
   background: color-mix(in srgb, var(--mention-color) 16%, transparent);
-  color: color-mix(in srgb, var(--mention-color) 55%, var(--text-0));
+  color: color-mix(in srgb, var(--mention-color) var(--mention-tint), var(--text-0));
   font-weight: 600;
   white-space: nowrap;
   box-decoration-break: clone;

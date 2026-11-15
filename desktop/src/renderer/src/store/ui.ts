@@ -36,7 +36,16 @@ export interface ProfileCardState {
 }
 
 /** Settings sections that can be opened directly (SettingsModal's tab ids). */
-export type SettingsTab = 'profile' | 'av' | 'keybinds' | 'notifications' | 'activity' | 'app' | 'members' | 'server'
+export type SettingsTab =
+  | 'profile'
+  | 'appearance'
+  | 'av'
+  | 'keybinds'
+  | 'notifications'
+  | 'activity'
+  | 'app'
+  | 'members'
+  | 'server'
 
 export function anchorOf(el: Element): AnchorRect {
   const r = el.getBoundingClientRect()

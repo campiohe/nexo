@@ -4,7 +4,7 @@ import { NO_REACTIONS, useApp } from '../store/app'
 import { useCompose } from '../store/compose'
 import { anchorOf, useUi } from '../store/ui'
 import { toast } from '../lib/toast'
-import { canDeleteMessage } from '../lib/permissions'
+import { canDeleteMessage, canUnpinMessage } from '../lib/permissions'
 import { contentToPlain, mentionsUser } from '../lib/mentions'
 import { formatDay, formatFull, formatTime, isSameDay } from '../lib/time'
 import { Avatar } from './Avatar'
@@ -16,12 +16,17 @@ import { MessageEditor } from './MessageEditor'
 import { Reactions } from './Reactions'
 import { EmojiPicker } from './EmojiPicker'
 import { ArrowDownIcon, HashIcon } from './icons'
+import { PinIcon } from './chatIcons'
+import { MessageEmbeds } from './EmbedCard'
+import { useChatPanels } from '../store/chatPanels'
 
 const GROUP_WINDOW_MS = 5 * 60 * 1000
 const STICK_THRESHOLD_PX = 80
 const LOAD_OLDER_THRESHOLD_PX = 120
 /** Clicking a reply preview loads at most this many older pages looking for the original. */
 const JUMP_MAX_PAGES = 10
+/** Jumping from search results / pins goes further back. */
+const PANEL_JUMP_MAX_PAGES = 20
 const FLASH_MS = 1600
 /** Older servers send messages without the field. */
 const NO_ATTACHMENTS: Attachment[] = []
@@ -193,16 +198,27 @@ export function MessageList({ channelId }: { channelId: string }) {
     setPicker((p) => (p && p.messageId === messageId && p.anchor === anchor ? null : { messageId, anchor, from }))
   }, [])
 
-  /** Scroll to a message (loading older pages if needed, up to a cap) and flash it. */
+  /**
+   * Scroll to a message (loading older pages if needed, up to `maxPages`) and flash it. `createdAt`, when
+   * known, stops the paging once the loaded history is older than the message (it was deleted).
+   */
   const jumpTo = useCallback(
-    async (messageId: string) => {
+    async (messageId: string, opts?: { maxPages?: number; createdAt?: number; tooFar?: string }) => {
       const find = () => scrollRef.current?.querySelector<HTMLElement>(`[data-mid="${CSS.escape(messageId)}"]`) ?? null
       let el = find()
-      for (let page = 0; !el && page < JUMP_MAX_PAGES; page++) {
+      let exhausted = false
+      for (let page = 0; !el && page < (opts?.maxPages ?? JUMP_MAX_PAGES); page++) {
         // Let an automatic older-page load finish first.
         for (let i = 0; i < 300 && useApp.getState().messages[channelId]?.loading; i++) await nextFrame()
+        el = find()
+        if (el) break
         const before = useApp.getState().messages[channelId]
-        if (!before?.loaded || !before.hasMore) break
+        const oldest = before?.items[0]
+        if (before?.loaded && (!before.hasMore || (opts?.createdAt !== undefined && oldest && oldest.createdAt < opts.createdAt))) {
+          exhausted = true
+          break
+        }
+        if (!before?.loaded) break
         try {
           await loadOlder(channelId)
         } catch (err) {
@@ -214,7 +230,8 @@ export function MessageList({ channelId }: { channelId: string }) {
         if ((useApp.getState().messages[channelId]?.items.length ?? 0) <= before.items.length) break
       }
       if (!el) {
-        toast('Original message is further up', 'info')
+        if (opts?.tooFar) toast(exhausted ? 'That message no longer exists' : opts.tooFar, 'info')
+        else toast('Original message is further up', 'info')
         return
       }
       stickRef.current = false
@@ -223,6 +240,18 @@ export function MessageList({ channelId }: { channelId: string }) {
     },
     [channelId, loadOlder],
   )
+
+  // "Jump" from search results or pinned messages (store/chatPanels), once the first page is in.
+  const jump = useChatPanels((s) => (s.jump?.channelId === channelId ? s.jump : null))
+  useEffect(() => {
+    if (!jump || !loaded) return
+    useChatPanels.getState().clearJump(jump.nonce)
+    void jumpTo(jump.messageId, {
+      maxPages: PANEL_JUMP_MAX_PAGES,
+      createdAt: jump.createdAt,
+      tooFar: 'That message is too far back to jump to',
+    })
+  }, [jump, loaded, jumpTo])
 
   // Keyboard: Up/Down move between messages (focusing one shows its action bar), Escape goes to the composer.
   function onListKeyDown(e: KeyboardEvent<HTMLDivElement>) {
@@ -289,6 +318,8 @@ export function MessageList({ channelId }: { channelId: string }) {
               meId={meId}
               mine={r.msg.userId === meId}
               canDelete={canDeleteMessage(me, r.msg)}
+              canUnpin={!!r.msg.pinned && canUnpinMessage(me, r.msg)}
+              pinnedBy={r.msg.pinned ? (users[r.msg.pinned.by]?.name ?? 'a deleted user') : null}
               mentioned={mentionsUser(r.msg, meId)}
               editing={editingId === r.msg.id}
               replyTarget={replyingToId === r.msg.id}
@@ -400,6 +431,8 @@ const MessageRow = memo(function MessageRow({
   meId,
   mine,
   canDelete,
+  canUnpin,
+  pinnedBy,
   mentioned,
   editing,
   replyTarget,
@@ -417,6 +450,9 @@ const MessageRow = memo(function MessageRow({
   meId: string | undefined
   mine: boolean
   canDelete: boolean
+  canUnpin: boolean
+  /** Name of who pinned it (null = not pinned). */
+  pinnedBy: string | null
   /** Mentions you (or replies to you / @everyone): highlighted. */
   mentioned: boolean
   /** Shows the inline editor (store/compose editingId). */
@@ -431,6 +467,7 @@ const MessageRow = memo(function MessageRow({
   onOpenPicker(messageId: string, anchor: HTMLElement, from: PickerState['from']): void
   onJump(messageId: string): void
 }) {
+  const pinTitle = pinnedBy !== null && msg.pinned ? `Pinned by ${pinnedBy} · ${formatFull(msg.pinned.at)}` : ''
   // The action bar only exists for the hovered / keyboard-focused message (cheap long lists).
   const [hover, setHover] = useState(false)
   const [keyboard, setKeyboard] = useState(false)
@@ -452,6 +489,7 @@ const MessageRow = memo(function MessageRow({
     replyTarget ? 'is-reply-target' : '',
     editing ? 'is-editing' : '',
     msg.replyTo ? 'is-reply' : '',
+    pinnedBy !== null ? 'is-pinned' : '',
   ]
     .filter(Boolean)
     .join(' ')
@@ -488,9 +526,16 @@ const MessageRow = memo(function MessageRow({
               <Avatar user={author} size={36} />
             )
           ) : (
-            <time className="message-time-hover" dateTime={new Date(msg.createdAt).toISOString()} title={formatFull(msg.createdAt)}>
-              {formatTime(msg.createdAt)}
-            </time>
+            <>
+              <time className="message-time-hover" dateTime={new Date(msg.createdAt).toISOString()} title={formatFull(msg.createdAt)}>
+                {formatTime(msg.createdAt)}
+              </time>
+              {pinTitle && (
+                <span className="message-pin-mark is-gutter" title={pinTitle} aria-label={pinTitle}>
+                  <PinIcon size={12} />
+                </span>
+              )}
+            </>
           )}
         </div>
         <div className="message-body">
@@ -506,6 +551,11 @@ const MessageRow = memo(function MessageRow({
               <time className="message-time" dateTime={new Date(msg.createdAt).toISOString()} title={formatFull(msg.createdAt)}>
                 {formatTime(msg.createdAt)}
               </time>
+              {pinTitle && (
+                <span className="message-pin-mark" title={pinTitle} aria-label={pinTitle}>
+                  <PinIcon size={12} />
+                </span>
+              )}
             </div>
           )}
           {editing ? (
@@ -524,6 +574,7 @@ const MessageRow = memo(function MessageRow({
             )
           )}
           <MessageAttachments attachments={msg.attachments ?? NO_ATTACHMENTS} serverUrl={serverUrl} onOpen={onOpenImage} />
+          {!editing && <MessageEmbeds content={msg.content} />}
           <Reactions
             messageId={msg.id}
             reactions={reactions}
@@ -537,6 +588,8 @@ const MessageRow = memo(function MessageRow({
             messageId={msg.id}
             canEdit={mine && !editing}
             canDelete={canDelete}
+            pinned={pinnedBy !== null}
+            canUnpin={canUnpin}
             pickerOpen={picker === 'bar'}
             onReact={(anchor) => onOpenPicker(msg.id, anchor, 'bar')}
             onReply={() => {

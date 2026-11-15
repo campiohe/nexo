@@ -25,6 +25,8 @@ import { forgetChannel, loadReadState, noteDeleted, noteMessage, resetUnread } f
 import { addAccessRequest, applyUserRemoved, dropAccessRequest, setAccessRequests } from '../store/admin'
 import { notifyMessage } from '../lib/notify'
 import { applyPresenceChanged, pruneOffline, setBootstrapPresence } from '../store/presence'
+import { removeSound, setBootstrapSounds, upsertSound } from '../store/sounds'
+import { chatPanelsMessageDeleted, chatPanelsMessageUpdated } from '../store/chatPanels'
 
 export type NexoSocket = Socket<ServerToClientEvents, ClientToServerEvents>
 
@@ -245,6 +247,7 @@ function wire(s: NexoSocket) {
 
   s.on('message:deleted', ({ messageId, channelId }) => {
     forgetDeletedMessage(messageId)
+    chatPanelsMessageDeleted(messageId)
     const st = useApp.getState()
     const cm = st.messages[channelId]
     if (!cm) return
@@ -264,6 +267,7 @@ function wire(s: NexoSocket) {
   })
 
   s.on('message:updated', (m) => {
+    chatPanelsMessageUpdated(m)
     useApp.setState((st) => {
       const cm = st.messages[m.channelId]
       if (!cm) return {}
@@ -303,6 +307,24 @@ function wire(s: NexoSocket) {
     void import('../voice/voiceActions')
       .then((m) => m.handleMoved(channelId, by))
       .catch((err) => console.warn('[nexo] voice move failed', err))
+  })
+
+  // ---- soundboard (store/sounds.ts; playback in voice/soundboard.ts, lazy like voice/session) ----
+  s.on('sound:upsert', (sound) => {
+    if (socket !== s) return
+    upsertSound(sound)
+  })
+
+  s.on('sound:deleted', ({ soundId }) => {
+    if (socket !== s) return
+    removeSound(soundId)
+  })
+
+  s.on('sound:played', (p) => {
+    if (socket !== s) return
+    void import('../voice/soundboard')
+      .then((m) => m.handleSoundPlayed(p))
+      .catch((err) => console.warn('[nexo] soundboard playback failed', err))
   })
 
   s.on('voice:nudged', ({ by }) => {
@@ -379,6 +401,7 @@ async function handleBootstrap(b: Bootstrap) {
     typing: {},
   })
   setBootstrapPresence(b.presence)
+  setBootstrapSounds(b.sounds)
   resetSignIn() // signed in: any onboarding "Welcome back" / sign-in request state is obsolete
   loadReadState(
     url,

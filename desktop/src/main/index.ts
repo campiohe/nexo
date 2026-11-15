@@ -4,6 +4,7 @@ import { app, BrowserWindow, ipcMain, Menu, type MenuItemConstructorOptions } fr
 import { join, resolve } from 'node:path'
 import icon from '../../resources/icon.png?asset'
 import { IPC } from '../preload/api'
+import { attachAppearance, installAppearance, savedZoom, windowBackground } from './appearance'
 import { installCapture } from './capture'
 import { devMode, isDev, platform, preloadArguments } from './platform'
 import { getPrefs, installPrefs } from './prefs'
@@ -18,7 +19,6 @@ import { destroyTray, hasTray, installTray, maybeShowTrayHint, setTrayUpdateRead
 import { installUpdate, installUpdater } from './updater'
 import { loadWindowState, trackWindowState } from './window-state'
 
-const BACKGROUND = '#0b0d11'
 let mainWindow: BrowserWindow | null = null
 /**
  * Set on every real quit path (tray Quit, Cmd+Q / app menu, app.quit(), Windows shutdown/log-off, and
@@ -37,7 +37,8 @@ function createMainWindow(): BrowserWindow {
     minHeight: 600,
     show: false,
     title: 'Nexo',
-    backgroundColor: BACKGROUND,
+    // The saved theme's --bg-0 (lib/appearance.ts in the renderer keeps it in sync afterwards).
+    backgroundColor: windowBackground(),
     autoHideMenuBar: true,
     // Windows/macOS take the icon from the executable/bundle; Linux needs it on the window.
     ...(platform === 'linux' ? { icon } : {}),
@@ -55,10 +56,13 @@ function createMainWindow(): BrowserWindow {
       // Keep voice/stream timers and audio processing at full speed while the window is hidden in the tray.
       backgroundThrottling: false,
       additionalArguments: preloadArguments(),
+      // Saved UI zoom (Ctrl+= / Ctrl+-), so the first paint is already at the right size.
+      zoomFactor: savedZoom(),
     },
   })
   if (state.maximized) win.maximize()
   trackWindowState(win)
+  attachAppearance(win)
 
   win.once('ready-to-show', () => win.show())
   // requestAttention(): Windows stops flashing on focus by itself; stop it explicitly everywhere else.
@@ -218,6 +222,7 @@ if (!app.requestSingleInstanceLock()) {
     installCapture()
     installSecrets()
     installPrefs()
+    installAppearance()
     installHotkeys({ getWindow: () => mainWindow, focusWindow: raiseMainWindow })
     installNativeShare({ getWindow: () => mainWindow })
     installPresence({ getWindow: () => mainWindow })

@@ -362,6 +362,28 @@ export interface PresenceBridgeState {
   settings: ActivitySettings
 }
 
+/** Settings → Appearance → Theme. 'system' follows the OS light/dark setting live. */
+export type ThemeChoice = 'system' | 'dark' | 'light'
+
+export const THEME_CHOICES: readonly ThemeChoice[] = ['system', 'dark', 'light']
+
+/** UI zoom levels (webContents zoom factor), stepped through by Ctrl+= / Ctrl+- and Ctrl+mouse wheel. */
+export const ZOOM_STEPS: readonly number[] = [0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2]
+
+/** What changed the zoom: a shortcut / the wheel (the renderer shows the new level briefly) or Settings. */
+export type ZoomSource = 'keyboard' | 'wheel' | 'settings'
+
+export interface ZoomEvent {
+  factor: number
+  source: ZoomSource
+}
+
+export interface AppearanceState {
+  /** Main's copy of the theme (the renderer's localStorage copy is the one applied before the first paint). */
+  theme: ThemeChoice
+  zoom: number
+}
+
 export interface NexoBridge {
   platform: 'win32' | 'darwin' | 'linux'
   /** True when getDisplayMedia can include system audio (loopback) on this OS. */
@@ -505,6 +527,20 @@ export interface NexoBridge {
     onActivity(cb: (activity: DetectedActivity | null) => void): () => void
   }
 
+  /** Theme and zoom (main process side). Missing on older preloads: callers must check. */
+  appearance: {
+    getState(): Promise<AppearanceState>
+    /**
+     * Remember the theme choice (nativeTheme.themeSource, so OS-drawn scrollbars / menus / title bar follow it)
+     * and paint the window background `background` (#rrggbb, the page's --bg-0) so resizes don't flash.
+     */
+    setTheme(theme: ThemeChoice, background: string): void
+    /** Set the zoom factor (snapped to ZOOM_STEPS); resolves with the factor applied. */
+    setZoom(factor: number): Promise<number>
+    /** Zoom changed (keyboard shortcut, Ctrl+wheel or setZoom). */
+    onZoom(cb: (e: ZoomEvent) => void): () => void
+  }
+
   /** Auto-update (main process). */
   updates: {
     getState(): Promise<UpdateState>
@@ -557,4 +593,8 @@ export const IPC = {
   presenceListProcesses: 'nexo:presence:list-processes',
   presenceIdle: 'nexo:presence:idle', // main → renderer (boolean)
   presenceActivity: 'nexo:presence:activity', // main → renderer (DetectedActivity | null)
+  appearanceGet: 'nexo:appearance:get',
+  appearanceSetTheme: 'nexo:appearance:set-theme',
+  appearanceSetZoom: 'nexo:appearance:set-zoom',
+  appearanceZoom: 'nexo:appearance:zoom', // main → renderer (ZoomEvent)
 } as const

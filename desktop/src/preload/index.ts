@@ -6,6 +6,9 @@ import {
   IPC,
   type AppPrefs,
   type ActivitySettings,
+  type AppearanceState,
+  type ThemeChoice,
+  type ZoomEvent,
   type CaptureSource,
   type ChatNotification,
   type DetectedActivity,
@@ -53,6 +56,12 @@ function subscribe<T>(channel: string, accept: (v: unknown) => v is T, cb: (v: T
 }
 
 const isChannelId = (v: unknown): v is string => typeof v === 'string' && v.length > 0 && v.length <= 128
+
+function isZoomEvent(v: unknown): v is ZoomEvent {
+  if (typeof v !== 'object' || v === null) return false
+  const e = v as Record<string, unknown>
+  return typeof e.factor === 'number' && Number.isFinite(e.factor) && (e.source === 'keyboard' || e.source === 'wheel' || e.source === 'settings')
+}
 
 const isTrayAction = (v: unknown): v is TrayAction => TRAY_ACTIONS.includes(v as TrayAction)
 
@@ -228,6 +237,13 @@ const bridge: NexoBridge = {
     onIdle: (cb: (idle: boolean) => void): (() => void) => subscribe(IPC.presenceIdle, isBool, cb),
     onActivity: (cb: (activity: DetectedActivity | null) => void): (() => void) =>
       subscribe(IPC.presenceActivity, isDetectedActivity, cb),
+  },
+
+  appearance: {
+    getState: (): Promise<AppearanceState> => ipcRenderer.invoke(IPC.appearanceGet),
+    setTheme: (theme: ThemeChoice, background: string): void => ipcRenderer.send(IPC.appearanceSetTheme, theme, background),
+    setZoom: (factor: number): Promise<number> => ipcRenderer.invoke(IPC.appearanceSetZoom, factor),
+    onZoom: (cb: (e: ZoomEvent) => void): (() => void) => subscribe(IPC.appearanceZoom, isZoomEvent, cb),
   },
 
   updates: {

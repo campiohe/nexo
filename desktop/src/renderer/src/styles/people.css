@@ -125,7 +125,7 @@
   cursor: pointer;
 }
 .custom-status-show.has-text { border-style: solid; background: var(--bg-0); color: var(--text-1); }
-.custom-status-show:hover:not(:disabled) { color: var(--text-0); border-color: #333a4a; }
+.custom-status-show:hover:not(:disabled) { color: var(--text-0); border-color: var(--line-hover); }
 .custom-status-show:disabled { opacity: 0.55; cursor: default; }
 .custom-status-show:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .custom-status-show svg { flex: none; }

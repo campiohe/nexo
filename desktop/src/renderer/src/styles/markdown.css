@@ -17,16 +17,16 @@
 /* ---- spoiler: a dark cover until clicked ---- */
 .md-spoiler {
   border-radius: 4px;
-  background: var(--bg-0);
+  background: var(--spoiler-bg);
   box-decoration-break: clone;
   cursor: pointer;
   transition: background 0.12s var(--ease);
 }
-.md-spoiler:not(.is-shown):hover { background: #07080b; }
+.md-spoiler:not(.is-shown):hover { background: var(--spoiler-hover); }
 .md-spoiler:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 .md-spoiler-content { visibility: hidden; }
-.md-spoiler.is-shown { background: rgb(255 255 255 / 0.07); cursor: text; animation: md-unveil 0.18s var(--ease); }
-@keyframes md-unveil { from { background: var(--bg-0); } }
+.md-spoiler.is-shown { background: var(--spoiler-shown); cursor: text; animation: md-unveil 0.18s var(--ease); }
+@keyframes md-unveil { from { background: var(--spoiler-bg); } }
 
 /* ---- code block ---- */
 .md-codeblock { position: relative; max-width: 100%; margin: 4px 0; }

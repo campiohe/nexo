@@ -1,8 +1,9 @@
-import { memo, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
+import { Fragment, memo, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
 import type { Attachment } from '@shared/protocol'
 import { openExternal } from '../lib/linkify'
 import { UNKNOWN_USER } from '../lib/mentions'
 import { parseContent, type Block, type Inline } from '../lib/messageTokens'
+import { highlightRanges } from '../lib/highlight'
 import { toast } from '../lib/toast'
 import { attachmentUrl } from '../net/attachments'
 import { useApp } from '../store/app'
@@ -14,51 +15,79 @@ import '../styles/markdown.css'
  * only (never HTML). A lone paragraph stays inline, so MessageList's "(edited)" follows the text; code
  * blocks, quotes, headings and lists are blocks. Newlines are preserved via CSS (pre-wrap).
  */
-export const MessageContent = memo(function MessageContent({ text }: { text: string }) {
+export const MessageContent = memo(function MessageContent({
+  text,
+  highlight,
+}: {
+  text: string
+  /** Search words (lib/highlight searchWords) to mark in the text. Keep the array stable (memo). */
+  highlight?: readonly string[]
+}) {
   const parsed = useMemo(() => parseContent(text), [text])
+  const hl = highlight?.length ? highlight : undefined
   return (
-    <div className={`message-content ${parsed.jumbo ? 'is-jumbo' : ''}`}>{renderBlocks(parsed.blocks, 'b')}</div>
+    <div className={`message-content ${parsed.jumbo ? 'is-jumbo' : ''}`}>{renderBlocks(parsed.blocks, 'b', hl)}</div>
   )
 })
 
-function renderBlocks(blocks: Block[], key: string): ReactNode[] {
+/** `text` with the search hits wrapped in <mark> (text nodes and elements only). */
+function marked(text: string, hl: readonly string[] | undefined, key: string): ReactNode {
+  if (!hl) return text
+  const ranges = highlightRanges(text, hl)
+  if (ranges.length === 0) return text
+  const out: ReactNode[] = []
+  let last = 0
+  ranges.forEach(([s, e], i) => {
+    if (s > last) out.push(text.slice(last, s))
+    out.push(
+      <mark key={`${key}m${i}`} className="search-hit">
+        {text.slice(s, e)}
+      </mark>,
+    )
+    last = e
+  })
+  if (last < text.length) out.push(text.slice(last))
+  return out
+}
+
+function renderBlocks(blocks: Block[], key: string, hl?: readonly string[]): ReactNode[] {
   return blocks.map((b, i) => {
     const k = `${key}${i}`
     switch (b.type) {
       case 'paragraph':
-        return <span key={k}>{renderInline(b.children, k)}</span>
+        return <span key={k}>{renderInline(b.children, k, hl)}</span>
       case 'heading':
         return (
           <div key={k} className={`md-heading md-h${b.level}`} role="heading" aria-level={b.level}>
-            {renderInline(b.children, k)}
+            {renderInline(b.children, k, hl)}
           </div>
         )
       case 'list':
         return (
           <ul key={k} className="md-list">
             {b.items.map((item, j) => (
-              <li key={j}>{renderInline(item, `${k}.${j}`)}</li>
+              <li key={j}>{renderInline(item, `${k}.${j}`, hl)}</li>
             ))}
           </ul>
         )
       case 'quote':
         return (
           <blockquote key={k} className="md-quote">
-            {renderBlocks(b.children, `${k}.`)}
+            {renderBlocks(b.children, `${k}.`, hl)}
           </blockquote>
         )
       case 'codeblock':
-        return <CodeBlock key={k} lang={b.lang} text={b.text} />
+        return <CodeBlock key={k} lang={b.lang} text={b.text} hl={hl} />
     }
   })
 }
 
-function renderInline(nodes: Inline[], key: string): ReactNode[] {
+function renderInline(nodes: Inline[], key: string, hl?: readonly string[]): ReactNode[] {
   return nodes.map((n, i) => {
     const k = `${key}-${i}`
     switch (n.type) {
       case 'text':
-        return n.text
+        return hl ? <Fragment key={k}>{marked(n.text, hl, k)}</Fragment> : n.text
       case 'link':
         return (
           <a
@@ -75,7 +104,7 @@ function renderInline(nodes: Inline[], key: string): ReactNode[] {
               if (e.button === 1) openExternal(n.href)
             }}
           >
-            {n.text}
+            {marked(n.text, hl, k)}
           </a>
         )
       case 'mention':
@@ -89,23 +118,23 @@ function renderInline(nodes: Inline[], key: string): ReactNode[] {
       case 'code':
         return (
           <code key={k} className="md-code">
-            {n.text}
+            {marked(n.text, hl, k)}
           </code>
         )
       case 'bold':
-        return <strong key={k}>{renderInline(n.children, k)}</strong>
+        return <strong key={k}>{renderInline(n.children, k, hl)}</strong>
       case 'italic':
-        return <em key={k}>{renderInline(n.children, k)}</em>
+        return <em key={k}>{renderInline(n.children, k, hl)}</em>
       case 'underline':
         return (
           <span key={k} className="md-underline">
-            {renderInline(n.children, k)}
+            {renderInline(n.children, k, hl)}
           </span>
         )
       case 'strike':
-        return <s key={k}>{renderInline(n.children, k)}</s>
+        return <s key={k}>{renderInline(n.children, k, hl)}</s>
       case 'spoiler':
-        return <Spoiler key={k}>{renderInline(n.children, k)}</Spoiler>
+        return <Spoiler key={k}>{renderInline(n.children, k, hl)}</Spoiler>
     }
   })
 }
@@ -141,7 +170,7 @@ function Spoiler({ children }: { children: ReactNode }) {
 }
 
 /** A fenced code block: monospace, scrolls sideways, language tag and a Copy button on hover. */
-function CodeBlock({ lang, text }: { lang: string; text: string }) {
+function CodeBlock({ lang, text, hl }: { lang: string; text: string; hl?: readonly string[] }) {
   const [copied, setCopied] = useState(false)
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined)
   useEffect(() => () => clearTimeout(timer.current), [])
@@ -158,7 +187,7 @@ function CodeBlock({ lang, text }: { lang: string; text: string }) {
   return (
     <div className="md-codeblock">
       <pre tabIndex={0} aria-label={lang ? `${lang} code` : 'Code'}>
-        <code>{text}</code>
+        <code>{marked(text, hl, 'c')}</code>
       </pre>
       <div className="md-codeblock-bar">
         {lang && <span className="md-codeblock-lang">{lang}</span>}

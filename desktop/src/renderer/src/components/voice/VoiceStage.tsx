@@ -27,6 +27,7 @@ import { useParticipants, type ParticipantView } from '../../voice/participants'
 import { useNativeShare } from '../../voice/nativeShare'
 import { CameraButton, DeafenButton, LeaveButton, MuteButton, ShareButton } from './ControlButtons'
 import { SharePickerHost } from './SharePicker'
+import { SoundboardButton } from './Soundboard'
 import { VideoTrackView, useVideoStats } from './VideoTrackView'
 import { UserVolumePopover } from './UserVolumePopover'
 import { StreamViewers } from './StreamViewers'
@@ -234,6 +235,7 @@ function Stage() {
         <DeafenButton size="lg" />
         <CameraButton size="lg" />
         <ShareButton size="lg" />
+        <SoundboardButton size="lg" />
         <span className="vx-toolbar-sep" />
         <LeaveButton size="lg" />
       </div>

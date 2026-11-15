@@ -17,6 +17,16 @@ export interface DevicePrefs {
   noiseMode: NoiseMode
   /** Short synthesized sounds on mute / unmute / deafen / undeafen (voice/sounds.ts). */
   soundEffects: boolean
+  /** Play soundboard clips others (and you) play in your voice channel (voice/soundboard.ts). */
+  soundboard: boolean
+  /** Soundboard level, 0..1 (slider position; the gain applied is its square). */
+  soundboardVolume: number
+}
+
+export const DEFAULT_SOUNDBOARD_VOLUME = 0.6
+
+function clampUnit(v: unknown, fallback: number): number {
+  return typeof v === 'number' && Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : fallback
 }
 
 function isNoiseMode(v: unknown): v is NoiseMode {
@@ -32,6 +42,8 @@ function load(): DevicePrefs {
     videoinput: null,
     noiseMode: DEFAULT_NOISE_MODE,
     soundEffects: true,
+    soundboard: true,
+    soundboardVolume: DEFAULT_SOUNDBOARD_VOLUME,
   }
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
@@ -43,6 +55,8 @@ function load(): DevicePrefs {
       videoinput: typeof parsed.videoinput === 'string' ? parsed.videoinput : null,
       noiseMode: isNoiseMode(parsed.noiseMode) ? parsed.noiseMode : DEFAULT_NOISE_MODE,
       soundEffects: parsed.soundEffects !== false,
+      soundboard: parsed.soundboard !== false,
+      soundboardVolume: clampUnit(parsed.soundboardVolume, DEFAULT_SOUNDBOARD_VOLUME),
     }
   } catch {
     return empty
@@ -76,6 +90,18 @@ export function saveNoiseMode(mode: NoiseMode): void {
 export function saveSoundEffects(on: boolean): void {
   if (useDevicePrefs.getState().soundEffects === on) return
   useDevicePrefs.setState({ soundEffects: on })
+  persist()
+}
+
+/** Persist the soundboard playback toggle and / or volume (0..1). */
+export function saveSoundboardPrefs(p: { soundboard?: boolean; soundboardVolume?: number }): void {
+  const cur = useDevicePrefs.getState()
+  const next = {
+    soundboard: p.soundboard ?? cur.soundboard,
+    soundboardVolume: p.soundboardVolume === undefined ? cur.soundboardVolume : clampUnit(p.soundboardVolume, cur.soundboardVolume),
+  }
+  if (next.soundboard === cur.soundboard && next.soundboardVolume === cur.soundboardVolume) return
+  useDevicePrefs.setState(next)
   persist()
 }
 

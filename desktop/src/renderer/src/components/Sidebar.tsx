@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type DragEvent, type FormEvent, type KeyboardEvent } from 'react'
 import { create } from 'zustand'
 import type { Channel, ChannelType, VoiceState } from '@shared/protocol'
-import { useApp } from '../store/app'
+import { sortChannels, useApp } from '../store/app'
+import { request } from '../net/socket'
 import { isUnread, mentionBadgeLabel, unreadMentions, useUnread } from '../store/unread'
 import '../styles/mentions.css'
 import { anchorOf, useUi, type AnchorRect } from '../store/ui'
@@ -16,6 +17,8 @@ import { useVoice } from '../voice/session'
 import { moveToChannel, nudge } from '../voice/voiceActions'
 import { speakingIdentities, useParticipants } from '../voice/participants'
 import { VoiceControls } from './voice/VoiceControls'
+import { SoundboardHost } from './voice/Soundboard'
+import '../styles/channel-reorder.css'
 import { toast } from '../lib/toast'
 import { canManageChannels, canMoveMember } from '../lib/permissions'
 import { Avatar } from './Avatar'
@@ -65,6 +68,123 @@ function voiceDropHandlers(channelId: string) {
   }
 }
 
+/**
+ * Dragging a channel row up / down within its section to reorder (admins / owner). A distinct dataTransfer
+ * type from voice members, so both drags can target the same rows. `over` = where the drop line is.
+ */
+const useChannelDrag = create<{
+  id: string | null
+  type: ChannelType | null
+  over: { id: string; after: boolean } | null
+  /** The dragged row is dimmed one frame later, so the drag image isn't. */
+  dimmed: string | null
+}>()(() => ({ id: null, type: null, over: null, dimmed: null }))
+const CHANNEL_DRAG_TYPE = 'application/x-nexo-channel'
+
+function endChannelDrag() {
+  useChannelDrag.setState({ id: null, type: null, over: null, dimmed: null })
+}
+
+function idsOfType(type: ChannelType): string[] {
+  return useApp
+    .getState()
+    .channels.filter((c) => c.type === type)
+    .map((c) => c.id)
+}
+
+/** `ids` with `id` moved before / after `targetId`; null when that changes nothing. */
+function movedOrder(ids: string[], id: string, targetId: string, after: boolean): string[] | null {
+  if (id === targetId || !ids.includes(id)) return null
+  const rest = ids.filter((x) => x !== id)
+  const at = rest.indexOf(targetId)
+  if (at < 0) return null
+  rest.splice(after ? at + 1 : at, 0, id)
+  return rest.every((x, i) => x === ids[i]) ? null : rest
+}
+
+/** Optimistic: positions follow `ids` at once, and go back if the server refuses. */
+async function reorderChannels(type: ChannelType, ids: string[]): Promise<void> {
+  const before = new Map(
+    useApp
+      .getState()
+      .channels.filter((c) => c.type === type)
+      .map((c) => [c.id, c.position] as const),
+  )
+  const pos = new Map(ids.map((id, i) => [id, i] as const))
+  const apply = (positions: Map<string, number>) =>
+    useApp.setState((st) => ({
+      channels: sortChannels(
+        st.channels.map((c) => {
+          const p = c.type === type ? positions.get(c.id) : undefined
+          return p === undefined || p === c.position ? c : { ...c, position: p }
+        }),
+      ),
+    }))
+  apply(pos)
+  try {
+    await request('channel:reorder', { type, ids })
+  } catch (err) {
+    apply(before)
+    toast(err, 'error')
+  }
+}
+
+/** Alt+↑ / Alt+↓ on a focused channel row. */
+function moveChannelBy(channel: Channel, delta: -1 | 1) {
+  const ids = idsOfType(channel.type)
+  const i = ids.indexOf(channel.id)
+  const j = i + delta
+  if (i < 0 || j < 0 || j >= ids.length) return
+  const next = movedOrder(ids, channel.id, ids[j], delta > 0)
+  if (!next) return
+  void reorderChannels(channel.type, next)
+  // The row's DOM node moves, which can drop focus: put it back.
+  requestAnimationFrame(() =>
+    document.querySelector<HTMLElement>(`li[data-channel-id="${CSS.escape(channel.id)}"] .channel-main`)?.focus(),
+  )
+}
+
+/** Drop handlers for a channel's <li>: a dragged channel of the same type, or (voice) a dragged member. */
+function channelDropHandlers(channel: Channel) {
+  const voice = channel.type === 'voice' ? voiceDropHandlers(channel.id) : null
+  const channelDrag = (e: DragEvent<HTMLLIElement>) => {
+    const d = useChannelDrag.getState()
+    return !!d.id && d.type === channel.type && e.dataTransfer.types.includes(CHANNEL_DRAG_TYPE) ? d.id : null
+  }
+  return {
+    onDragOver(e: DragEvent<HTMLLIElement>) {
+      const dragged = channelDrag(e)
+      if (!dragged) return voice?.onDragOver(e)
+      e.preventDefault()
+      e.dataTransfer.dropEffect = 'move'
+      const r = e.currentTarget.getBoundingClientRect()
+      const after = e.clientY > r.top + r.height / 2
+      // No line where dropping wouldn't change anything (right next to itself).
+      const over = movedOrder(idsOfType(channel.type), dragged, channel.id, after) ? { id: channel.id, after } : null
+      const cur = useChannelDrag.getState().over
+      if (cur?.id !== over?.id || cur?.after !== over?.after) useChannelDrag.setState({ over })
+    },
+    onDragLeave(e: DragEvent<HTMLLIElement>) {
+      if (useChannelDrag.getState().id) {
+        if (e.relatedTarget instanceof Node && e.currentTarget.contains(e.relatedTarget)) return
+        if (useChannelDrag.getState().over?.id === channel.id) useChannelDrag.setState({ over: null })
+        return
+      }
+      voice?.onDragLeave(e)
+    },
+    onDrop(e: DragEvent<HTMLLIElement>) {
+      const dragged = channelDrag(e)
+      if (!dragged) return voice?.onDrop(e)
+      e.preventDefault()
+      const over = useChannelDrag.getState().over
+      endChannelDrag()
+      if (!over || over.id !== channel.id) return
+      const next = movedOrder(idsOfType(channel.type), dragged, channel.id, over.after)
+      if (next) void reorderChannels(channel.type, next)
+    },
+  }
+}
+
 /** Select a channel; for voice channels also join it (unless already in it). */
 export function openChannel(channel: Channel) {
   useApp.getState().selectChannel(channel.id)
@@ -96,6 +216,7 @@ export function Sidebar() {
       </nav>
       <VoiceControls />
       <UserPanel />
+      <SoundboardHost />
     </aside>
   )
 }
@@ -174,11 +295,18 @@ function ChannelRow({ channel }: { channel: Channel }) {
   }, [canManage])
   const Icon = channel.type === 'text' ? HashIcon : SpeakerIcon
   const dropTarget = useVoiceDrag((s) => channel.type === 'voice' && s.over === channel.id)
+  const dropEdge = useChannelDrag((s) => (s.over?.id === channel.id ? (s.over.after ? 'after' : 'before') : null))
+  const dragging = useChannelDrag((s) => s.dimmed === channel.id)
+  const canDrag = canManage && !renaming
 
   return (
     <li
-      className={dropTarget ? 'is-drop-target' : undefined}
-      {...(channel.type === 'voice' ? voiceDropHandlers(channel.id) : {})}
+      className={
+        [dropTarget && 'is-drop-target', dropEdge && `is-drop-${dropEdge}`, dragging && 'is-dragging'].filter(Boolean).join(' ') ||
+        undefined
+      }
+      data-channel-id={channel.id}
+      {...channelDropHandlers(channel)}
     >
       {renaming ? (
         <InlineNameForm
@@ -195,6 +323,30 @@ function ChannelRow({ channel }: { channel: Channel }) {
       ) : (
         <div
           className={`channel-row ${selected ? 'is-selected' : ''} ${inThisVoice ? 'is-connected' : ''} ${unread ? 'is-unread' : ''}`}
+          draggable={canDrag}
+          onDragStart={
+            canDrag
+              ? (e) => {
+                  e.dataTransfer.setData(CHANNEL_DRAG_TYPE, channel.id)
+                  e.dataTransfer.effectAllowed = 'move'
+                  useChannelDrag.setState({ id: channel.id, type: channel.type, over: null })
+                  requestAnimationFrame(() => {
+                    if (useChannelDrag.getState().id === channel.id) useChannelDrag.setState({ dimmed: channel.id })
+                  })
+                }
+              : undefined
+          }
+          onDragEnd={canDrag ? endChannelDrag : undefined}
+          onKeyDown={
+            canDrag
+              ? (e) => {
+                  if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return
+                  if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return
+                  e.preventDefault()
+                  moveChannelBy(channel, e.key === 'ArrowUp' ? -1 : 1)
+                }
+              : undefined
+          }
           onContextMenu={
             canManage
               ? (e) => {
@@ -204,7 +356,12 @@ function ChannelRow({ channel }: { channel: Channel }) {
               : undefined
           }
         >
-          <button className="channel-main" onClick={() => openChannel(channel)} aria-current={selected ? 'page' : undefined}>
+          <button
+            className="channel-main"
+            onClick={() => openChannel(channel)}
+            aria-current={selected ? 'page' : undefined}
+            aria-keyshortcuts={canDrag ? 'Alt+ArrowUp Alt+ArrowDown' : undefined}
+          >
             <Icon size={17} className="channel-icon" />
             <span className="channel-name">{channel.name}</span>
             {unread && <span className="sr-only">, unread messages</span>}

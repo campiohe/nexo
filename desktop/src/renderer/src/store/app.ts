@@ -8,6 +8,7 @@ import { settings } from './settings'
 import { resetUnread } from './unread'
 import { findLogin, NOTICE_UNREADABLE, resetSignIn } from './signin'
 import { useCompose } from './compose'
+import { chatPanelsMessageDeleted, chatPanelsMessageUpdated, chatPanelsUnpinned, resetChatPanels } from './chatPanels'
 
 export type ConnectionStatus = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'error'
 
@@ -79,6 +80,8 @@ export interface AppState {
   editMessage(messageId: string, content: string): Promise<Message>
   /** Add your `emoji` reaction to a message, or remove it when you already reacted with it. Optimistic. */
   toggleReaction(messageId: string, emoji: string): Promise<void>
+  /** Pin or unpin a message; the `message:updated` broadcast brings the new `pinned`. */
+  pinMessage(messageId: string, pinned: boolean): Promise<void>
   createChannel(name: string, type: ChannelType): Promise<Channel>
   renameChannel(channelId: string, name: string): Promise<Channel>
   deleteChannel(channelId: string): Promise<void>
@@ -225,6 +228,7 @@ export const useApp = create<AppState>()((set, get) => {
       disconnect()
       resetUnread()
       resetSignIn()
+      resetChatPanels()
       set({ ...emptySession(), view: 'onboarding', onboardingNotice: null })
     },
 
@@ -238,6 +242,7 @@ export const useApp = create<AppState>()((set, get) => {
       }
       resetUnread()
       resetSignIn()
+      resetChatPanels()
       set({ ...emptySession(), view: 'onboarding', onboardingNotice: null })
     },
 
@@ -320,6 +325,7 @@ export const useApp = create<AppState>()((set, get) => {
         return { messages }
       })
       forgetDeletedMessage(messageId)
+      chatPanelsMessageDeleted(messageId)
     },
 
     editMessage: async (messageId, content) => {
@@ -356,6 +362,20 @@ export const useApp = create<AppState>()((set, get) => {
       } catch (err) {
         apply(!on)
         throw err
+      }
+    },
+
+    pinMessage: async (messageId, pinned) => {
+      await request('message:pin', { messageId, pinned })
+      // The `message:updated` broadcast normally lands first; apply anyway (it carries the server's values).
+      const meId = get().me?.id
+      const found = findMessage(get().messages, messageId)
+      if (found && meId && !!found.msg.pinned !== pinned) {
+        const msg: Message = { ...found.msg, pinned: pinned ? { by: meId, at: Date.now() } : null }
+        set((s) => ({ messages: mapMessage(s.messages, found.channelId, messageId, () => msg) }))
+        chatPanelsMessageUpdated(msg)
+      } else if (!pinned) {
+        chatPanelsUnpinned(messageId)
       }
     },
 

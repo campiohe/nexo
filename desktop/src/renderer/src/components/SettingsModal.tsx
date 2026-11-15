@@ -3,6 +3,7 @@ import type { AppPrefs, CaptureEngine, HotkeyStatus, Keybind, NativeShareCapabil
 import { useApp } from '../store/app'
 import { useUi, type SettingsTab } from '../store/ui'
 import { ActivitySection, hasActivityBridge } from './ActivitySettings'
+import { AppearanceSection } from './AppearanceSettings'
 import { CustomStatusField } from './StatusMenu'
 import { SWATCHES } from '../lib/colors'
 import { toast, useToasts } from '../lib/toast'
@@ -31,6 +32,7 @@ const hasPrefs = () => typeof window.nexo?.prefs?.get === 'function'
 
 const TABS: { id: Tab; label: string; available?: () => boolean }[] = [
   { id: 'profile', label: 'Profile' },
+  { id: 'appearance', label: 'Appearance' },
   { id: 'av', label: 'Audio & video' },
   { id: 'keybinds', label: 'Keybinds' },
   { id: 'notifications', label: 'Notifications', available: hasNativeNotifications },
@@ -66,6 +68,7 @@ export function SettingsModal() {
         </nav>
         <div className="settings-panel" role="tabpanel">
           {tab === 'profile' && <ProfileSection />}
+          {tab === 'appearance' && <AppearanceSection />}
           {tab === 'av' && (
             <section>
               <h3 className="settings-heading">Audio & video</h3>

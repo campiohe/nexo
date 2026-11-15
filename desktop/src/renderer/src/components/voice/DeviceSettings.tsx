@@ -2,7 +2,7 @@
 // Noise suppression selector + mic test through the same chain as the call: workstream N (SPEC §13.3).
 // Rendered by workstream C inside the Settings modal. Changes apply live when in voice.
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { saveNoiseMode, saveSoundEffects, useDevicePrefs, type DeviceKind } from '../../voice/devices'
+import { saveNoiseMode, saveSoundboardPrefs, saveSoundEffects, useDevicePrefs, type DeviceKind } from '../../voice/devices'
 import { effectiveNoiseMode, NOISE_MODES, noiseConstraints, RnnoiseGraph, useNoiseStatus } from '../../voice/noise'
 import { actionLabel, findConflict } from '../../lib/keybinds'
 import { allKeybinds, PTT_RELEASE_DELAY_MAX, setInputPrefs, useInputPrefs, type InputMode } from '../../voice/prefs'
@@ -97,6 +97,7 @@ export function DeviceSettings() {
       />
       <SpeakerTest deviceId={prefs.audiooutput} />
       <SoundEffectsToggle />
+      <SoundboardSection />
 
       <DeviceSelect
         icon={<CameraIcon size={16} />}
@@ -397,6 +398,53 @@ function SoundEffectsToggle() {
         }}
       />
     </label>
+  )
+}
+
+/** Soundboard clips played in your voice channel (voice/soundboard.ts): on / off and their own volume. */
+function SoundboardSection() {
+  const on = useDevicePrefs((s) => s.soundboard)
+  const volume = useDevicePrefs((s) => s.soundboardVolume)
+  const pct = Math.round(volume * 100)
+  return (
+    <>
+      <label className="toggle-row">
+        <span className="toggle-text">
+          <span>Play soundboard sounds</span>
+          <span className="muted small">
+            Hear the soundboard clips people play in your voice channel. Not while you're deafened, and never from
+            people you muted for yourself.
+          </span>
+        </span>
+        <input
+          type="checkbox"
+          role="switch"
+          className="switch"
+          checked={on}
+          onChange={(e) => saveSoundboardPrefs({ soundboard: e.target.checked })}
+        />
+      </label>
+      <div className="vx-field">
+        <label className="vx-field-label" htmlFor="vx-soundboard-volume">
+          Soundboard volume
+        </label>
+        <div className="vx-range-row">
+          <input
+            id="vx-soundboard-volume"
+            type="range"
+            className="vx-range"
+            min={0}
+            max={100}
+            step={1}
+            value={pct}
+            disabled={!on}
+            onChange={(e) => saveSoundboardPrefs({ soundboardVolume: Number(e.target.value) / 100 })}
+            style={{ ['--fill' as string]: `${pct}%` }}
+          />
+          <span className="vx-range-value">{pct}%</span>
+        </div>
+      </div>
+    </>
   )
 }
 
