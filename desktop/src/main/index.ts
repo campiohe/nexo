@@ -59,6 +59,8 @@ function createMainWindow(): BrowserWindow {
   trackWindowState(win)
 
   win.once('ready-to-show', () => win.show())
+  // requestAttention(): Windows stops flashing on focus by itself; stop it explicitly everywhere else.
+  win.on('focus', () => win.flashFrame(false))
 
   // Close to tray: hide instead of closing, unless the app is really quitting.
   win.on('close', (event) => {
@@ -214,6 +216,11 @@ if (!app.requestSingleInstanceLock()) {
     installNativeShare({ getWindow: () => mainWindow })
     ipcMain.on(IPC.openExternal, (event, url: unknown) => {
       if (isAppUrl(event.senderFrame?.url)) openExternalSafe(url)
+    })
+    ipcMain.on(IPC.requestAttention, (event) => {
+      const win = mainWindow
+      if (!isAppUrl(event.senderFrame?.url) || !win || win.isDestroyed() || win.isFocused()) return
+      win.flashFrame(true)
     })
 
     installUpdater({

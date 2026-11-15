@@ -595,6 +595,25 @@
 .vx-uv-toggle input:checked + .vx-uv-switch { background: var(--danger); }
 .vx-uv-toggle input:checked + .vx-uv-switch::after { transform: translateX(14px); }
 .vx-uv-toggle input:focus-visible + .vx-uv-switch { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Actions (wake up, move to): below the volume part, or alone on your own card. */
+.vx-uv-actions { display: flex; flex-direction: column; gap: 2px; }
+.vx-uv-head + .vx-uv-actions { margin-top: -4px; }
+.vx-uv-toggle + .vx-uv-actions, .vx-uv-hint + .vx-uv-actions { padding-top: 8px; border-top: 1px solid var(--line); }
+.vx-uv-label {
+  padding: 4px 8px 2px;
+  color: var(--text-2); font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+}
+.vx-uv-channels { list-style: none; margin: 0; padding: 0; max-height: 200px; overflow-y: auto; }
+.vx-uv-action {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 6px 8px; border: 0; border-radius: var(--radius-sm);
+  background: none; color: var(--text-1); font: 500 13px var(--font); text-align: left; cursor: pointer;
+}
+.vx-uv-action svg { flex: none; color: var(--text-2); }
+.vx-uv-action:hover:not(:disabled) { background: var(--hover); color: var(--text-0); }
+.vx-uv-action:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.vx-uv-action:disabled { opacity: 0.5; cursor: default; }
+.vx-uv-action-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ---------- own native stream: "You're live" card (no self-preview) ---------- */
 .vx-livecard .vx-unwatched { gap: 6px; }

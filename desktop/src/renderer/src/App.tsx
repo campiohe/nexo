@@ -14,6 +14,8 @@ import type { Keybind } from '../../preload/api'
 import { useKeybinds } from './voice/prefs'
 import { setHotkeyHandler, type GlobalToggleAction } from './voice/ptt'
 import { restartLastShare, useVoice } from './voice/session'
+// Side effect: join / leave sounds for the voice channel you're in.
+import './voice/presenceSounds'
 
 let started = false
 
