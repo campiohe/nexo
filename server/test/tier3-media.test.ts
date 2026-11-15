@@ -754,7 +754,10 @@ describe('soundboard HTTP API', () => {
     assert.equal(res.status, 204)
     assert.deepEqual(await deleted, { soundId: sound.id })
     assert.equal((await fetch(`${url}/sounds/${sound.id}`)).status, 404)
-    assert.equal(existsSync(path.join(dataDir, 'sounds', sound.id)), false)
+    // The file is removed in the background after the 204 (the row is already gone, so it's never served).
+    const file = path.join(dataDir, 'sounds', sound.id)
+    for (let i = 0; i < 50 && existsSync(file); i++) await new Promise((r) => setTimeout(r, 20))
+    assert.equal(existsSync(file), false)
     assert.equal((await del(url, bob.token, sound.id)).status, 404)
 
     // The owner deletes anyone's; so does an admin.
