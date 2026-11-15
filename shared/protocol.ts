@@ -167,7 +167,7 @@ export interface Sound {
   /** Optional single emoji (EMOJI_RE) shown on the button. */
   emoji: string | null
   uploaderId: string
-  /** As measured by the uploader's client, 1..SOUND_MAX_MS. */
+  /** Measured by the server from the uploaded WAV's data chunk, 1..SOUND_MAX_MS. */
   durationMs: number
   createdAt: number
 }
@@ -177,8 +177,13 @@ export const SOUND_MAX_BYTES = 512 * 1024
 export const MAX_SOUNDS = 100
 /** Minimum time between two `sound:play` from the same user. */
 export const SOUND_COOLDOWN_MS = 2000
+/**
+ * Media types a stored sound may have. Older servers also accepted OGG, MP3 and WebM, so existing clips may
+ * still be served with those types; uploads are limited to SOUND_TYPES.
+ */
 export type SoundType = 'audio/ogg' | 'audio/mpeg' | 'audio/wav' | 'audio/webm'
-export const SOUND_TYPES: readonly SoundType[] = ['audio/ogg', 'audio/mpeg', 'audio/wav', 'audio/webm']
+/** Accepted upload types: 16-bit PCM WAV only (what the desktop client encodes), so the server can measure it. */
+export const SOUND_TYPES: readonly SoundType[] = ['audio/wav']
 
 /**
  * Mentions in message content (docs/SPEC.md): `<@userId>` for a person (rendered as "@Name", so renames
@@ -528,11 +533,14 @@ export const MAX_MESSAGE_LENGTH = 4000
 // (*.ytimg.com, *.scdn.co, *.spotifycdn.com, *.sndcdn.com, *.vimeocdn.com, *.redditmedia.com, *.redd.it).
 
 // ---- Soundboard (HTTP, not socket.io) ----
-// POST   /api/sounds?name=<name>&emoji=<emoji>&durationMs=<ms>   Authorization: Bearer <device token>
-//        body = audio (Content-Type one of SOUND_TYPES, <= SOUND_MAX_BYTES; magic bytes checked)
-//        → 201 { sound: Sound } (+ `sound:upsert` broadcast) | 400 | 401 | 409 board full (MAX_SOUNDS)
-//          | 413 | 415 | 429
+// POST   /api/sounds?name=<name>&emoji=<emoji>   Authorization: Bearer <device token>
+//        body = 16-bit PCM WAV (Content-Type audio/wav, <= SOUND_MAX_BYTES; 1-2 channels, 8-96 kHz). The server
+//        parses the header and measures the duration from the data chunk (a `durationMs` query parameter, sent
+//        by older clients, is ignored).
+//        → 201 { sound: Sound } (+ `sound:upsert` broadcast) | 400 (bad name/emoji, longer than SOUND_MAX_MS,
+//          no audio) | 401 | 409 board full (MAX_SOUNDS) | 413 | 415 (not audio/wav, or not a valid PCM WAV)
+//          | 429
 // DELETE /api/sounds/:id   uploader or admins/owner → 204 (+ `sound:deleted`)
 // GET    /sounds/:id       → the audio (no auth; unguessable id; cached forever)
-// Clients trim/convert clips to <= SOUND_MAX_MS before uploading and play them with Web Audio
+// Clients trim/convert clips to <= SOUND_MAX_MS WAV before uploading and play them with Web Audio
 // (fetch + decodeAudioData), since the renderer CSP's media-src doesn't allow server URLs.

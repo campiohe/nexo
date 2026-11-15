@@ -1,8 +1,9 @@
 // The server's soundboard (docs/SPEC.md): from bootstrap, kept current by `sound:upsert` / `sound:deleted`
-// (net/socket.ts). Session state: emptied on server change / sign out.
+// (net/socket.ts). Session state: emptied on server change / sign out (resetSounds).
+// No imports from store/app or net/socket: net/socket imports this module, store/app imports net/socket,
+// so a top-level `useApp.subscribe` here ran while useApp was still undefined (blank window at startup).
 import { create } from 'zustand'
 import type { Sound } from '@shared/protocol'
-import { useApp } from './app'
 
 interface SoundsState {
   /** False until a bootstrap with `sounds` (older servers have no soundboard). */
@@ -34,8 +35,7 @@ export function findSound(soundId: string): Sound | undefined {
   return useSounds.getState().sounds.find((s) => s.id === soundId)
 }
 
-// Another server, or signed out: the list belongs to the old session.
-useApp.subscribe((s, prev) => {
-  if (s.serverUrl === prev.serverUrl && !(s.view === 'onboarding' && prev.view !== 'onboarding')) return
+/** Another server, or signed out: the list belongs to the old session (store/app.ts, net/socket.ts, store/signin.ts). */
+export function resetSounds(): void {
   useSounds.setState({ supported: false, sounds: [] })
-})
+}

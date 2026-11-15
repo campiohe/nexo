@@ -216,8 +216,10 @@ messages (id TEXT PK, channel_id → channels ON DELETE CASCADE, user_id → use
           edited_at INT NULL, reply_to_id TEXT NULL, reply_to_user_id TEXT NULL,
           mentions_everyone INT DEFAULT 0,       partial INDEX (channel_id, created_at) WHERE mentions_everyone
           pinned_by TEXT NULL, pinned_at INT NULL) partial INDEX (channel_id, pinned_at) WHERE pinned_at NOT NULL
-                                                 INDEX (user_id, created_at)
-message_search_ids (id INTEGER PK, message_id TEXT UNIQUE)   stable integer id of each message for the index
+                                                 INDEX (user_id, created_at), INDEX (created_at),
+                                                 partial INDEX (edited_at) WHERE edited_at NOT NULL
+message_search_ids (id INTEGER PK, message_id TEXT UNIQUE,   stable integer id of each message for the index
+          indexed_edit INT NULL)                 the message's edited_at when its text was indexed
 message_search     FTS5 (body), content='', contentless_delete=1, tokenize='unicode61 remove_diacritics 2';
                    rowid = message_search_ids.id; trigger message_search_on_delete AFTER DELETE ON messages
 message_mentions (message_id → messages ON DELETE CASCADE, user_id → users ON DELETE CASCADE,
@@ -242,12 +244,21 @@ that would match ordinary words). `messages.create` / `messages.edit` write the 
 `message_search_on_delete` trigger removes it however the message goes (`message:delete`, channel delete
 cascade, account removal), so no code path can leave a stale entry. On every start `migrate()` indexes
 messages that have no entry (the whole table once, on a database from before pins/search: about 0.1 s per
-20 000 messages; afterwards only messages written by an older server after a downgrade) and drops entries
-whose message is gone; when there's nothing to do this costs a few milliseconds. Queries never reach `MATCH`
+20 000 messages; afterwards only messages written by an older server after a downgrade), reindexes messages
+whose `edited_at` differs from their entry's `indexed_edit` (edited by an older server after a downgrade;
+found through the partial index on `edited_at`) and drops entries whose message is gone; when there's
+nothing to do this costs a few milliseconds. Queries never reach `MATCH`
 raw: they're split into words (runs of `\p{L}\p{N}\p{Co}` after NFC, like the tokenizer, first 10 kept),
-each becomes `"word"*` and they're joined with `AND`. Results join back to `messages`, are ordered by
-`created_at DESC` and limited to `SEARCH_PAGE_SIZE + 1` (for `hasMore`). With 20 000 messages a search for a
-word in most messages takes about 10 ms, a rare word well under 1 ms.
+each becomes `"word"*` and they're joined with `AND`. Results join back to `messages`, are ordered by the
+index rowid descending and limited to `SEARCH_PAGE_SIZE + 1` (for `hasMore`), so FTS5 walks its matches
+newest first and stops early instead of collecting and sorting all of them. That works because ids are
+handed out in `created_at` order: new messages are always the newest, the backfill goes in `created_at`
+order, and messages an older server wrote after a downgrade are newer than everything indexed before. A
+`before` is turned into an id bound (the id of the first message at or after it, via `INDEX (created_at)`),
+and `created_at < before` is kept too, so pages never overlap. (Only an older server whose clock went
+backwards could write a message out of order; it may then show up out of place.) With 200 000 messages a
+one-letter query takes about 5 ms on any page (150 ms when ordered by `created_at`). Filters that match
+little (a quiet channel or author) still walk the word's matches, so `message:search` is rate-limited.
 
 `emoji_position` is given when an emoji is first added to a message and shared by its rows, so an emoji keeps
 its place while anyone still has it. Older databases gain the new columns and tables in place on start
@@ -286,15 +297,20 @@ for an https URL on the provider's CDN (`ytimg.com`, `scdn.co`/`spotifycdn.com`,
 for previews, 1 h for misses and failures), and concurrent requests for the same link share one lookup. Each
 user may start 30 lookups per minute (cache hits and links without a provider don't count) → 429.
 
-**Soundboard** (`POST /api/sounds?name=&emoji=&durationMs=` with the audio as body, `DELETE /api/sounds/:id`,
-`GET /sounds/:id`). Uploads need the device token; `Content-Type` one of `SOUND_TYPES` (`audio/ogg`,
-`audio/mpeg`, `audio/wav`, `audio/webm`; else 415) whose magic bytes match the body (`OggS`; `ID3` or an MPEG
-audio frame sync; `RIFF….WAVE`; EBML `1A 45 DF A3`; else 415 "The file is X, not Y" / "The file is not an
-OGG, MP3, WAV or WebM audio file"), at most `SOUND_MAX_BYTES` = 512 KB (413 "Sounds are limited to 512 KB").
+**Soundboard** (`POST /api/sounds?name=&emoji=` with the audio as body, `DELETE /api/sounds/:id`,
+`GET /sounds/:id`). Uploads need the device token and must be 16-bit PCM WAV: `Content-Type` `audio/wav`
+(`SOUND_TYPES`; else 415 "Sounds must be 16-bit PCM WAV audio (Content-Type audio/wav)"), at most
+`SOUND_MAX_BYTES` = 512 KB (413 "Sounds are limited to 512 KB"). The server walks the RIFF chunks
+(bounds-checked) and needs a `fmt ` chunk with PCM format 1, 1–2 channels, 8000–96000 Hz, 16 bits, followed
+by a `data` chunk that fits in the file (else 415 "The file is not a valid WAV audio file"). The duration is
+measured: data bytes / (rate × channels × 2). Over `SOUND_MAX_MS` = 5 s (+ 50 ms for encoder rounding;
+judged on the header's claim, so a truncated file claiming an hour is also refused) → 400 "Sounds are
+limited to 5 seconds"; no samples → 400 "The sound has no audio". The stored `durationMs` is the measured one
+(clamped to 5000); a `durationMs` query parameter (still sent by the desktop client, which older servers require) is ignored. Clips stored
+by older servers in other formats (OGG, MP3, WebM) keep being served with their type.
 `name` is normalized like status text and must be 1..`SOUND_NAME_MAX` = 32 UTF-16 units (400 "Give the
 sound a name" / "Sound names are limited to 32 characters"); `emoji` is optional, one `EMOJI_RE` emoji (400
-"Invalid emoji"); `durationMs` (measured by the client, which trims clips) an integer 1..`SOUND_MAX_MS`
-(400 "Invalid sound duration" / "Sounds are limited to 5 seconds"). A board with `MAX_SOUNDS` = 100 sounds →
+"Invalid emoji"). A board with `MAX_SOUNDS` = 100 sounds →
 409 "The soundboard is full (100 sounds). Delete one first" (checked again atomically with the insert).
 10 uploads per user per minute → 429. The file is written to a temp file and renamed into place. Success:
 `201 {sound}` and a `sound:upsert` broadcast. `DELETE` is for the uploader or admins/owner (403 "Only the
@@ -384,7 +400,7 @@ All shared types live in `shared/protocol.ts`, imported by both the server and t
 | `message:history` | `{channelId, before?}` | `Message[]` (oldest first, ≤ 50) |
 | `message:pin` | `{messageId, pinned}` (anyone pins, up to `MAX_PINS_PER_CHANNEL` = 50 per channel: "This channel has 50 pinned messages. Unpin one first"; unpinning is for the pinner, the author or admins/owner: "Only the person who pinned it, its author or an admin can unpin it"; `pinned` not a boolean: "Invalid pin"; idempotent, no broadcast when nothing changed; otherwise broadcasts `message:updated`) | `null` |
 | `message:pins` | `{channelId}` (a text channel, else "Channel not found") | `Message[]` (most recently pinned first, ≤ 50) |
-| `message:search` | `{query, channelId?, authorId?, before?}`: case/accent-insensitive full-text search, every word must match as a prefix (§5.2). `query` ≤ `SEARCH_QUERY_MAX` = 200 characters ("Search is limited to 200 characters"); a query with no words ("", only punctuation) is allowed only with `authorId` (= that author's messages), else "Type at least one word to search". `channelId` must be a text channel ("Channel not found"). `before`: only messages created before it (paging) | `SearchResult` `{messages, hasMore}` (newest first, ≤ `SEARCH_PAGE_SIZE` = 25; next page: `before` = last `createdAt`) |
+| `message:search` | `{query, channelId?, authorId?, before?}`: case/accent-insensitive full-text search, every word must match as a prefix (§5.2). `query` ≤ `SEARCH_QUERY_MAX` = 200 characters ("Search is limited to 200 characters"); a query with no words ("", only punctuation) is allowed only with `authorId` (= that author's messages), else "Type at least one word to search". `channelId` must be a text channel ("Channel not found"). `before`: only messages created before it (paging). At most 10 searches per user (all devices) per 10 s: "Slow down: too many searches" | `SearchResult` `{messages, hasMore}` (newest first, ≤ `SEARCH_PAGE_SIZE` = 25; next page: `before` = last `createdAt`) |
 | `channel:reorder` | `{type, ids}` (admins/owner; `ids` = every channel of that type exactly once, else "The channel list changed, try again"; positions become 0..n−1 in one transaction; broadcasts `channel:upsert` for each channel whose position changed) | `null` |
 | `typing` | `{channelId}` | — |
 | `voice:token` | `{channelId}` | `{url, token, room}` |

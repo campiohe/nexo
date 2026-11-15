@@ -25,8 +25,8 @@ import { forgetChannel, loadReadState, noteDeleted, noteMessage, resetUnread } f
 import { addAccessRequest, applyUserRemoved, dropAccessRequest, setAccessRequests } from '../store/admin'
 import { notifyMessage } from '../lib/notify'
 import { applyPresenceChanged, pruneOffline, setBootstrapPresence } from '../store/presence'
-import { removeSound, setBootstrapSounds, upsertSound } from '../store/sounds'
-import { chatPanelsMessageDeleted, chatPanelsMessageUpdated } from '../store/chatPanels'
+import { removeSound, resetSounds, setBootstrapSounds, upsertSound } from '../store/sounds'
+import { chatPanelsMessageDeleted, chatPanelsMessageUpdated, resetChatPanels } from '../store/chatPanels'
 
 export type NexoSocket = Socket<ServerToClientEvents, ClientToServerEvents>
 
@@ -456,7 +456,10 @@ async function handleUnknownToken() {
   const url = currentUrl
   disconnect()
   await settings.setToken(url, null)
+  // The same session stores as store/app.ts logout / changeServer (presence: lib/presenceSync.ts, on `me`).
   resetUnread()
+  resetChatPanels()
+  resetSounds()
   useApp.setState({
     view: 'onboarding',
     connection: 'idle',

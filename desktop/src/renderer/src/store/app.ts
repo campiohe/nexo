@@ -9,6 +9,7 @@ import { resetUnread } from './unread'
 import { findLogin, NOTICE_UNREADABLE, resetSignIn } from './signin'
 import { useCompose } from './compose'
 import { chatPanelsMessageDeleted, chatPanelsMessageUpdated, chatPanelsUnpinned, resetChatPanels } from './chatPanels'
+import { resetSounds } from './sounds'
 
 export type ConnectionStatus = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'error'
 
@@ -229,6 +230,7 @@ export const useApp = create<AppState>()((set, get) => {
       resetUnread()
       resetSignIn()
       resetChatPanels()
+      resetSounds()
       set({ ...emptySession(), view: 'onboarding', onboardingNotice: null })
     },
 
@@ -243,6 +245,7 @@ export const useApp = create<AppState>()((set, get) => {
       resetUnread()
       resetSignIn()
       resetChatPanels()
+      resetSounds()
       set({ ...emptySession(), view: 'onboarding', onboardingNotice: null })
     },
 

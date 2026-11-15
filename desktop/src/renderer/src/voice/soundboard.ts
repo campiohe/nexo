@@ -2,12 +2,13 @@
 // the ones played there (`sound:played`), previews only you hear, and the popover / dialog UI state.
 //
 // Clips are fetched from GET /sounds/:id and decoded with Web Audio (the renderer CSP's media-src doesn't
-// allow server URLs, so no <audio src>), cached as AudioBuffers in a small LRU, and played through one
+// allow server URLs, so no <audio src>), cached as AudioBuffers in a small LRU (bounded by entries and by
+// decoded bytes), and played through one
 // lazily created AudioContext on the selected speaker, suspended again when idle (like voice/sounds.ts).
 // The context only feeds its own destination, never the mic / WebRTC graph: nobody hears them through you.
 import { create } from 'zustand'
 import type { Sound } from '@shared/protocol'
-import { SOUND_COOLDOWN_MS } from '@shared/protocol'
+import { SOUND_COOLDOWN_MS, SOUND_MAX_BYTES, SOUND_MAX_MS } from '@shared/protocol'
 import { useApp } from '../store/app'
 import { findSound } from '../store/sounds'
 import type { AnchorRect } from '../store/ui'
@@ -148,8 +149,15 @@ interface Playing {
 
 const IDLE_SUSPEND_MS = 3000
 const MAX_CONCURRENT = 4
-/** Decoded clips kept (≤ 5 s mono at 48 kHz ≈ 1 MB each). */
+/**
+ * Longest clip played, seconds. Servers measure uploads and refuse longer ones, but an older server (or a
+ * hand-crafted upload to one) may hold anything: longer clips are refused, and playback is cut here anyway.
+ */
+export const MAX_CLIP_SECONDS = SOUND_MAX_MS / 1000 + 0.25
+/** Decoded clips kept: at most this many… */
 const CACHE_MAX = 20
+/** …and at most this many bytes of decoded audio (a 5 s stereo clip at 48 kHz is ≈ 1.9 MB). */
+const CACHE_MAX_BYTES = 16 * 1024 * 1024
 const FETCH_TIMEOUT_MS = 15_000
 
 let ctx: SinkAudioContext | null = null
@@ -159,6 +167,7 @@ let sinkReady: Promise<void> = Promise.resolve()
 let idleTimer: number | undefined
 const playing = new Map<AudioBufferSourceNode, Playing>()
 const cache = new Map<string, AudioBuffer>()
+let cacheBytes = 0
 const inflight = new Map<string, Promise<AudioBuffer>>()
 
 /** Slider position (0..1) → gain: squared, so the slider feels even and the default (60%) is ≈ -9 dB. */
@@ -205,6 +214,35 @@ function scheduleIdle(): void {
   }, IDLE_SUSPEND_MS)
 }
 
+const decodedBytes = (b: AudioBuffer) => b.length * b.numberOfChannels * 4
+
+function cachePut(url: string, buffer: AudioBuffer): void {
+  const old = cache.get(url)
+  if (old) cacheBytes -= decodedBytes(old)
+  cache.delete(url)
+  cache.set(url, buffer)
+  cacheBytes += decodedBytes(buffer)
+  // Evict the least recently used (never the one just added).
+  while (cache.size > 1 && (cache.size > CACHE_MAX || cacheBytes > CACHE_MAX_BYTES)) {
+    const [oldUrl, oldBuf] = cache.entries().next().value as [string, AudioBuffer]
+    cache.delete(oldUrl)
+    cacheBytes -= decodedBytes(oldBuf)
+  }
+}
+
+function cacheClear(): void {
+  cache.clear()
+  cacheBytes = 0
+}
+
+/** 'RIFF….WAVE': every clip the desktop client uploads is a 16-bit PCM WAV (voice/wav.ts). */
+function isWav(bytes: ArrayBuffer): boolean {
+  if (bytes.byteLength < 12) return false
+  const b = new Uint8Array(bytes, 0, 12)
+  const tag = (at: number) => String.fromCharCode(b[at], b[at + 1], b[at + 2], b[at + 3])
+  return tag(0) === 'RIFF' && tag(8) === 'WAVE'
+}
+
 async function load(url: string, c: AudioContext): Promise<AudioBuffer> {
   const hit = cache.get(url)
   if (hit) {
@@ -222,11 +260,16 @@ async function load(url: string, c: AudioContext): Promise<AudioBuffer> {
         throw new Error("Couldn't load that sound")
       }
       if (!res.ok) throw new Error(res.status === 404 ? 'That sound was deleted' : "Couldn't load that sound")
-      const buffer = await c.decodeAudioData(await res.arrayBuffer()).catch(() => {
+      const bytes = await res.arrayBuffer()
+      // Bounded input: ≤ 512 KB of 16-bit PCM decodes to a few MB at most. Compressed formats (only ever on
+      // older servers, from uploads this client didn't make) could decode a tiny file into minutes of audio,
+      // so they aren't decoded at all.
+      if (bytes.byteLength > SOUND_MAX_BYTES || !isWav(bytes)) throw new Error("Couldn't play that sound (unsupported audio)")
+      const buffer = await c.decodeAudioData(bytes).catch(() => {
         throw new Error("Couldn't play that sound (unsupported audio)")
       })
-      cache.set(url, buffer)
-      while (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value as string)
+      if (buffer.duration > MAX_CLIP_SECONDS) throw new Error("Couldn't play that sound (longer than 5 seconds)")
+      cachePut(url, buffer)
       return buffer
     })().finally(() => inflight.delete(url))
     inflight.set(url, p)
@@ -246,7 +289,7 @@ function stopWhere(pred: (p: Playing) => boolean): void {
   for (const [src, p] of playing) if (pred(p)) stopSource(src)
 }
 
-/** Start `buffer` (from `offset` for `duration` s) on the soundboard output. */
+/** Start `buffer` (from `offset` for `duration` s, never more than MAX_CLIP_SECONDS) on the soundboard output. */
 async function playBuffer(buffer: AudioBuffer, meta: Playing, offset = 0, duration?: number): Promise<AudioBufferSourceNode | null> {
   const c = getContext()
   if (!c || !out) return null
@@ -267,7 +310,7 @@ async function playBuffer(buffer: AudioBuffer, meta: Playing, offset = 0, durati
   }
   // Too many at once (spam from several people): cut the oldest.
   if (playing.size > MAX_CONCURRENT) stopSource(playing.keys().next().value as AudioBufferSourceNode)
-  src.start(0, offset, duration)
+  src.start(0, offset, Math.min(duration ?? MAX_CLIP_SECONDS, MAX_CLIP_SECONDS))
   return src
 }
 
@@ -361,7 +404,7 @@ const offMuted = useUserVolumes.subscribe((s, prev) => {
 // Clips belong to a server: drop the cache when switching servers or signing out.
 const offApp = useApp.subscribe((s, prev) => {
   if (s.serverUrl === prev.serverUrl && !(s.view === 'onboarding' && prev.view !== 'onboarding')) return
-  cache.clear()
+  cacheClear()
   closeContext()
   useSoundboardUi.setState({ popover: null, feed: [], uploadOpen: false, confirmDelete: null, previewing: null })
 })

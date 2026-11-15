@@ -85,6 +85,8 @@ export interface StartOptions extends Partial<Omit<Config, 'livekit'>> {
   reactionLimit?: { count: number; windowMs: number }
   /** `presence:update` events per socket per window. Default: LIMITS.presenceUpdatesPerWindow / presenceWindowMs. */
   presenceLimit?: { count: number; windowMs: number }
+  /** `message:search` requests per user per window. Default: LIMITS.searchesPerWindow / searchWindowMs. */
+  searchLimit?: { count: number; windowMs: number }
   /** Link previews: the fetch used for oEmbed requests (tests inject a fake). Default: global fetch. */
   embedFetch?: typeof fetch
   /** Link previews: timeout of one oEmbed request. Default: LIMITS.embedTimeoutMs. */
@@ -146,6 +148,12 @@ export const LIMITS = {
   /** `message:react` requests per user (all sockets) in any window of reactionWindowMs. */
   reactionsPerWindow: 10,
   reactionWindowMs: 5000,
+  /**
+   * `message:search` requests per user (all sockets) in any window of searchWindowMs. SQLite runs on the event
+   * loop: most searches take a few ms, but a filter that matches little can walk every match of a short word.
+   */
+  searchesPerWindow: 10,
+  searchWindowMs: 10_000,
   /** Longest emoji accepted by `message:react`, in UTF-16 units (RGI sequences are at most ~15). */
   emojiMaxLength: 32,
   /**
@@ -227,6 +235,7 @@ export const SEARCH_ERRORS = {
   tooLong: `Search is limited to ${SEARCH_QUERY_MAX} characters`,
   noWords: 'Type at least one word to search',
   channelNotFound: 'Channel not found',
+  slowDown: 'Slow down: too many searches',
 } as const
 
 /** Ack errors of `channel:reorder` (besides PERMISSION_ERRORS.manageChannels). */
@@ -377,6 +386,7 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
     nudgeCooldownMs = NUDGE_COOLDOWN_MS,
     reactionLimit = { count: LIMITS.reactionsPerWindow, windowMs: LIMITS.reactionWindowMs },
     presenceLimit = { count: LIMITS.presenceUpdatesPerWindow, windowMs: LIMITS.presenceWindowMs },
+    searchLimit = { count: LIMITS.searchesPerWindow, windowMs: LIMITS.searchWindowMs },
     embedFetch = fetch,
     embedTimeoutMs = LIMITS.embedTimeoutMs,
     embedLookupsPerMinute = LIMITS.embedLookupsPerMinute,
@@ -539,6 +549,8 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
   const reactionRate = rateLimiter(reactionLimit)
   /** `presence:update` events per socket (each device reports only its own state). */
   const presenceRate = rateLimiter(presenceLimit)
+  /** `message:search` requests per user (server-wide: shared by all of a user's sockets). */
+  const searchRate = rateLimiter(searchLimit)
 
   /**
    * Presence is kept per socket (docs/SPEC.md §5.1): userId -> socketId -> what that connection reported
@@ -608,6 +620,7 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
     if (voiceStates.delete(target.id)) broadcastVoice()
     pruneNudges(Date.now(), target.id)
     reactionRate.forget(target.id)
+    searchRate.forget(target.id)
     // No presence:changed: user:removed drops everything clients know about the account (and its sockets'
     // disconnects below then find nothing left to recompute).
     socketPresences.delete(target.id)
@@ -928,6 +941,8 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
       const words = searchWords(p.query)
       // No words (empty, or only punctuation): only "everything by this author".
       if (words.length === 0 && !filter.authorId) return fail(ack, SEARCH_ERRORS.noWords)
+      // Only searches that reach the database count.
+      if (!searchRate.allow(userId, Date.now())) return fail(ack, SEARCH_ERRORS.slowDown)
       ok(ack, messages.search(words, filter))
     }))
 

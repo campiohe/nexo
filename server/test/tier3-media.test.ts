@@ -492,15 +492,50 @@ describe('link previews: rate limit', () => {
 // ---------------------------------------------------------------------------
 // Soundboard
 
-// Minimal byte sequences with the right magic numbers (the server validates signatures, it doesn't decode).
+interface WavSpec {
+  /** Sample frames written to the data chunk. */
+  frames?: number
+  rate?: number
+  channels?: number
+  format?: number
+  bits?: number
+  /** Overrides the data chunk's declared size (bytes). */
+  dataSize?: number
+  /** Chunks inserted between `fmt ` and `data`. */
+  extra?: Uint8Array
+}
+
+/** A 16-bit PCM WAV like the desktop client's (voice/wav.ts), with knobs to break it. */
+function makeWav({ frames = 32_000, rate = 32_000, channels = 1, format = 1, bits = 16, dataSize, extra }: WavSpec = {}): Uint8Array {
+  const data = frames * channels * 2
+  const extraLen = extra?.length ?? 0
+  const buf = Buffer.alloc(44 + extraLen + data)
+  buf.write('RIFF', 0, 'ascii')
+  buf.writeUInt32LE(36 + extraLen + data, 4)
+  buf.write('WAVEfmt ', 8, 'ascii')
+  buf.writeUInt32LE(16, 16)
+  buf.writeUInt16LE(format, 20)
+  buf.writeUInt16LE(channels, 22)
+  buf.writeUInt32LE(rate, 24)
+  buf.writeUInt32LE(rate * channels * 2, 28)
+  buf.writeUInt16LE(channels * 2, 32)
+  buf.writeUInt16LE(bits, 34)
+  if (extra) buf.set(extra, 36)
+  buf.write('data', 36 + extraLen, 'ascii')
+  buf.writeUInt32LE(dataSize ?? data, 40 + extraLen)
+  for (let i = 44 + extraLen; i < buf.length; i += 2) buf.writeInt16LE(((i * 37) % 2000) - 1000, i)
+  return new Uint8Array(buf)
+}
+
+/** A one-second mono clip at 32 kHz (what the client uploads). */
+const CLIP = makeWav()
+
+// Minimal byte sequences with the magic numbers of formats older servers accepted (no longer uploadable).
 const pad = (head: number[], n = 64) => new Uint8Array([...head, ...new Array(n).fill(7)])
-const AUDIO = {
+const OTHER_AUDIO = {
   ogg: pad([...Buffer.from('OggS'), 0, 2]),
   mp3id3: pad([...Buffer.from('ID3'), 4, 0, 0]),
-  mp3frame: pad([0xff, 0xfb, 0x90, 0x64]),
-  wav: pad([...Buffer.from('RIFF'), 36, 0, 0, 0, ...Buffer.from('WAVEfmt ')]),
   webm: pad([0x1a, 0x45, 0xdf, 0xa3, 0x9f, 0x42, 0x86]),
-  aac: pad([0xff, 0xf1, 0x50, 0x80]),
   png: pad([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
 }
 
@@ -555,122 +590,161 @@ describe('soundboard HTTP API', () => {
   test('upload: 201 {sound}, broadcast sound:upsert, served back with its type, in later bootstraps', async () => {
     const upsert = nextEvent(carol.socket, 'sound:upsert')
     const before = Date.now()
-    const sound = await uploadOk(url, bob.token, 'audio/ogg', AUDIO.ogg, { name: '  Air\n\thorn\u0000 ', emoji: '📯', durationMs: 1500 })
+    const sound = await uploadOk(url, bob.token, 'audio/wav', CLIP, { name: '  Air\n\thorn\u0000 ', emoji: '📯', durationMs: 1500 })
     assert.match(sound.id, /^[0-9a-f-]{36}$/)
-    assert.deepEqual({ ...sound, id: '', createdAt: 0 }, { id: '', name: 'Air horn', emoji: '📯', uploaderId: bob.id, durationMs: 1500, createdAt: 0 })
+    // The duration is measured from the file (1 s), not taken from the client's durationMs.
+    assert.deepEqual({ ...sound, id: '', createdAt: 0 }, { id: '', name: 'Air horn', emoji: '📯', uploaderId: bob.id, durationMs: 1000, createdAt: 0 })
     assert.ok(sound.createdAt >= before)
     assert.deepEqual(await upsert, sound)
 
     const res = await fetch(`${url}/sounds/${sound.id}`)
     assert.equal(res.status, 200)
-    assert.equal(res.headers.get('content-type'), 'audio/ogg')
+    assert.equal(res.headers.get('content-type'), 'audio/wav')
     assert.equal(res.headers.get('cache-control'), 'public, max-age=31536000, immutable')
     assert.equal(res.headers.get('access-control-allow-origin'), '*')
     assert.equal(res.headers.get('x-content-type-options'), 'nosniff')
-    assert.deepEqual(new Uint8Array(await res.arrayBuffer()), AUDIO.ogg)
+    assert.deepEqual(new Uint8Array(await res.arrayBuffer()), CLIP)
     const head = await fetch(`${url}/sounds/${sound.id}`, { method: 'HEAD' })
     assert.equal(head.status, 200)
-    assert.equal(head.headers.get('content-length'), String(AUDIO.ogg.length))
+    assert.equal(head.headers.get('content-length'), String(CLIP.length))
     assert.ok(existsSync(path.join(dataDir, 'sounds', sound.id)))
 
-    const later = await uploadOk(url, alice.token, 'audio/wav', AUDIO.wav, { name: 'Bruh', durationMs: 5000 })
+    const later = await uploadOk(url, alice.token, 'audio/wav', makeWav({ frames: 160_000 }), { name: 'Bruh', durationMs: 5000 })
+    assert.equal(later.durationMs, 5000)
     const again = await connect(url, { token: carol.token })
     assert.deepEqual(again.boot.sounds, [sound, later])
     again.socket.close()
   })
 
-  test('every accepted container: OGG, MP3 (ID3 or bare frame), WAV, WebM', async () => {
-    for (const [type, body] of [
-      ['audio/mpeg', AUDIO.mp3id3],
-      ['audio/mpeg', AUDIO.mp3frame],
-      ['audio/webm', AUDIO.webm],
-      ['audio/wav', AUDIO.wav],
+  test('WAV variants: stereo, other rates, extra chunks (odd-sized, padded), Content-Type parameters', async () => {
+    const odd = new Uint8Array([...Buffer.from('LIST'), 3, 0, 0, 0, 1, 2, 3, 0])
+    for (const [label, body, ms] of [
+      ['stereo 48 kHz 2.5 s', makeWav({ channels: 2, rate: 48_000, frames: 120_000 }), 2500],
+      ['mono 8 kHz 0.25 s', makeWav({ rate: 8000, frames: 2000 }), 250],
+      ['96 kHz', makeWav({ rate: 96_000, frames: 9600 }), 100],
+      ['LIST chunk', makeWav({ frames: 3200, extra: odd }), 100],
+      ['a few ms over the limit (encoder rounding)', makeWav({ frames: 161_000 }), 5000],
     ] as const) {
-      const sound = await uploadOk(url, carol.token, `${type}; codecs=x`, body, { name: type })
-      assert.equal((await fetch(`${url}/sounds/${sound.id}`)).headers.get('content-type'), type)
+      const sound = await uploadOk(url, carol.token, 'audio/wav; codecs=1', body, { name: label.slice(0, 32), durationMs: null })
+      assert.equal(sound.durationMs, ms, label)
+      assert.equal((await fetch(`${url}/sounds/${sound.id}`)).headers.get('content-type'), 'audio/wav')
       assert.equal((await del(url, carol.token, sound.id)).status, 204)
     }
   })
 
-  test('wrong or missing Content-Type → 415', async () => {
-    for (const type of ['audio/flac', 'audio/x-wav', 'application/octet-stream', '']) {
-      const res = await upload(url, bob.token, type, AUDIO.ogg)
+  test('wrong or missing Content-Type → 415 (only audio/wav is accepted)', async () => {
+    for (const type of ['audio/ogg', 'audio/mpeg', 'audio/webm', 'audio/flac', 'audio/x-wav', 'application/octet-stream', '']) {
+      const res = await upload(url, bob.token, type, CLIP)
       assert.equal(res.status, 415, type)
       assert.equal(await errorOf(res), SOUND_HTTP_ERRORS.badType)
     }
   })
 
-  test('magic bytes must match the declared type → 415', async () => {
-    let res = await upload(url, bob.token, 'audio/ogg', AUDIO.wav)
-    assert.equal(res.status, 415)
-    assert.equal(await errorOf(res), 'The file is audio/wav, not audio/ogg')
-    for (const body of [AUDIO.aac, AUDIO.png, new Uint8Array([1, 2, 3])]) {
-      res = await upload(url, bob.token, 'audio/mpeg', body)
-      assert.equal(res.status, 415)
-      assert.equal(await errorOf(res), SOUND_HTTP_ERRORS.notAudio)
+  test('not a valid 16-bit PCM WAV → 415, without crashing on lying chunk sizes', async () => {
+    const tail = (b: Uint8Array, n: number) => b.subarray(0, b.length - n)
+    const bodies: [string, Uint8Array][] = [
+      ...Object.entries(OTHER_AUDIO),
+      ['tiny', new Uint8Array([1, 2, 3])],
+      ['RIFF only', new Uint8Array(Buffer.from('RIFF\x24\x00\x00\x00WAVE', 'latin1'))],
+      ['float', makeWav({ format: 3 })],
+      ['extensible', makeWav({ format: 0xfffe })],
+      ['8-bit', makeWav({ bits: 8 })],
+      ['24-bit', makeWav({ bits: 24 })],
+      ['6 channels', makeWav({ channels: 6, frames: 100 })],
+      ['0 channels', makeWav({ channels: 0, frames: 100 })],
+      ['4 kHz', makeWav({ rate: 4000, frames: 100 })],
+      ['192 kHz', makeWav({ rate: 192_000, frames: 100 })],
+      // The data chunk claims more bytes than the file has (but < 5 s).
+      ['truncated data', tail(makeWav({ frames: 1000 }), 10)],
+      ['data size past the end', makeWav({ frames: 100, dataSize: 4000 })],
+      // A chunk before `data` whose size runs past the end of the file.
+      ['huge chunk', makeWav({ frames: 100, extra: new Uint8Array([...Buffer.from('junk'), 0xff, 0xff, 0xff, 0xff]) })],
+      ['huge fmt', (() => { const b = makeWav({ frames: 100 }); new DataView(b.buffer).setUint32(16, 0xfffffff0, true); return b })()],
+      ['short fmt', (() => { const b = makeWav({ frames: 100 }); new DataView(b.buffer).setUint32(16, 8, true); return b })()],
+      // No data chunk at all.
+      ['no data', makeWav({ frames: 100 }).subarray(0, 36)],
+    ]
+    for (const [label, body] of bodies) {
+      const res = await upload(url, bob.token, 'audio/wav', body)
+      assert.equal(res.status, 415, label)
+      assert.equal(await errorOf(res), SOUND_HTTP_ERRORS.notWav, label)
     }
+    // Still serving.
+    await uploadOk(url, bob.token, 'audio/wav', CLIP).then((s) => del(url, bob.token, s.id))
+  })
+
+  test('longer than 5 s → 400, whatever the client claims', async () => {
+    for (const [label, body] of [
+      ['6 s at 8 kHz', makeWav({ rate: 8000, frames: 48_000 })],
+      ['5.1 s at 32 kHz', makeWav({ frames: 163_200 })],
+      // The header claims an hour of audio (the data itself is short).
+      ['header claims an hour', makeWav({ frames: 100, dataSize: 32_000 * 2 * 3600 })],
+      ['header claims 0xFFFFFFFF bytes', makeWav({ frames: 100, dataSize: 0xffffffff })],
+    ] as const) {
+      const res = await upload(url, bob.token, 'audio/wav', body, { durationMs: 1000 })
+      assert.equal(res.status, 400, label)
+      assert.equal(await errorOf(res), 'Sounds are limited to 5 seconds', label)
+    }
+  })
+
+  test('durationMs from the client is ignored (optional, any value)', async () => {
+    for (const durationMs of [null, '', 'abc', '0', '1', '60000']) {
+      const sound = await uploadOk(url, bob.token, 'audio/wav', makeWav({ frames: 8000 }), { durationMs })
+      assert.equal(sound.durationMs, 250, String(durationMs))
+      await del(url, bob.token, sound.id)
+    }
+    const res = await upload(url, bob.token, 'audio/wav', makeWav({ frames: 0 }))
+    assert.equal(res.status, 400)
+    assert.equal(await errorOf(res), SOUND_HTTP_ERRORS.noAudio)
   })
 
   test('too big → 413; empty → 400', async () => {
     const big = new Uint8Array(SOUND_MAX_BYTES + 1)
-    big.set(AUDIO.ogg)
-    let res = await upload(url, bob.token, 'audio/ogg', big)
+    big.set(CLIP.subarray(0, 44))
+    let res = await upload(url, bob.token, 'audio/wav', big)
     assert.equal(res.status, 413)
     assert.equal(await errorOf(res), 'Sounds are limited to 512 KB')
-    res = await upload(url, bob.token, 'audio/ogg', new Uint8Array())
+    res = await upload(url, bob.token, 'audio/wav', new Uint8Array())
     assert.equal(res.status, 400)
     assert.equal(await errorOf(res), SOUND_HTTP_ERRORS.empty)
   })
 
   test('names: required, normalized, at most 32 characters', async () => {
     for (const name of [null, '', '   ', '\u0000\u200b']) {
-      const res = await upload(url, bob.token, 'audio/ogg', AUDIO.ogg, { name })
+      const res = await upload(url, bob.token, 'audio/wav', CLIP, { name })
       assert.equal(res.status, 400, String(name))
       assert.equal(await errorOf(res), 'Give the sound a name')
     }
-    const res = await upload(url, bob.token, 'audio/ogg', AUDIO.ogg, { name: 'x'.repeat(33) })
+    const res = await upload(url, bob.token, 'audio/wav', CLIP, { name: 'x'.repeat(33) })
     assert.equal(res.status, 400)
     assert.equal(await errorOf(res), 'Sound names are limited to 32 characters')
-    const sound = await uploadOk(url, bob.token, 'audio/ogg', AUDIO.ogg, { name: ` ${'y'.repeat(32)}  ` })
+    const sound = await uploadOk(url, bob.token, 'audio/wav', CLIP, { name: ` ${'y'.repeat(32)}  ` })
     assert.equal(sound.name, 'y'.repeat(32))
     await del(url, bob.token, sound.id)
   })
 
   test('emoji: optional, one emoji (EMOJI_RE)', async () => {
     for (const emoji of ['abc', '📯📯', '<b>', '1']) {
-      const res = await upload(url, bob.token, 'audio/ogg', AUDIO.ogg, { emoji })
+      const res = await upload(url, bob.token, 'audio/wav', CLIP, { emoji })
       assert.equal(res.status, 400, emoji)
       assert.equal(await errorOf(res), SOUND_HTTP_ERRORS.invalidEmoji)
     }
-    const none = await uploadOk(url, bob.token, 'audio/ogg', AUDIO.ogg, { emoji: '' })
+    const none = await uploadOk(url, bob.token, 'audio/wav', CLIP, { emoji: '' })
     assert.equal(none.emoji, null)
-    const flag = await uploadOk(url, bob.token, 'audio/ogg', AUDIO.ogg, { emoji: '🇧🇷' })
+    const flag = await uploadOk(url, bob.token, 'audio/wav', CLIP, { emoji: '🇧🇷' })
     assert.equal(flag.emoji, '🇧🇷')
     await del(url, bob.token, none.id)
     await del(url, bob.token, flag.id)
   })
 
-  test('duration: an integer 1..5000 ms', async () => {
-    for (const durationMs of [null, '', 'abc', '0', '-5', '1.5', '1e3']) {
-      const res = await upload(url, bob.token, 'audio/ogg', AUDIO.ogg, { durationMs })
-      assert.equal(res.status, 400, String(durationMs))
-      assert.equal(await errorOf(res), SOUND_HTTP_ERRORS.invalidDuration)
-    }
-    for (const durationMs of [5001, 60_000, '999999999']) {
-      const res = await upload(url, bob.token, 'audio/ogg', AUDIO.ogg, { durationMs })
-      assert.equal(res.status, 400)
-      assert.equal(await errorOf(res), 'Sounds are limited to 5 seconds')
-    }
-  })
-
   test('auth: 401 without a valid token', async () => {
-    assert.equal((await upload(url, null, 'audio/ogg', AUDIO.ogg)).status, 401)
-    assert.equal((await upload(url, 'nope', 'audio/ogg', AUDIO.ogg)).status, 401)
+    assert.equal((await upload(url, null, 'audio/wav', CLIP)).status, 401)
+    assert.equal((await upload(url, 'nope', 'audio/wav', CLIP)).status, 401)
     assert.equal((await del(url, null, randomUUID())).status, 401)
   })
 
   test('DELETE: uploader or admins/owner; 403 for others; 404 unknown', async () => {
-    const sound = await uploadOk(url, bob.token, 'audio/ogg', AUDIO.ogg, { name: 'Bob sound' })
+    const sound = await uploadOk(url, bob.token, 'audio/wav', CLIP, { name: 'Bob sound' })
     let res = await del(url, carol.token, sound.id)
     assert.equal(res.status, 403)
     assert.equal(await errorOf(res), 'Only the uploader or admins can delete this sound')
@@ -684,10 +758,10 @@ describe('soundboard HTTP API', () => {
     assert.equal((await del(url, bob.token, sound.id)).status, 404)
 
     // The owner deletes anyone's; so does an admin.
-    const s2 = await uploadOk(url, carol.token, 'audio/ogg', AUDIO.ogg, { name: 'Carol 1' })
+    const s2 = await uploadOk(url, carol.token, 'audio/wav', CLIP, { name: 'Carol 1' })
     assert.equal((await del(url, alice.token, s2.id)).status, 204)
     await requestOk(alice.socket, 'user:setRole', { userId: bob.id, role: 'admin' })
-    const s3 = await uploadOk(url, carol.token, 'audio/ogg', AUDIO.ogg, { name: 'Carol 2' })
+    const s3 = await uploadOk(url, carol.token, 'audio/wav', CLIP, { name: 'Carol 2' })
     assert.equal((await del(url, bob.token, s3.id)).status, 204)
     await requestOk(alice.socket, 'user:setRole', { userId: bob.id, role: 'member' })
 
@@ -715,13 +789,13 @@ describe('soundboard limits', () => {
     try {
       const alice = await join(server.url, 'Alice')
       const bob = await join(server.url, 'Bob')
-      await uploadOk(server.url, alice.token, 'audio/ogg', AUDIO.ogg)
-      await uploadOk(server.url, alice.token, 'audio/ogg', AUDIO.ogg)
-      const res = await upload(server.url, alice.token, 'audio/ogg', AUDIO.ogg)
+      await uploadOk(server.url, alice.token, 'audio/wav', CLIP)
+      await uploadOk(server.url, alice.token, 'audio/wav', CLIP)
+      const res = await upload(server.url, alice.token, 'audio/wav', CLIP)
       assert.equal(res.status, 429)
       assert.equal(await errorOf(res), SOUND_HTTP_ERRORS.slowDown)
       assert.ok(Number(res.headers.get('retry-after')) >= 1)
-      await uploadOk(server.url, bob.token, 'audio/ogg', AUDIO.ogg)
+      await uploadOk(server.url, bob.token, 'audio/wav', CLIP)
     } finally {
       await server.close()
     }
@@ -732,12 +806,12 @@ describe('soundboard limits', () => {
     try {
       const alice = await join(server.url, 'Alice')
       const ids: string[] = []
-      for (let i = 0; i < MAX_SOUNDS; i++) ids.push((await uploadOk(server.url, alice.token, 'audio/ogg', AUDIO.ogg, { name: `s${i}` })).id)
-      const res = await upload(server.url, alice.token, 'audio/ogg', AUDIO.ogg)
+      for (let i = 0; i < MAX_SOUNDS; i++) ids.push((await uploadOk(server.url, alice.token, 'audio/wav', CLIP, { name: `s${i}` })).id)
+      const res = await upload(server.url, alice.token, 'audio/wav', CLIP)
       assert.equal(res.status, 409)
       assert.equal(await errorOf(res), 'The soundboard is full (100 sounds). Delete one first')
       assert.equal((await del(server.url, alice.token, ids[0])).status, 204)
-      await uploadOk(server.url, alice.token, 'audio/ogg', AUDIO.ogg)
+      await uploadOk(server.url, alice.token, 'audio/wav', CLIP)
     } finally {
       await server.close()
     }
@@ -747,18 +821,18 @@ describe('soundboard limits', () => {
     const dataDir = tempDir()
     let server = await boot({ dataDir })
     const alice = await join(server.url, 'Alice')
-    const sound = await uploadOk(server.url, alice.token, 'audio/webm', AUDIO.webm)
+    const sound = await uploadOk(server.url, alice.token, 'audio/wav', CLIP)
     alice.socket.close()
     await server.close()
     const orphan = path.join(dataDir, 'sounds', randomUUID())
-    writeFileSync(orphan, AUDIO.ogg)
-    writeFileSync(path.join(dataDir, 'sounds', '.abc.tmp'), AUDIO.ogg)
+    writeFileSync(orphan, CLIP)
+    writeFileSync(path.join(dataDir, 'sounds', '.abc.tmp'), CLIP)
     server = await boot({ dataDir })
     try {
       assert.deepEqual(readdirSync(path.join(dataDir, 'sounds')), [sound.id])
       const again = await connect(server.url, { token: alice.token })
       assert.deepEqual(again.boot.sounds, [sound])
-      assert.equal((await fetch(`${server.url}/sounds/${sound.id}`)).headers.get('content-type'), 'audio/webm')
+      assert.equal((await fetch(`${server.url}/sounds/${sound.id}`)).headers.get('content-type'), 'audio/wav')
     } finally {
       await server.close()
     }
@@ -791,7 +865,7 @@ describe('sound:play', () => {
     dave = await join(server.url, 'Dave')
     lounge = alice.boot.channels.find((c) => c.name === 'Lounge')!.id
     gaming = alice.boot.channels.find((c) => c.name === 'Gaming')!.id
-    sound = await uploadOk(server.url, bob.token, 'audio/ogg', AUDIO.ogg)
+    sound = await uploadOk(server.url, bob.token, 'audio/wav', CLIP)
     voice(alice, lounge)
     voice(bob, lounge)
     voice(carol, gaming)
@@ -830,7 +904,7 @@ describe('sound:play', () => {
   })
 
   test('removing an account deletes its sounds (rows, files, sound:deleted)', async () => {
-    const extra = await uploadOk(server.url, carol.token, 'audio/ogg', AUDIO.ogg, { name: 'Carol' })
+    const extra = await uploadOk(server.url, carol.token, 'audio/wav', CLIP, { name: 'Carol' })
     const deleted = collect(alice.socket, 'sound:deleted')
     const removed = nextEvent(alice.socket, 'user:removed')
     await requestOk(alice.socket, 'user:remove', { userId: carol.id })

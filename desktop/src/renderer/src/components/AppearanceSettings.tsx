@@ -112,6 +112,7 @@ function ZoomRow() {
 
 export function AppearanceSection() {
   const resolved = useAppearance((s) => s.resolved)
+  const theme = useAppearance((s) => s.theme)
   const density = useAppearance((s) => s.density)
   const [linkPreviews, setLinkPreviews] = useLinkPreviewsPref()
 
@@ -124,8 +125,10 @@ export function AppearanceSection() {
           Theme
         </span>
         <div className="theme-cards">
+          {/* The OS theme is only known while System is chosen: main mirrors the choice into nativeTheme.themeSource,
+              which prefers-color-scheme then follows. */}
           {THEMES.map((t) => (
-            <ThemeCard key={t.id} id={t.id} label={t.label} hint={t.id === 'system' ? `(${resolved})` : undefined} />
+            <ThemeCard key={t.id} id={t.id} label={t.label} hint={t.id === 'system' && theme === 'system' ? `(${resolved})` : undefined} />
           ))}
         </div>
       </div>

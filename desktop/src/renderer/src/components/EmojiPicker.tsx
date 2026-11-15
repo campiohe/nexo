@@ -109,16 +109,21 @@ export function EmojiPicker({ anchor, onPick, onClose, label = 'Choose an emoji'
     }
   }, [anchor])
 
-  // Focus the search; give focus back to where it was (if it's still in the picker or nowhere) on close.
+  // Give focus back to where it was (if it's still in the picker or nowhere) on close.
   useEffect(() => {
     const prev = document.activeElement instanceof HTMLElement ? document.activeElement : null
-    searchRef.current?.focus({ preventScroll: true })
     const picker = ref.current
     return () => {
       const now = document.activeElement
       if (prev?.isConnected && (!now || now === document.body || picker?.contains(now))) prev.focus({ preventScroll: true })
     }
   }, [])
+
+  // Focus the search once the picker is placed: until then it's `visibility: hidden`, which can't take focus.
+  const placed = pos !== null
+  useEffect(() => {
+    if (placed) searchRef.current?.focus({ preventScroll: true })
+  }, [placed])
 
   function pick(char: string, keepOpen: boolean) {
     noteRecentEmoji(char)

@@ -56,6 +56,8 @@ const SCHEMA = `
   CREATE INDEX IF NOT EXISTS messages_by_channel ON messages (channel_id, created_at);
   -- v0.8: search by author (and account removal).
   CREATE INDEX IF NOT EXISTS messages_by_user ON messages (user_id, created_at);
+  -- v0.8: search paging (a \`before\` timestamp → a search rowid bound, see messages.search).
+  CREATE INDEX IF NOT EXISTS messages_by_time ON messages (created_at);
 
   -- v0.3: chat images. message_id is NULL while the upload is pending (not yet claimed by a message).
   -- Created with IF NOT EXISTS, so older databases simply gain the table.
@@ -123,9 +125,13 @@ const SCHEMA = `
   -- index (no second copy of the text) over the content without <@userId> mention tokens. Rows are written
   -- by messages.create / messages.edit (and reconciled by migrate()); the trigger drops them with the message,
   -- however it goes (message:delete, channel ON DELETE CASCADE, account removal).
+  -- Ids are handed out in createdAt order (new messages are the newest; the backfill goes in createdAt
+  -- order), so search pages in id order. indexed_edit is the message's edited_at when its text was indexed
+  -- (NULL: never edited), so edits made by an older server after a downgrade are reindexed at the next start.
   CREATE TABLE IF NOT EXISTS message_search_ids (
-    id          INTEGER PRIMARY KEY,
-    message_id  TEXT NOT NULL UNIQUE
+    id           INTEGER PRIMARY KEY,
+    message_id   TEXT NOT NULL UNIQUE,
+    indexed_edit INTEGER NULL
   );
   CREATE VIRTUAL TABLE IF NOT EXISTS message_search USING fts5 (
     body, content = '', contentless_delete = 1, tokenize = 'unicode61 remove_diacritics 2'
@@ -243,6 +249,12 @@ function migrate(db: DatabaseSync): void {
     if (!msgCols.has('pinned_at')) db.exec('ALTER TABLE messages ADD COLUMN pinned_at INTEGER NULL')
     db.exec(`CREATE INDEX IF NOT EXISTS messages_pinned ON messages (channel_id, pinned_at)
              WHERE pinned_at IS NOT NULL`)
+    // v0.8 betas created message_search_ids without indexed_edit: their edited messages get reindexed once.
+    if (!columns('message_search_ids').has('indexed_edit')) {
+      db.exec('ALTER TABLE message_search_ids ADD COLUMN indexed_edit INTEGER NULL')
+    }
+    // Edited messages only (few), for reconcileSearchIndex's check of stale entries.
+    db.exec('CREATE INDEX IF NOT EXISTS messages_edited ON messages (edited_at) WHERE edited_at IS NOT NULL')
     reconcileSearchIndex(db)
     // Exactly one owner: the oldest account, when there is none yet.
     db.exec(`
@@ -268,18 +280,36 @@ function migrate(db: DatabaseSync): void {
 /**
  * Brings the search index in line with the messages table (inside migrate()'s transaction): indexes every
  * message that has no entry (all of them, once, on a database from before v0.8; afterwards only messages
- * written by an older server after a downgrade) in createdAt order, and drops entries of messages that no
- * longer exist. Both are index-only lookups, so a no-op on every later start costs a few milliseconds.
+ * written by an older server after a downgrade) in createdAt order, reindexes messages edited since their
+ * entry was written (by an older server after a downgrade), and drops entries of messages that no longer
+ * exist. All are index-only lookups (the edited ones through the partial index messages_edited), so a no-op
+ * on every later start costs a few milliseconds.
+ *
+ * New entries get ids above every existing one, so search's id order stays createdAt order: messages an
+ * older server wrote after a downgrade are newer than everything indexed before it. (Only a clock that went
+ * backwards under an older server, which didn't keep timestamps increasing, can break that; such a message
+ * may then show up out of place in results, see messages.search.)
  */
 function reconcileSearchIndex(db: DatabaseSync): void {
-  const insertId = db.prepare('INSERT INTO message_search_ids (message_id) VALUES (?)')
+  const insertId = db.prepare('INSERT INTO message_search_ids (message_id, indexed_edit) VALUES (?, ?)')
   const insertText = db.prepare('INSERT INTO message_search (rowid, body) VALUES (?, ?)')
   const missing = db.prepare(
-    `SELECT id, content FROM messages m
+    `SELECT id, content, edited_at AS editedAt FROM messages m
      WHERE NOT EXISTS (SELECT 1 FROM message_search_ids s WHERE s.message_id = m.id) ORDER BY created_at, id`,
   )
-  for (const row of missing.iterate() as Iterable<{ id: string; content: string }>) {
-    insertText.run(insertId.run(row.id).lastInsertRowid, searchText(row.content))
+  for (const row of missing.iterate() as Iterable<{ id: string; content: string; editedAt: number | null }>) {
+    insertText.run(insertId.run(row.id, row.editedAt).lastInsertRowid, searchText(row.content))
+  }
+  const stale = db.prepare(
+    `SELECT s.id, m.content, m.edited_at AS editedAt FROM messages m INDEXED BY messages_edited
+       JOIN message_search_ids s ON s.message_id = m.id
+     WHERE m.edited_at IS NOT NULL AND m.edited_at IS NOT s.indexed_edit`,
+  )
+  const replaceText = db.prepare('INSERT OR REPLACE INTO message_search (rowid, body) VALUES (?, ?)')
+  const markIndexed = db.prepare('UPDATE message_search_ids SET indexed_edit = ? WHERE id = ?')
+  for (const row of stale.all() as { id: number; content: string; editedAt: number }[]) {
+    replaceText.run(row.id, searchText(row.content))
+    markIndexed.run(row.editedAt, row.id)
   }
   const orphans = db
     .prepare(
@@ -464,17 +494,28 @@ export function openDb(dataDir: string) {
     /** Pins made by a removed account stay, by nobody (''). */
     pinForgetPinner: db.prepare("UPDATE messages SET pinned_by = '' WHERE pinned_by = ?"),
     searchIdGet: db.prepare('SELECT id FROM message_search_ids WHERE message_id = ?'),
-    searchIdInsert: db.prepare('INSERT INTO message_search_ids (message_id) VALUES (?)'),
+    searchIdInsert: db.prepare('INSERT INTO message_search_ids (message_id, indexed_edit) VALUES (?, ?)'),
+    searchIdMarkEdit: db.prepare('UPDATE message_search_ids SET indexed_edit = ? WHERE id = ?'),
+    /** The search rowid bound for `before`: the id of the first message at or after it (see search). */
+    searchBound: db.prepare(
+      `SELECT s.id FROM messages m INDEXED BY messages_by_time JOIN message_search_ids s ON s.message_id = m.id
+       WHERE m.created_at >= ? ORDER BY m.created_at LIMIT 1`,
+    ),
     searchTextSet: db.prepare('INSERT OR REPLACE INTO message_search (rowid, body) VALUES (?, ?)'),
-    /** ?1 MATCH expression, ?2 channel id or NULL, ?3 author id or NULL, ?4 before, ?5 limit. */
+    /**
+     * ?1 MATCH expression, ?2 channel id or NULL, ?3 author id or NULL, ?4 before, ?5 limit, ?6 rowid bound.
+     * In rowid order (= createdAt order, see reconcileSearchIndex): FTS5 walks its matches newest first from
+     * the bound and stops at the limit, instead of collecting and sorting every match (5 ms rather than
+     * 150 ms for a one-letter query over 200k messages).
+     */
     searchText: db.prepare(
       `SELECT ${msgCols} FROM message_search s
          JOIN message_search_ids i ON i.id = s.rowid
          JOIN messages m ON m.id = i.message_id
          LEFT JOIN messages r ON r.id = m.reply_to_id
-       WHERE message_search MATCH ?1 AND (?2 IS NULL OR m.channel_id = ?2) AND (?3 IS NULL OR m.user_id = ?3)
-         AND m.created_at < ?4
-       ORDER BY m.created_at DESC, m.id DESC LIMIT ?5`,
+       WHERE message_search MATCH ?1 AND s.rowid < ?6 AND (?2 IS NULL OR m.channel_id = ?2)
+         AND (?3 IS NULL OR m.user_id = ?3) AND m.created_at < ?4
+       ORDER BY s.rowid DESC LIMIT ?5`,
     ),
     /** ?1 author id, ?2 channel id or NULL, ?3 before, ?4 limit. */
     searchAuthor: db.prepare(
@@ -597,10 +638,16 @@ export function openDb(dataDir: string) {
     return lastPinnedAt
   }
 
-  /** (Re)indexes a message's content for search (in the caller's transaction). */
-  function indexForSearch(messageId: string, content: string) {
+  /** (Re)indexes a message's content for search (in the caller's transaction). `editedAt`: its edited_at. */
+  function indexForSearch(messageId: string, content: string, editedAt: number | null) {
     const row = q.searchIdGet.get(messageId) as { id: number } | undefined
-    const rowid = row ? row.id : q.searchIdInsert.run(messageId).lastInsertRowid
+    let rowid: number | bigint
+    if (row) {
+      rowid = row.id
+      q.searchIdMarkEdit.run(editedAt, rowid)
+    } else {
+      rowid = q.searchIdInsert.run(messageId, editedAt).lastInsertRowid
+    }
     q.searchTextSet.run(rowid, searchText(content))
   }
   const nextTimestamp = () => {
@@ -778,7 +825,7 @@ export function openDb(dataDir: string) {
           }
         })
         for (const mentioned of mentions) q.mentionInsert.run(id, mentioned)
-        indexForSearch(id, content)
+        indexForSearch(id, content, null)
         return messages.get(id)!
       })
     },
@@ -789,10 +836,11 @@ export function openDb(dataDir: string) {
     /** Replaces the content and mentions and sets editedAt to now. Undefined if there's no such message. */
     edit(id: string, content: string, mentions: string[], mentionsEveryone: boolean): Message | undefined {
       return transaction(() => {
-        if (q.msgEdit.run(content, Date.now(), mentionsEveryone ? 1 : 0, id).changes !== 1) return undefined
+        const editedAt = Date.now()
+        if (q.msgEdit.run(content, editedAt, mentionsEveryone ? 1 : 0, id).changes !== 1) return undefined
         q.mentionDeleteForMessage.run(id)
         for (const mentioned of mentions) q.mentionInsert.run(id, mentioned)
-        indexForSearch(id, content)
+        indexForSearch(id, content, editedAt)
         return messages.get(id)
       })
     },
@@ -871,6 +919,13 @@ export function openDb(dataDir: string) {
      * One page of search results, newest first: messages containing every word of `words` (each as a prefix;
      * see searchWords), or with no words, every message of `authorId`. Optionally in one channel / by one
      * author, created before `before`.
+     *
+     * Word searches go in search-id order, which is createdAt order (reconcileSearchIndex), and `before` is
+     * turned into an id bound (the first message at or after `before`) so a deep page starts where it
+     * should rather than skipping every newer match. `m.created_at < before` stays as well, so a page never
+     * holds anything at or after `before` even if the two orders disagree (only possible after an older
+     * server ran with a clock that went backwards: such a message may then appear out of place, or be
+     * skipped by paging). Filters that match few messages still cost a walk over the word's matches.
      */
     search(words: string[], filter: { channelId?: string; authorId?: string; before?: number } = {}): SearchResult {
       const channelId = filter.channelId ?? null
@@ -879,7 +934,9 @@ export function openDb(dataDir: string) {
       const limit = SEARCH_PAGE_SIZE + 1
       let rows: MessageRow[]
       if (words.length > 0) {
-        rows = q.searchText.all(searchMatch(words), channelId, authorId, before, limit) as unknown as MessageRow[]
+        const bound = filter.before === undefined ? undefined : (q.searchBound.get(before) as { id: number } | undefined)
+        const maxId = bound ? bound.id : Number.MAX_SAFE_INTEGER
+        rows = q.searchText.all(searchMatch(words), channelId, authorId, before, limit, maxId) as unknown as MessageRow[]
       } else if (authorId !== null) {
         rows = q.searchAuthor.all(authorId, channelId, before, limit) as unknown as MessageRow[]
       } else {

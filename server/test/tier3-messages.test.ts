@@ -288,7 +288,8 @@ describe('search', () => {
   let clips: Channel
 
   before(async () => {
-    server = await boot()
+    // Many searches in a row from one account: no rate limit here (see 'search rate limit').
+    server = await boot({ searchLimit: { count: 10_000, windowMs: 1000 } })
     owner = await join(server.url, 'Owner')
     bob = await join(server.url, 'Bob')
     carol = await join(server.url, 'Carol')
@@ -355,6 +356,47 @@ describe('search', () => {
     assert.equal(p3.messages.length, SEARCH_PAGE_SIZE)
     assert.equal(p3.hasMore, false)
     assert.equal(await requestErr(owner.socket, 'message:search', { query: 'x', before: 'soon' }), 'Invalid "before" timestamp')
+  })
+
+  test('paging walks every match exactly once, newest first (also filtered, with edits and deletes)', async () => {
+    const sent: Message[] = []
+    for (let i = 0; i < SEARCH_PAGE_SIZE * 3 + 7; i++) {
+      sent.push(await say(i % 3 ? bob : carol, i % 2 ? general.id : clips.id, `walktest ${i}`))
+      // Unrelated messages in between.
+      if (i % 10 === 0) await say(bob, general.id, `noise ${i}`)
+    }
+    // Edits keep a message's place; deleted ones disappear.
+    await requestOk(bob.socket, 'message:edit', { messageId: sent[5].id, content: 'walktest edited 5' })
+    const gone = [0, SEARCH_PAGE_SIZE - 1, SEARCH_PAGE_SIZE, 40]
+    for (const i of gone) await requestOk(owner.socket, 'message:delete', { messageId: sent[i].id })
+    const deleted = new Set(gone.map((i) => sent[i].id))
+    const live = sent.filter((m) => !deleted.has(m.id))
+
+    const walk = async (p: { query: string; channelId?: string; authorId?: string }) => {
+      const out: Message[] = []
+      let before: number | undefined
+      for (let pages = 0; pages < 20; pages++) {
+        const res = await search(owner, before === undefined ? p : { ...p, before })
+        out.push(...res.messages)
+        if (!res.hasMore) return out
+        before = res.messages.at(-1)!.createdAt
+      }
+      return assert.fail('paging did not end')
+    }
+    const check = (got: Message[], want: Message[]) => {
+      assert.equal(new Set(got.map((m) => m.id)).size, got.length, 'no duplicates')
+      for (let i = 1; i < got.length; i++) assert.ok(got[i - 1].createdAt > got[i].createdAt, 'newest first')
+      assert.deepEqual(got.map((m) => m.id), want.map((m) => m.id).reverse())
+    }
+    check(await walk({ query: 'walktest' }), live)
+    check(await walk({ query: 'walktest', channelId: general.id }), live.filter((m) => m.channelId === general.id))
+    check(await walk({ query: 'walktest', authorId: carol.id }), live.filter((m) => m.userId === carol.id))
+    // `before` needn't be a message's createdAt: everything strictly older.
+    const mid = live[30].createdAt
+    const older = await search(owner, { query: 'walktest', before: mid + 0.5 })
+    const want = live.filter((m) => m.createdAt <= mid).map((m) => m.id).reverse().slice(0, SEARCH_PAGE_SIZE)
+    assert.deepEqual(older.messages.map((m) => m.id), want)
+    assert.deepEqual((await search(owner, { query: 'walktest', before: 0 })).messages, [])
   })
 
   test('empty query: only with authorId (that author, newest first)', async () => {
@@ -458,6 +500,30 @@ describe('search', () => {
   })
 })
 
+describe('search rate limit', () => {
+  test("per user across sockets; requests that fail validation don't count; the window slides", async () => {
+    const server = await boot({ searchLimit: { count: 3, windowMs: 400 } })
+    try {
+      const owner = await join(server.url, 'Owner')
+      const second = await connect(server.url, { token: owner.token })
+      const bob = await join(server.url, 'Bob')
+      assert.equal(await requestErr(owner.socket, 'message:search', { query: '' }), SEARCH_ERRORS.noWords)
+      await search(owner, { query: 'a' })
+      await search(owner, { query: 'b' })
+      await search({ ...owner, socket: second.socket }, { query: 'c' })
+      assert.equal(await requestErr(owner.socket, 'message:search', { query: 'd' }), SEARCH_ERRORS.slowDown)
+      assert.equal(await requestErr(second.socket, 'message:search', { query: 'd' }), SEARCH_ERRORS.slowDown)
+      assert.equal(SEARCH_ERRORS.slowDown, 'Slow down: too many searches')
+      // Someone else isn't affected.
+      await search(bob, { query: 'e' })
+      await new Promise((r) => setTimeout(r, 450))
+      await search(owner, { query: 'f' })
+    } finally {
+      await server.close()
+    }
+  })
+})
+
 // ---------------------------------------------------------------------------
 
 describe('search performance', () => {
@@ -548,14 +614,18 @@ describe('migration: an existing database gets pins and its messages indexed', (
       db.close()
     }
 
-    // Simulate an older server after a downgrade: a message it wrote is not indexed yet.
+    // Simulate an older server after a downgrade: a message it wrote is not indexed yet, and one it edited
+    // has stale index text.
     const raw = new DatabaseSync(path.join(dir, 'nexo.db'))
     raw.prepare('INSERT INTO messages (id, channel_id, user_id, content, created_at) VALUES (?, ?, ?, ?, ?)').run('m3', 'c1', 'u1', 'written by an older server', 9000)
+    raw.prepare('UPDATE messages SET content = ?, edited_at = ? WHERE id = ?').run('giraffe, edited by an older server', 9500, 'bulk7')
     raw.close()
 
     const again = openDb(dir)
     try {
-      assert.deepEqual(again.messages.search(searchWords('older server')).messages.map((m) => m.id), ['m3'])
+      assert.deepEqual(again.messages.search(searchWords('older server')).messages.map((m) => m.id), ['m3', 'bulk7'])
+      assert.deepEqual(again.messages.search(searchWords('giraffe')).messages.map((m) => m.id), ['bulk7'])
+      assert.ok(!again.messages.search(searchWords('bulk message 7')).messages.some((m) => m.id === 'bulk7'))
       assert.deepEqual(again.messages.search(searchWords('old days')).messages.map((m) => m.id), ['m2', 'm1'])
       assert.deepEqual(again.messages.pins('c1').map((m) => m.id), ['m1'])
     } finally {
@@ -568,6 +638,40 @@ describe('migration: an existing database gets pins and its messages indexed', (
       assert.equal(n('SELECT COUNT(*) AS n FROM messages'), 503)
       const cols = (check.prepare('PRAGMA table_info(messages)').all() as { name: string }[]).map((c) => c.name)
       assert.ok(cols.includes('pinned_by') && cols.includes('pinned_at'))
+    } finally {
+      check.close()
+    }
+  })
+
+  test('a v0.8 beta index (no indexed_edit column) gains it; stale edited messages are reindexed', () => {
+    const dir = tempDir()
+    let db = openDb(dir)
+    const u = db.users.create('Beta', '#123456', 'beta-hash')
+    const ch = db.channels.all().find((c) => c.type === 'text')!
+    const m = db.messages.create(ch.id, u.id, 'betaword before')
+    db.messages.edit(m.id, 'betaword after', [], false)
+    db.close()
+    // The beta schema, with the text then edited by an older server.
+    const raw = new DatabaseSync(path.join(dir, 'nexo.db'))
+    raw.exec('DROP INDEX messages_edited')
+    raw.exec('ALTER TABLE message_search_ids DROP COLUMN indexed_edit')
+    raw.prepare('UPDATE messages SET content = ?, edited_at = edited_at + 1 WHERE id = ?').run('betaword newest', m.id)
+    raw.close()
+    db = openDb(dir)
+    try {
+      assert.deepEqual(db.messages.search(searchWords('betaword newest')).messages.map((x) => x.id), [m.id])
+      assert.deepEqual(db.messages.search(searchWords('after')).messages, [])
+      db.messages.edit(m.id, 'betaword final', [], false)
+      assert.deepEqual(db.messages.search(searchWords('final')).messages.map((x) => x.id), [m.id])
+    } finally {
+      db.close()
+    }
+    const check = new DatabaseSync(path.join(dir, 'nexo.db'), { readOnly: true })
+    try {
+      const row = check
+        .prepare('SELECT m.edited_at AS e, s.indexed_edit AS i FROM messages m JOIN message_search_ids s ON s.message_id = m.id')
+        .get() as { e: number; i: number }
+      assert.equal(row.i, row.e)
     } finally {
       check.close()
     }

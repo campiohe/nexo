@@ -37,7 +37,34 @@ const useVoiceDrag = create<{ userId: string | null; from: string | null; over: 
 const VOICE_MEMBER_DRAG_TYPE = 'application/x-nexo-voice-member'
 
 function endVoiceDrag() {
+  stopWatch.voice?.()
   useVoiceDrag.setState({ userId: null, from: null, over: null })
+}
+
+/** Cleanup of the running watchDrag, per kind of drag. */
+const stopWatch: { voice?: () => void; channel?: () => void } = {}
+
+/**
+ * Makes sure a drag's state ends. React only sees `dragend` on the dragged row, and if that row unmounts
+ * mid-drag (the channel was deleted, the member left voice) the browser fires it on a detached node: the
+ * state would stay set and keep the drop highlights of the other kind of drag from working. So: `end()` on a
+ * window-level `drop` / `dragend` (bubbling, after the rows' own handlers), and as soon as `stillThere()`
+ * turns false.
+ */
+function watchDrag(kind: keyof typeof stopWatch, end: () => void, stillThere: () => boolean): void {
+  stopWatch[kind]?.()
+  const onEnd = () => end()
+  window.addEventListener('drop', onEnd)
+  window.addEventListener('dragend', onEnd)
+  const offApp = useApp.subscribe(() => {
+    if (!stillThere()) end()
+  })
+  stopWatch[kind] = () => {
+    stopWatch[kind] = undefined
+    window.removeEventListener('drop', onEnd)
+    window.removeEventListener('dragend', onEnd)
+    offApp()
+  }
 }
 
 /** Drop target handlers for a voice channel (its row and its member list). Same channel: not a target. */
@@ -82,6 +109,7 @@ const useChannelDrag = create<{
 const CHANNEL_DRAG_TYPE = 'application/x-nexo-channel'
 
 function endChannelDrag() {
+  stopWatch.channel?.()
   useChannelDrag.setState({ id: null, type: null, over: null, dimmed: null })
 }
 
@@ -102,7 +130,10 @@ function movedOrder(ids: string[], id: string, targetId: string, after: boolean)
   return rest.every((x, i) => x === ids[i]) ? null : rest
 }
 
-/** Optimistic: positions follow `ids` at once, and go back if the server refuses. */
+/**
+ * Optimistic: positions follow `ids` at once, and go back if the server refuses, except for channels whose
+ * position changed meanwhile (a `channel:upsert` from someone else's reorder): those keep the server's.
+ */
 async function reorderChannels(type: ChannelType, ids: string[]): Promise<void> {
   const before = new Map(
     useApp
@@ -111,12 +142,14 @@ async function reorderChannels(type: ChannelType, ids: string[]): Promise<void> 
       .map((c) => [c.id, c.position] as const),
   )
   const pos = new Map(ids.map((id, i) => [id, i] as const))
-  const apply = (positions: Map<string, number>) =>
+  const apply = (positions: Map<string, number>, onlyIfAt?: Map<string, number>) =>
     useApp.setState((st) => ({
       channels: sortChannels(
         st.channels.map((c) => {
           const p = c.type === type ? positions.get(c.id) : undefined
-          return p === undefined || p === c.position ? c : { ...c, position: p }
+          if (p === undefined || p === c.position) return c
+          if (onlyIfAt && onlyIfAt.get(c.id) !== c.position) return c
+          return { ...c, position: p }
         }),
       ),
     }))
@@ -124,7 +157,7 @@ async function reorderChannels(type: ChannelType, ids: string[]): Promise<void> 
   try {
     await request('channel:reorder', { type, ids })
   } catch (err) {
-    apply(before)
+    apply(before, pos)
     toast(err, 'error')
   }
 }
@@ -298,6 +331,13 @@ function ChannelRow({ channel }: { channel: Channel }) {
   const dropEdge = useChannelDrag((s) => (s.over?.id === channel.id ? (s.over.after ? 'after' : 'before') : null))
   const dragging = useChannelDrag((s) => s.dimmed === channel.id)
   const canDrag = canManage && !renaming
+  // Unmounted mid-drag: its `dragend` won't reach us (see watchDrag).
+  useEffect(
+    () => () => {
+      if (useChannelDrag.getState().id === channel.id) endChannelDrag()
+    },
+    [channel.id],
+  )
 
   return (
     <li
@@ -330,6 +370,10 @@ function ChannelRow({ channel }: { channel: Channel }) {
                   e.dataTransfer.setData(CHANNEL_DRAG_TYPE, channel.id)
                   e.dataTransfer.effectAllowed = 'move'
                   useChannelDrag.setState({ id: channel.id, type: channel.type, over: null })
+                  watchDrag('channel', endChannelDrag, () => {
+                    const st = useApp.getState()
+                    return st.view === 'main' && st.channels.some((c) => c.id === channel.id)
+                  })
                   requestAnimationFrame(() => {
                     if (useChannelDrag.getState().id === channel.id) useChannelDrag.setState({ dimmed: channel.id })
                   })
@@ -537,6 +581,10 @@ function VoiceMembers({ channelId }: { channelId: string }) {
                       e.dataTransfer.setData(VOICE_MEMBER_DRAG_TYPE, v.userId)
                       e.dataTransfer.effectAllowed = 'move'
                       useVoiceDrag.setState({ userId: v.userId, from: channelId, over: null })
+                      watchDrag('voice', endVoiceDrag, () => {
+                        const st = useApp.getState()
+                        return st.view === 'main' && st.voice.some((x) => x.userId === v.userId && x.channelId === channelId)
+                      })
                     }
                   : undefined
               }

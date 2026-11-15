@@ -18,6 +18,8 @@ import {
 import { connect, disconnect } from '../net/socket'
 import { toast } from '../lib/toast'
 import { useApp } from './app'
+import { resetChatPanels } from './chatPanels'
+import { resetSounds } from './sounds'
 import { knownServerId, readLogin, rememberServerId, saveLogin, type LoginRead } from './logins'
 
 export const NOTICE_UNREADABLE =
@@ -106,6 +108,8 @@ export function dismissWelcome(): void {
 export function handleNotRecognized(): void {
   disconnect()
   useSignIn.setState({ welcome: null })
+  resetChatPanels()
+  resetSounds()
   useApp.setState({ view: 'onboarding', connection: 'idle', connectionError: null, onboardingNotice: NOTICE_NOT_RECOGNIZED })
 }
 

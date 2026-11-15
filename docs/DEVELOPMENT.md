@@ -155,7 +155,7 @@ redirects refused, 256 KB cap) and caches results in memory (24 h, misses 1 h). 
 
 | Request | Auth | Result |
 |---|---|---|
-| `POST /api/sounds?name=<name>&emoji=<emoji>&durationMs=<ms>` (body = audio, `Content-Type` `audio/ogg`/`mpeg`/`wav`/`webm` matching its magic bytes, ≤ 512 KB, ≤ 5000 ms) | `Authorization: Bearer <device token>` | `201 {sound}` + `sound:upsert` broadcast; 409 when the board has 100 sounds; 10 uploads per minute per user |
+| `POST /api/sounds?name=<name>&emoji=<emoji>` (body = 16-bit PCM WAV, `Content-Type: audio/wav`, ≤ 512 KB; the server parses the header and measures the duration, ≤ 5000 ms; a `durationMs` parameter is ignored) | `Authorization: Bearer <device token>` | `201 {sound}` + `sound:upsert` broadcast; 409 when the board has 100 sounds; 10 uploads per minute per user |
 | `DELETE /api/sounds/<id>` | same; uploader or admins/owner | `204` + `sound:deleted` broadcast (403 for others) |
 | `GET /sounds/<id>` | none (the id is a random UUID) | the audio with its stored `Content-Type`, cached long-term, `Access-Control-Allow-Origin: *` |
 

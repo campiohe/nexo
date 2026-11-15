@@ -11,8 +11,21 @@ import { Modal } from '../Modal'
 import { CloseIcon, SmilePlusIcon } from '../icons'
 import { PlayIcon, StopIcon, UploadIcon } from './icons'
 
-/** Files bigger than this are refused before decoding (a long track decodes to hundreds of MB). */
-const MAX_FILE_BYTES = 40 * 1024 * 1024
+// Decoding is all-or-nothing (decodeAudioData), and decoded audio is big: 32 kHz float is 128 KB per second
+// per channel, so a whole album would take gigabytes. Limits, checked before decoding:
+/** Files bigger than this are refused outright (15 MB ≈ 90 s of CD-quality WAV, or ≈ 15 min of 128 kbps MP3). */
+const MAX_FILE_BYTES = 15 * 1024 * 1024
+/**
+ * Longest source file, seconds, read from the file's metadata first (an <audio> element on a blob: URL)
+ * and checked again after decoding: ≤ 10 min ≈ 150 MB decoded in stereo.
+ */
+const MAX_SOURCE_SECONDS = 10 * 60
+/**
+ * When the metadata has no length (e.g. MediaRecorder WebM, or a format only Web Audio reads), only files
+ * this small are decoded: even at a low 32 kbps that's ≤ ~22 min, ≈ 340 MB decoded in stereo (refused right after).
+ */
+const MAX_UNKNOWN_LENGTH_BYTES = 5 * 1024 * 1024
+const PROBE_TIMEOUT_MS = 5000
 /** Longest selection, seconds (5 s). */
 const MAX_SEL = maxClipSamples(SOUNDBOARD_RATE) / SOUNDBOARD_RATE
 const MIN_SEL = 0.1
@@ -20,9 +33,13 @@ const FADE_SAMPLES = Math.round(SOUNDBOARD_RATE * 0.005)
 const WAVE_H = 96
 
 interface Loaded {
+  /** Per picked file, to key the waveform. */
+  id: number
   name: string
   buffer: AudioBuffer
 }
+
+let loadSeq = 0
 
 function defaultName(fileName: string): string {
   return fileName
@@ -39,16 +56,50 @@ function fmt(t: number): string {
   return `${m}:${s.toFixed(2).padStart(5, '0')}`
 }
 
+/** The file's duration from its metadata (seconds), or null if the media element can't tell. */
+function probeDuration(file: File): Promise<number | null> {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file)
+    const el = new Audio()
+    const done = (d: number | null) => {
+      window.clearTimeout(timer)
+      el.onloadedmetadata = null
+      el.onerror = null
+      el.removeAttribute('src')
+      el.load()
+      URL.revokeObjectURL(url)
+      resolve(d)
+    }
+    const timer = window.setTimeout(() => done(null), PROBE_TIMEOUT_MS)
+    el.preload = 'metadata'
+    el.muted = true
+    el.onloadedmetadata = () => done(Number.isFinite(el.duration) && el.duration > 0 ? el.duration : null)
+    el.onerror = () => done(null)
+    el.src = url
+  })
+}
+
+const tooLong = () => new Error(`That file is too long (max ${MAX_SOURCE_SECONDS / 60} minutes). Cut it shorter first.`)
+
 async function decode(file: File): Promise<AudioBuffer> {
   if (file.size > MAX_FILE_BYTES) throw new Error(`That file is too big (max ${MAX_FILE_BYTES / (1024 * 1024)} MB)`)
+  const probed = await probeDuration(file)
+  if (probed !== null && probed > MAX_SOURCE_SECONDS) throw tooLong()
+  if (probed === null && file.size > MAX_UNKNOWN_LENGTH_BYTES) {
+    throw new Error(`Couldn't tell how long that file is, so it's limited to ${MAX_UNKNOWN_LENGTH_BYTES / (1024 * 1024)} MB. Try an MP3, OGG or WAV file.`)
+  }
   const bytes = await file.arrayBuffer()
   // Decoded straight at the upload rate: no quality lost, and long files take less memory.
   const c = new OfflineAudioContext(1, 1, SOUNDBOARD_RATE)
+  let buffer: AudioBuffer
   try {
-    return await c.decodeAudioData(bytes)
+    buffer = await c.decodeAudioData(bytes)
   } catch {
     throw new Error("Couldn't read that file. Try an MP3, OGG, WAV, WebM or M4A file.")
   }
+  // The metadata can be missing or wrong (VBR estimates).
+  if (buffer.duration > MAX_SOURCE_SECONDS) throw tooLong()
+  return buffer
 }
 
 /** The selection, mixed down to mono at SOUNDBOARD_RATE, faded and peak-limited, as a WAV blob. */
@@ -118,7 +169,7 @@ export function SoundUploadDialog({ onClose }: { onClose(added: boolean): void }
     try {
       const buffer = await decode(file)
       if (buffer.duration < MIN_SEL) throw new Error('That clip is too short')
-      setLoaded({ name: file.name, buffer })
+      setLoaded({ id: ++loadSeq, name: file.name, buffer })
       setSel({ start: 0, len: Math.min(MAX_SEL, buffer.duration) })
       setName((n) => n || defaultName(file.name))
     } catch (err) {
@@ -195,7 +246,7 @@ export function SoundUploadDialog({ onClose }: { onClose(added: boolean): void }
           <button className="sb-drop-btn" onClick={() => fileRef.current?.click()} disabled={decoding} data-autofocus>
             {decoding ? <span className="vx-spinner" /> : <UploadIcon size={22} />}
             <span>{decoding ? 'Reading the file…' : 'Choose an audio file'}</span>
-            <span className="muted small">or drop it here · MP3, OGG, WAV, WebM, M4A…</span>
+            <span className="muted small">or drop it here · MP3, OGG, WAV, WebM, M4A… (up to 10 min, 15 MB)</span>
           </button>
         )}
       </div>
@@ -206,7 +257,8 @@ export function SoundUploadDialog({ onClose }: { onClose(added: boolean): void }
       )}
 
       {loaded && (
-        <Waveform buffer={loaded.buffer} sel={sel} onChange={setSel} disabled={busy} />
+        // Keyed per file: a new file starts with fresh peaks, playhead and drag state.
+        <Waveform key={loaded.id} buffer={loaded.buffer} sel={sel} onChange={setSel} disabled={busy} />
       )}
 
       <div className="sb-fields">
@@ -305,7 +357,7 @@ function Waveform({ buffer, sel, onChange, disabled }: WaveformProps) {
   }, [])
 
   // Draw: bars, brighter inside the selection.
-  const peaks = useRef<{ cols: number; data: Float32Array } | null>(null)
+  const peaks = useRef<{ buffer: AudioBuffer; cols: number; data: Float32Array } | null>(null)
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas || width === 0) return
@@ -313,7 +365,7 @@ function Waveform({ buffer, sel, onChange, disabled }: WaveformProps) {
     const barW = 2
     const gap = 1
     const cols = Math.max(1, Math.floor(width / (barW + gap)))
-    if (!peaks.current || peaks.current.cols !== cols) peaks.current = { cols, data: peaksOf(buffer, cols) }
+    if (peaks.current?.buffer !== buffer || peaks.current.cols !== cols) peaks.current = { buffer, cols, data: peaksOf(buffer, cols) }
     const data = peaks.current.data
     let max = 0
     for (const p of data) if (p > max) max = p

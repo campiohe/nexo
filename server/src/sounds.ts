@@ -3,7 +3,10 @@
 //   DELETE /api/sounds/:id                         uploader or admins/owner
 //   GET    /sounds/:id                             serve (no auth; the id is a random UUID)
 // Files live in <dataDir>/sounds/<id>; the DB row holds name, emoji, uploader, duration and media type.
-// Validation reads magic bytes only (no decoding): the duration is the uploader's client's measurement.
+// Only 16-bit PCM WAV is accepted (what the desktop client encodes, voice/wav.ts): its header is parsed
+// (parseWav) and the stored duration is the one measured from the data chunk, never the client's
+// `durationMs` (still accepted in the query string for compatibility, but ignored). Clips longer than
+// SOUND_MAX_MS are refused, so every listener's client decodes and plays at most 5 s.
 // Playing a clip (`sound:play`) is a socket event, handled in server.ts.
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { randomBytes, randomUUID } from 'node:crypto'
@@ -11,7 +14,7 @@ import { mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs'
 import { readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import type { Sound, SoundType } from '../../shared/protocol.ts'
+import type { Sound } from '../../shared/protocol.ts'
 import { EMOJI_RE, MAX_SOUNDS, SOUND_MAX_BYTES, SOUND_MAX_MS, SOUND_NAME_MAX, SOUND_TYPES } from '../../shared/protocol.ts'
 import type { Db } from './db.ts'
 import {
@@ -30,16 +33,14 @@ import { normalizeDisplayText } from './text.ts'
 
 /** Error messages of the soundboard routes (JSON `{error}`). */
 export const SOUND_HTTP_ERRORS = {
-  badType: 'Sounds must be OGG, MP3, WAV or WebM audio (Content-Type audio/ogg, audio/mpeg, audio/wav or audio/webm)',
-  notAudio: 'The file is not an OGG, MP3, WAV or WebM audio file',
-  /** The sniffed type differs from the declared one. */
-  mismatch: (actual: string, declared: string) => `The file is ${actual}, not ${declared}`,
+  badType: 'Sounds must be 16-bit PCM WAV audio (Content-Type audio/wav)',
+  notWav: 'The file is not a valid WAV audio file',
   tooLarge: `Sounds are limited to ${Math.round(SOUND_MAX_BYTES / 1024)} KB`,
   empty: 'The upload is empty',
   noName: 'Give the sound a name',
   nameTooLong: `Sound names are limited to ${SOUND_NAME_MAX} characters`,
   invalidEmoji: 'Invalid emoji',
-  invalidDuration: 'Invalid sound duration',
+  noAudio: 'The sound has no audio',
   tooLong: `Sounds are limited to ${SOUND_MAX_MS / 1000} seconds`,
   boardFull: `The soundboard is full (${MAX_SOUNDS} sounds). Delete one first`,
   slowDown: 'Slow down: too many sounds in the last minute',
@@ -51,20 +52,56 @@ export const SOUND_HTTP_ERRORS = {
 const EMOJI_MAX_LENGTH = 32
 const RATE_WINDOW_MS = 60_000
 
-const startsWith = (buf: Uint8Array, bytes: number[], offset = 0) =>
-  buf.length >= offset + bytes.length && bytes.every((b, i) => buf[offset + i] === b)
-const ascii = (s: string) => [...s].map((c) => c.charCodeAt(0))
+/** Slack over SOUND_MAX_MS for rounding by encoders (the stored duration is clamped to SOUND_MAX_MS). */
+export const SOUND_DURATION_TOLERANCE_MS = 50
 
-/** Detects the audio container from its first bytes, or null if it isn't Ogg, MP3, WAV or WebM. */
-export function sniffAudio(buf: Uint8Array): SoundType | null {
-  if (startsWith(buf, ascii('OggS'))) return 'audio/ogg'
-  if (startsWith(buf, ascii('RIFF')) && startsWith(buf, ascii('WAVE'), 8)) return 'audio/wav'
-  if (startsWith(buf, [0x1a, 0x45, 0xdf, 0xa3])) return 'audio/webm'
-  if (startsWith(buf, ascii('ID3'))) return 'audio/mpeg'
-  // A bare MPEG audio frame: 11-bit frame sync (0xFFE), a valid version and a layer other than the reserved
-  // 00 (which is AAC's ADTS header, not MP3).
-  if (buf.length >= 2 && buf[0] === 0xff && (buf[1] & 0xe0) === 0xe0 && ((buf[1] >> 3) & 3) !== 1 && ((buf[1] >> 1) & 3) !== 0) {
-    return 'audio/mpeg'
+export interface WavInfo {
+  channels: number
+  sampleRate: number
+  /** Bytes of the `data` chunk, as declared by its header (may exceed the bytes actually present). */
+  dataBytes: number
+  /** Whether the whole declared `data` chunk is in the file. */
+  complete: boolean
+  /** Duration of the declared `data` chunk, in ms (unrounded). */
+  durationMs: number
+}
+
+const fourcc = (buf: Uint8Array, at: number) => String.fromCharCode(buf[at], buf[at + 1], buf[at + 2], buf[at + 3])
+
+/**
+ * Parses a RIFF/WAVE header: walks the chunks (bounds-checked, never past the buffer) up to the `data`
+ * chunk, which must come after a `fmt ` chunk describing 16-bit PCM (format 1), 1-2 channels, 8-96 kHz.
+ * Returns null if the file isn't such a WAV. The RIFF size field is ignored (often wrong in the wild).
+ */
+export function parseWav(buf: Uint8Array): WavInfo | null {
+  if (buf.length < 12 || fourcc(buf, 0) !== 'RIFF' || fourcc(buf, 8) !== 'WAVE') return null
+  const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength)
+  let fmt: { channels: number; sampleRate: number } | undefined
+  let at = 12
+  while (at + 8 <= buf.length) {
+    const id = fourcc(buf, at)
+    const size = view.getUint32(at + 4, true)
+    const body = at + 8
+    if (id === 'data') {
+      if (!fmt) return null
+      const frameBytes = fmt.channels * 2
+      const durationMs = (Math.floor(size / frameBytes) / fmt.sampleRate) * 1000
+      return { ...fmt, dataBytes: size, complete: body + size <= buf.length, durationMs }
+    }
+    if (body + size > buf.length) return null
+    if (id === 'fmt ') {
+      if (fmt || size < 16) return null
+      const format = view.getUint16(body, true)
+      const channels = view.getUint16(body + 2, true)
+      const sampleRate = view.getUint32(body + 4, true)
+      const blockAlign = view.getUint16(body + 12, true)
+      const bits = view.getUint16(body + 14, true)
+      if (format !== 1 || bits !== 16 || channels < 1 || channels > 2) return null
+      if (sampleRate < 8000 || sampleRate > 96_000 || blockAlign !== channels * 2) return null
+      fmt = { channels, sampleRate }
+    }
+    // Chunks are padded to an even size.
+    at = body + size + (size & 1)
   }
   return null
 }
@@ -143,19 +180,20 @@ export function createSoundRoutes(opts: SoundRoutesOptions) {
     if (rawEmoji && (rawEmoji.length > EMOJI_MAX_LENGTH || !EMOJI_RE.test(rawEmoji))) {
       throw new HttpError(400, SOUND_HTTP_ERRORS.invalidEmoji)
     }
-    const rawDuration = url.searchParams.get('durationMs') ?? ''
-    if (!/^\d{1,9}$/.test(rawDuration) || Number(rawDuration) < 1) throw new HttpError(400, SOUND_HTTP_ERRORS.invalidDuration)
-    const durationMs = Number(rawDuration)
-    if (durationMs > SOUND_MAX_MS) throw new HttpError(400, SOUND_HTTP_ERRORS.tooLong)
+    // `durationMs` (sent by older clients) is ignored: the duration is measured from the file below.
     if (sounds.count() >= MAX_SOUNDS) throw new HttpError(409, SOUND_HTTP_ERRORS.boardFull)
     rateLimit(user.id)
 
     const body = await readBody(req, SOUND_MAX_BYTES, tooLarge)
     if (body.length === 0) throw new HttpError(400, SOUND_HTTP_ERRORS.empty)
-    const actual = sniffAudio(body)
-    if (actual !== declared) {
-      throw new HttpError(415, actual ? SOUND_HTTP_ERRORS.mismatch(actual, declared) : SOUND_HTTP_ERRORS.notAudio)
-    }
+    const wav = parseWav(body)
+    if (!wav) throw new HttpError(415, SOUND_HTTP_ERRORS.notWav)
+    // A header claiming a long clip is refused as too long even when the file is truncated.
+    if (wav.durationMs > SOUND_MAX_MS + SOUND_DURATION_TOLERANCE_MS) throw new HttpError(400, SOUND_HTTP_ERRORS.tooLong)
+    if (!wav.complete) throw new HttpError(415, SOUND_HTTP_ERRORS.notWav)
+    const durationMs = Math.min(SOUND_MAX_MS, Math.round(wav.durationMs))
+    if (durationMs < 1) throw new HttpError(400, SOUND_HTTP_ERRORS.noAudio)
+    const type = 'audio/wav' as const
 
     // Nobody learns the id before the 201, so the file can go into place before the row is written; if the
     // row can't be written the file is removed (or swept at the next start).
@@ -168,7 +206,7 @@ export function createSoundRoutes(opts: SoundRoutesOptions) {
       // The board may have filled up, or the account been removed, while the body was uploading.
       if (!users.get(user.id)) throw new HttpError(401, 'Unknown device token')
       sound = sounds.create(
-        { id, name: parsedName.name, emoji: rawEmoji || null, uploaderId: user.id, durationMs, type: actual, size: body.length },
+        { id, name: parsedName.name, emoji: rawEmoji || null, uploaderId: user.id, durationMs, type, size: body.length },
         MAX_SOUNDS,
       )
       if (!sound) throw new HttpError(409, SOUND_HTTP_ERRORS.boardFull)
@@ -178,7 +216,7 @@ export function createSoundRoutes(opts: SoundRoutesOptions) {
       throw err
     }
     opts.onSound(sound)
-    opts.log(`[nexo] ${user.name} added the sound "${sound.name}" (${actual}, ${body.length} bytes, ${durationMs} ms)`)
+    opts.log(`[nexo] ${user.name} added the sound "${sound.name}" (${type}, ${body.length} bytes, ${durationMs} ms)`)
     sendJson(res, 201, { sound }, CORS_HEADERS)
   }
 
