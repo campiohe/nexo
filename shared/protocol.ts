@@ -153,6 +153,19 @@ export interface ClientToServerEvents {
   'user:remove': (p: { userId: string }, ack: Ack<null>) => void
   /** Admins/owner, or the account the request is for (from another device). */
   'access:respond': (p: { requestId: string; approve: boolean }, ack: Ack<null>) => void
+  /**
+   * Admins/owner move someone who is in voice to another voice channel. Admins can't move the owner.
+   * Moving someone to the channel they're already in is a no-op success. The server updates the target's
+   * voice state at once (camera/streaming cleared, mute/deafen kept) and broadcasts `voice:states`, then
+   * sends `voice:moved` to the target's voice-owning socket, which rejoins in the new channel.
+   */
+  'voice:move': (p: { userId: string; channelId: string }, ack: Ack<null>) => void
+  /**
+   * "Wake up": get the attention of someone in voice who is muted or deafened. Anyone online may nudge
+   * anyone else; at most one nudge per sender → target every NUDGE_COOLDOWN_MS (ack error otherwise).
+   * Delivered as `voice:nudged` to the target's voice-owning socket.
+   */
+  'voice:nudge': (p: { userId: string }, ack: Ack<null>) => void
 }
 
 export interface ServerToClientEvents {
@@ -171,7 +184,14 @@ export interface ServerToClientEvents {
   'access:request': (r: AccessRequest) => void
   /** The request was approved, denied, cancelled or expired: dismiss it. */
   'access:resolved': (p: { requestId: string }) => void
+  /** You were moved (`voice:move`) by `by` (userId) to voice channel `channelId`: join it. */
+  'voice:moved': (p: { channelId: string; by: string }) => void
+  /** `by` (userId) nudged you ("wake up") while you're muted or deafened in voice. */
+  'voice:nudged': (p: { by: string }) => void
 }
+
+/** Minimum time between two nudges (`voice:nudge`) from the same sender to the same target. */
+export const NUDGE_COOLDOWN_MS = 15_000
 
 // ---- Server info (HTTP, no auth) ----
 // GET /api/info → 200 ServerInfo. Clients call it before connecting without a saved login, to find the

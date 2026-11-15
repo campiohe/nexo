@@ -46,12 +46,16 @@ No passwords and no codes to copy (the user's call: they are fragile). Instead:
 | delete anyone's message | | ✓ | ✓ |
 | approve / deny sign-in requests | (own account only) | ✓ | ✓ |
 | remove a member's account | | ✓ | ✓ |
+| move someone in voice to another voice channel (`voice:move`) | | ✓ (not the owner) | ✓ |
 | remove an admin's account, set admin/member | | | ✓ |
 
 - **Exactly one owner.** On a new server the first account becomes owner. On migration, the oldest
   account becomes owner, if there is no owner yet.
 - **The owner can't be removed or demoted from the app.** `nexo-server owner <name>` (server-cli, works on
   the DB directly like `rename-user`) moves ownership.
+- **Moving people in voice.** Admins and the owner can move anyone who is in voice to another voice channel;
+  admins can't move the owner. Nudging someone muted or deafened ("wake up", `voice:nudge`) is open to every
+  role.
 - **Server error strings:** "Only admins can manage channels", "Only admins can delete other people's
   messages", and so on.
 - **Old clients and old servers.**

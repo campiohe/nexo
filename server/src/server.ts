@@ -13,7 +13,12 @@ import type {
   User,
   VoiceState,
 } from '../../shared/protocol.ts'
-import { ACCESS_REQUEST_TTL_MS, MAX_ATTACHMENTS_PER_MESSAGE, MAX_MESSAGE_LENGTH } from '../../shared/protocol.ts'
+import {
+  ACCESS_REQUEST_TTL_MS,
+  MAX_ATTACHMENTS_PER_MESSAGE,
+  MAX_MESSAGE_LENGTH,
+  NUDGE_COOLDOWN_MS,
+} from '../../shared/protocol.ts'
 import { streamIdentity } from '../../shared/stream.ts'
 import { loadConfig, type Config } from './config.ts'
 import { isUniqueViolation, openDb } from './db.ts'
@@ -58,6 +63,8 @@ export interface StartOptions extends Partial<Omit<Config, 'livekit'>> {
   accessRequestTtlMs?: number
   /** How often expired sign-in requests are swept. Default: LIMITS.accessRequestSweepIntervalMs. */
   accessRequestSweepIntervalMs?: number
+  /** Minimum ms between two nudges from the same sender to the same target. Default: NUDGE_COOLDOWN_MS. */
+  nudgeCooldownMs?: number
 }
 
 export interface NexoInstance {
@@ -133,6 +140,18 @@ export const PERMISSION_ERRORS = {
   userNotFound: 'User not found',
   requestNotFound: 'This sign-in request expired or was already answered',
   invalidAnswer: 'Invalid answer',
+  moveMembers: 'Only admins can move people',
+  moveOwner: "Admins can't move the owner",
+} as const
+
+/** Ack errors of `voice:move` and `voice:nudge` (besides PERMISSION_ERRORS). */
+export const VOICE_ERRORS = {
+  channelNotFound: 'Voice channel not found',
+  notInVoice: "They're not in voice",
+  nudgeSelf: "You can't nudge yourself",
+  notMuted: "They're not muted",
+  /** `You can nudge them again in N s` (N rounded up, at least 1). */
+  nudgeCooldown: (ms: number) => `You can nudge them again in ${Math.max(1, Math.ceil(ms / 1000))} s`,
 } as const
 
 /** admin and owner manage channels, delete any message, remove members and answer sign-in requests. */
@@ -194,6 +213,7 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
     isTrustedDeviceAddress = isTailscaleAddress,
     accessRequestTtlMs,
     accessRequestSweepIntervalMs,
+    nudgeCooldownMs = NUDGE_COOLDOWN_MS,
     ...rest
   } = options
   const config: Config = { ...base, ...rest, livekit: { ...base.livekit, ...livekit } }
@@ -312,6 +332,16 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
   const broadcastVoice = () => io.emit('voice:states', voiceList())
   const broadcastPresence = () => io.emit('presence', onlineIds())
 
+  /** `${senderId}>${targetId}` -> time of the last `voice:nudge` (server-wide: shared by all of a sender's sockets). */
+  const lastNudges = new Map<string, number>()
+  const nudgeKey = (from: string, to: string) => `${from}>${to}`
+  /** Drops cooldowns that have run out (and, with `userId`, all of that user's), so the map stays small. */
+  function pruneNudges(now: number, userId?: string) {
+    for (const [key, at] of lastNudges) {
+      if (now - at >= nudgeCooldownMs || (userId && key.split('>').includes(userId))) lastNudges.delete(key)
+    }
+  }
+
   /**
    * Deletes an account (docs/SPEC-ACCOUNTS.md §2): its sign-in requests, voice state, DB rows (messages,
    * uploads, logins, device links) and files, then tells everyone and disconnects its sockets.
@@ -323,6 +353,7 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
     attachmentRoutes.removeFiles(removed.attachmentIds)
     avatarRoutes.removeFile(target.id)
     if (voiceStates.delete(target.id)) broadcastVoice()
+    pruneNudges(Date.now(), target.id)
     io.emit('user:removed', { userId: target.id })
     io.in(userRoom(target.id)).disconnectSockets(true)
     log(
@@ -636,6 +667,50 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
       // The latest socket to announce a voice state owns it (e.g. joining from a second device).
       voiceStates.set(userId, next)
       if (!unchanged) broadcastVoice()
+    }))
+
+    // Admins/owner move someone in voice to another voice channel. The stored state moves at once; the
+    // target's voice-owning socket gets `voice:moved`, leaves the old LiveKit room, joins the new one and
+    // re-announces `voice:state` (same socket, so it keeps ownership). Until then it is still connected to
+    // the old room: accepted.
+    socket.on('voice:move', guard('voice:move', (p, ack) => {
+      const role = roleOf(userId)
+      if (!isAdminRole(role)) return fail(ack, PERMISSION_ERRORS.moveMembers)
+      const target = isObj(p) && isStr(p.userId) ? users.get(p.userId) : undefined
+      if (!target) return fail(ack, PERMISSION_ERRORS.userNotFound)
+      const current = voiceStates.get(target.id)
+      if (!current) return fail(ack, VOICE_ERRORS.notInVoice)
+      if (target.role === 'owner' && role !== 'owner') return fail(ack, PERMISSION_ERRORS.moveOwner)
+      const channel = isStr(p.channelId) ? channels.get(p.channelId) : undefined
+      if (!channel || channel.type !== 'voice') return fail(ack, VOICE_ERRORS.channelNotFound)
+      if (current.channelId === channel.id) return ok(ack, null)
+      const from = channels.get(current.channelId ?? '')?.name ?? current.channelId
+      // In place: mute/deafen and the owning socket are kept; camera and stream end with the old room.
+      voiceStates.set(target.id, { ...current, channelId: channel.id, camera: false, streaming: false })
+      broadcastVoice()
+      io.of('/').sockets.get(current.socketId)?.emit('voice:moved', { channelId: channel.id, by: userId })
+      log(`[nexo] ${me().name} moved "${target.name}" from "${from}" to "${channel.name}"`)
+      ok(ack, null)
+    }))
+
+    // "Wake up" someone in voice who is muted or deafened. Anyone may nudge anyone else, once per cooldown.
+    socket.on('voice:nudge', guard('voice:nudge', (p, ack) => {
+      const targetId = isObj(p) && isStr(p.userId) ? p.userId : undefined
+      if (targetId === userId) return fail(ack, VOICE_ERRORS.nudgeSelf)
+      const target = targetId ? users.get(targetId) : undefined
+      if (!target) return fail(ack, PERMISSION_ERRORS.userNotFound)
+      const state = voiceStates.get(target.id)
+      if (!state) return fail(ack, VOICE_ERRORS.notInVoice)
+      if (!state.muted && !state.deafened) return fail(ack, VOICE_ERRORS.notMuted)
+      const now = Date.now()
+      pruneNudges(now)
+      const key = nudgeKey(userId, target.id)
+      const last = lastNudges.get(key)
+      if (last !== undefined) return fail(ack, VOICE_ERRORS.nudgeCooldown(last + nudgeCooldownMs - now))
+      lastNudges.set(key, now)
+      io.of('/').sockets.get(state.socketId)?.emit('voice:nudged', { by: userId })
+      log(`[nexo] ${me().name} nudged "${target.name}"`)
+      ok(ack, null)
     }))
 
     // --- profile ---

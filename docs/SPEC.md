@@ -286,6 +286,8 @@ All shared types live in `shared/protocol.ts`, imported by both the server and t
 | `typing` | `{channelId}` | — |
 | `voice:token` | `{channelId}` | `{url, token, room}` |
 | `voice:state` | `{channelId \| null, muted, deafened, camera, streaming}` | — |
+| `voice:move` | `{userId, channelId}` (admins/owner; admins can't move the owner; same channel = no-op) | `null` |
+| `voice:nudge` | `{userId}` (target in voice and muted or deafened; not yourself; once per `NUDGE_COOLDOWN_MS` = 15 s per sender → target) | `null` |
 | `profile:update` | `{color}` | `User` |
 
 ### Server → Client
@@ -299,6 +301,8 @@ All shared types live in `shared/protocol.ts`, imported by both the server and t
 | `message:new` / `message:deleted` | `Message` / `{messageId, channelId}` |
 | `typing` | `{channelId, userId}` (clients show it for about 3 s) |
 | `voice:states` | `VoiceState[]` (full list; small at this scale) |
+| `voice:moved` | `{channelId, by}` to the target's voice-owning socket only: the server already moved its state (camera/stream off, mute/deafen kept); the client leaves the old room, joins `channelId` and re-announces `voice:state` |
+| `voice:nudged` | `{by}` to the target's voice-owning socket only ("wake up" while muted or deafened) |
 
 Handshake errors arrive as `connect_error` with a readable message. `UNKNOWN_TOKEN` tells the client to clear its token and show onboarding again.
 
