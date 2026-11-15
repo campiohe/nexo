@@ -18,6 +18,8 @@ import { moveToChannel, nudge } from '../voice/voiceActions'
 import { speakingIdentities, useParticipants } from '../voice/participants'
 import { VoiceControls } from './voice/VoiceControls'
 import { SoundboardHost } from './voice/Soundboard'
+import { ChannelMusicLine } from './voice/MusicBar'
+import { MusicPanelHost } from './voice/MusicPanel'
 import '../styles/channel-reorder.css'
 import { toast } from '../lib/toast'
 import { canManageChannels, canMoveMember } from '../lib/permissions'
@@ -250,6 +252,7 @@ export function Sidebar() {
       <VoiceControls />
       <UserPanel />
       <SoundboardHost />
+      <MusicPanelHost />
     </aside>
   )
 }
@@ -436,6 +439,7 @@ function ChannelRow({ channel }: { channel: Channel }) {
           )}
         </div>
       )}
+      {channel.type === 'voice' && <ChannelMusicLine channelId={channel.id} />}
       {channel.type === 'voice' && <VoiceMembers channelId={channel.id} />}
       {confirming && (
         <ConfirmDialog

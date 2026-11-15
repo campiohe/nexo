@@ -444,6 +444,33 @@ export interface NexoBridge {
   openExternal(url: string): void
 
   /**
+   * Music plugin engine (YouTube Music through InnerTube, run in the main process; see MusicEngineError for
+   * failures). Only YouTube is contacted, never the Nexo server.
+   */
+  music: {
+    /** Search the YouTube Music catalogue. Empty/blank query → empty results. */
+    search(query: string): Promise<MusicSearchResults>
+    /**
+     * Tracks of an album or playlist from search results (`MusicCollection.id`), or of a pasted
+     * music.youtube.com / youtube.com / youtu.be link (a single video → one track). null when nothing playable.
+     */
+    resolve(input: string): Promise<MusicCollectionTracks | null>
+    /**
+     * URL an <audio> element can play: `nexo-music://track/<videoId>`, served by main (HTTP range requests
+     * supported, stream URL resolved and refreshed by main). Synchronous: no network until the element loads it.
+     */
+    streamUrl(videoId: string): string
+    /** Resolve and cache the stream ahead of time (e.g. the next track). Never rejects. */
+    prefetch(videoId: string): Promise<void>
+    /**
+     * Why the last load of `videoId`'s stream failed (main remembers it for a while), or null when it didn't
+     * fail or isn't known. Lets the player explain a failed <audio> load without fetching nexo-music:// itself.
+     * Never rejects.
+     */
+    lastError(videoId: string): Promise<MusicEngineError | null>
+  }
+
+  /**
    * Flash the main window's taskbar button (e.g. someone nudged you) until it gets focus. Ignored while the
    * window is focused.
    */
@@ -597,4 +624,56 @@ export const IPC = {
   appearanceSetTheme: 'nexo:appearance:set-theme',
   appearanceSetZoom: 'nexo:appearance:set-zoom',
   appearanceZoom: 'nexo:appearance:zoom', // main → renderer (ZoomEvent)
+  musicSearch: 'nexo:music:search',
+  musicResolve: 'nexo:music:resolve',
+  musicPrefetch: 'nexo:music:prefetch',
+  musicLastError: 'nexo:music:last-error',
 } as const
+
+// ---- Music plugin (YouTube Music) ----
+
+/**
+ * Same shape as MusicTrackInfo in shared/protocol.ts (main/preload can't import shared/; keep in sync — the
+ * renderer passes these straight to `music:add`).
+ */
+export interface MusicTrackInfo {
+  videoId: string
+  title: string
+  artist: string
+  album: string | null
+  durationMs: number
+  artwork: string | null
+}
+
+export interface MusicCollection {
+  /** Album browseId / playlist id, passed back to music.resolve(). */
+  id: string
+  kind: 'album' | 'playlist'
+  title: string
+  /** e.g. artist and year, or the playlist's author and track count. */
+  subtitle: string
+  artwork: string | null
+}
+
+export interface MusicSearchResults {
+  tracks: MusicTrackInfo[]
+  albums: MusicCollection[]
+  playlists: MusicCollection[]
+}
+
+export interface MusicCollectionTracks {
+  title: string
+  tracks: MusicTrackInfo[]
+}
+
+/**
+ * How a music call fails (rejections are plain objects: Electron drops custom Error properties across IPC).
+ * `bot-check`: YouTube asks this device to prove it isn't a bot (try again later / sign-in not supported);
+ * `unavailable`: the track can't be played (region, age, removed); `network`; `engine`: anything else
+ * (likely YouTube changed something — an app update will fix it).
+ */
+export interface MusicEngineError {
+  name: 'MusicEngineError'
+  code: 'bot-check' | 'unavailable' | 'network' | 'engine'
+  message: string
+}

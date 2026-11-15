@@ -28,6 +28,7 @@ import { useNativeShare } from '../../voice/nativeShare'
 import { CameraButton, DeafenButton, LeaveButton, MuteButton, ShareButton } from './ControlButtons'
 import { SharePickerHost } from './SharePicker'
 import { SoundboardButton } from './Soundboard'
+import { MusicBar, MusicButton } from './MusicBar'
 import { VideoTrackView, useVideoStats } from './VideoTrackView'
 import { UserVolumePopover } from './UserVolumePopover'
 import { StreamViewers } from './StreamViewers'
@@ -121,6 +122,7 @@ type TileSpec =
   | { key: string; kind: 'user'; view: ParticipantView }
 
 function Stage() {
+  const channelId = useVoice((s) => s.channelId)
   const status = useVoice((s) => s.status)
   const audioBlocked = useVoice((s) => s.audioBlocked)
   const deafened = useVoice((s) => s.deafened)
@@ -230,12 +232,14 @@ function Stage() {
         </div>
       )}
 
+      {channelId && <MusicBar channelId={channelId} />}
       <div className="vx-toolbar" role="toolbar" aria-label="Voice controls">
         <MuteButton size="lg" />
         <DeafenButton size="lg" />
         <CameraButton size="lg" />
         <ShareButton size="lg" />
         <SoundboardButton size="lg" />
+        <MusicButton size="lg" />
         <span className="vx-toolbar-sep" />
         <LeaveButton size="lg" />
       </div>

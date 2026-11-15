@@ -15,6 +15,7 @@ import { allKeybinds, isInAppAction, setKeybind, useInputPrefs, useKeybinds } fr
 import { cancelCapture, recordKeybind, usePtt } from '../voice/ptt'
 import { DeviceSettings } from './voice/DeviceSettings'
 import { MembersSection } from './MembersSection'
+import { PluginsSection } from './PluginsSettings'
 import { useVoice } from '../voice/session'
 import { useDevicePrefs } from '../voice/devices'
 import { hasNativeNotifications, setNotifyPrefs, useNotifyPrefs, type NotifyLevel } from '../lib/notify'
@@ -38,6 +39,7 @@ const TABS: { id: Tab; label: string; available?: () => boolean }[] = [
   { id: 'notifications', label: 'Notifications', available: hasNativeNotifications },
   { id: 'activity', label: 'Activity', available: hasActivityBridge },
   { id: 'app', label: 'App', available: hasPrefs },
+  { id: 'plugins', label: 'Plugins' },
   { id: 'members', label: 'Members' },
   { id: 'server', label: 'Server' },
 ]
@@ -79,6 +81,7 @@ export function SettingsModal() {
           {tab === 'notifications' && hasNativeNotifications() && <NotificationsSection />}
           {tab === 'activity' && hasActivityBridge() && <ActivitySection />}
           {tab === 'app' && hasPrefs() && <AppSection />}
+          {tab === 'plugins' && <PluginsSection />}
           {tab === 'members' && <MembersSection />}
           {tab === 'server' && <ServerSection onDone={close} />}
         </div>

@@ -27,6 +27,8 @@ import { notifyMessage } from '../lib/notify'
 import { applyPresenceChanged, pruneOffline, setBootstrapPresence } from '../store/presence'
 import { removeSound, resetSounds, setBootstrapSounds, upsertSound } from '../store/sounds'
 import { chatPanelsMessageDeleted, chatPanelsMessageUpdated, resetChatPanels } from '../store/chatPanels'
+import { applyPlugins, resetPlugins, setBootstrapPlugins } from '../store/plugins'
+import { applyMusicState, forgetMusicChannel, resetMusic, setBootstrapMusic } from '../store/music'
 
 export type NexoSocket = Socket<ServerToClientEvents, ClientToServerEvents>
 
@@ -216,6 +218,7 @@ function wire(s: NexoSocket) {
     delete typing[channelId]
     useApp.setState({ channels, messages, typing })
     forgetChannel(channelId)
+    forgetMusicChannel(channelId)
     if (st.selectedChannelId === channelId) useApp.getState().selectChannel(defaultChannelId(channels, null))
     void import('../voice/session')
       .then(({ useVoice }) => {
@@ -327,6 +330,19 @@ function wire(s: NexoSocket) {
       .catch((err) => console.warn('[nexo] soundboard playback failed', err))
   })
 
+  // ---- plugins and music (store/plugins.ts, store/music.ts; playback in voice/musicPlayer.ts, lazy) ----
+  s.on('plugins:changed', (p) => {
+    if (socket !== s) return
+    applyPlugins(p)
+    if (p?.music) loadMusicPlayer()
+  })
+
+  s.on('music:state', (st) => {
+    if (socket !== s) return
+    applyMusicState(st)
+    loadMusicPlayer()
+  })
+
   s.on('voice:nudged', ({ by }) => {
     if (socket !== s) return
     void import('../voice/voiceActions')
@@ -402,6 +418,9 @@ async function handleBootstrap(b: Bootstrap) {
   })
   setBootstrapPresence(b.presence)
   setBootstrapSounds(b.sounds)
+  setBootstrapPlugins(b.plugins)
+  setBootstrapMusic(b.music)
+  if (b.plugins?.music) loadMusicPlayer()
   resetSignIn() // signed in: any onboarding "Welcome back" / sign-in request state is obsolete
   loadReadState(
     url,
@@ -460,6 +479,8 @@ async function handleUnknownToken() {
   resetUnread()
   resetChatPanels()
   resetSounds()
+  resetPlugins()
+  resetMusic()
   useApp.setState({
     view: 'onboarding',
     connection: 'idle',
@@ -468,6 +489,16 @@ async function handleUnknownToken() {
     onboardingNotice:
       "This server doesn't recognize this device anymore (its data may have been reset). Pick a name to join again.",
   })
+}
+
+/**
+ * The music player (voice/musicPlayer.ts) follows the stores once loaded. Lazy like voice/session: it imports
+ * voice/session, which imports this module (and a module-level store subscription must not run mid-cycle).
+ */
+function loadMusicPlayer(): void {
+  void import('../voice/musicPlayer')
+    .then((m) => m.startMusicPlayer())
+    .catch((err) => console.warn('[nexo] music player failed to load', err))
 }
 
 /** Like the server's ReplyPreview content: the first REPLY_PREVIEW_LENGTH characters, never half a surrogate pair. */
