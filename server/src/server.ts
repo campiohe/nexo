@@ -28,16 +28,21 @@ import {
   MAX_WATCHING,
   MENTION_TOKEN_RE,
   NUDGE_COOLDOWN_MS,
+  SOUND_COOLDOWN_MS,
   STATUS_TEXT_MAX,
 } from '../../shared/protocol.ts'
+import { MAX_PINS_PER_CHANNEL, SEARCH_QUERY_MAX } from '../../shared/protocol.ts'
 import { streamIdentity } from '../../shared/stream.ts'
 import { loadConfig, type Config } from './config.ts'
-import { isUniqueViolation, openDb } from './db.ts'
+import { isUniqueViolation, openDb, searchWords } from './db.ts'
 import { createAvatarRoutes } from './avatars.ts'
 import { createAttachmentRoutes } from './attachments.ts'
 import { createAccountRoutes } from './accounts.ts'
 import { isTailscaleAddress, unwrapAddress } from './address.ts'
 import { safeEqual } from './http.ts'
+import { normalizeDisplayText, truncate } from './text.ts'
+import { createEmbedRoutes } from './embeds.ts'
+import { createSoundRoutes } from './sounds.ts'
 
 interface SocketData {
   user: User
@@ -78,8 +83,18 @@ export interface StartOptions extends Partial<Omit<Config, 'livekit'>> {
   nudgeCooldownMs?: number
   /** `message:react` requests per user per window. Default: LIMITS.reactionsPerWindow / reactionWindowMs. */
   reactionLimit?: { count: number; windowMs: number }
-  /** `presence:update` events per user per window. Default: LIMITS.presenceUpdatesPerWindow / presenceWindowMs. */
+  /** `presence:update` events per socket per window. Default: LIMITS.presenceUpdatesPerWindow / presenceWindowMs. */
   presenceLimit?: { count: number; windowMs: number }
+  /** Link previews: the fetch used for oEmbed requests (tests inject a fake). Default: global fetch. */
+  embedFetch?: typeof fetch
+  /** Link previews: timeout of one oEmbed request. Default: LIMITS.embedTimeoutMs. */
+  embedTimeoutMs?: number
+  /** Link previews: oEmbed lookups per user per minute. Default: LIMITS.embedLookupsPerMinute. */
+  embedLookupsPerMinute?: number
+  /** Soundboard uploads per user per minute. Default: LIMITS.soundUploadsPerMinute. */
+  soundUploadsPerMinute?: number
+  /** Minimum ms between two `sound:play` from the same user. Default: SOUND_COOLDOWN_MS. */
+  soundCooldownMs?: number
 }
 
 export interface NexoInstance {
@@ -133,11 +148,20 @@ export const LIMITS = {
   reactionWindowMs: 5000,
   /** Longest emoji accepted by `message:react`, in UTF-16 units (RGI sequences are at most ~15). */
   emojiMaxLength: 32,
-  /** `presence:update` events per user (all sockets) in any window of presenceWindowMs; excess is dropped. */
+  /**
+   * `presence:update` events per socket in any window of presenceWindowMs. Excess updates are delayed, not
+   * lost: the latest values are applied (merged) as soon as the window allows.
+   */
   presenceUpdatesPerWindow: 20,
   presenceWindowMs: 60_000,
   /** Oldest accepted activity start: `startedAt` is clamped to [now - this, now]. */
   activityMaxAgeMs: 7 * 24 * 60 * 60 * 1000,
+  /** Link previews: oEmbed lookups a user may start per minute (cache hits don't count)… */
+  embedLookupsPerMinute: 30,
+  /** …each given this long. */
+  embedTimeoutMs: 4000,
+  /** Soundboard uploads per user per minute. */
+  soundUploadsPerMinute: 10,
 } as const
 
 export const HANDSHAKE_ERRORS = {
@@ -191,6 +215,31 @@ export const MESSAGE_ERRORS = {
   invalidReaction: 'Invalid reaction',
   tooManyReactions: `Messages can have at most ${MAX_REACTIONS_PER_MESSAGE} different reactions`,
   slowDown: 'Slow down',
+  // ---------- pins / search / reorder ----------
+  invalidPin: 'Invalid pin',
+  tooManyPins: `This channel has ${MAX_PINS_PER_CHANNEL} pinned messages. Unpin one first`,
+  unpinOthers: 'Only the person who pinned it, its author or an admin can unpin it',
+} as const
+
+/** Ack errors of `message:search`. */
+export const SEARCH_ERRORS = {
+  invalid: 'Invalid search',
+  tooLong: `Search is limited to ${SEARCH_QUERY_MAX} characters`,
+  noWords: 'Type at least one word to search',
+  channelNotFound: 'Channel not found',
+} as const
+
+/** Ack errors of `channel:reorder` (besides PERMISSION_ERRORS.manageChannels). */
+export const REORDER_ERRORS = {
+  invalidType: 'Invalid channel type',
+  changed: 'The channel list changed, try again',
+} as const
+
+/** Ack errors of `sound:play`. */
+export const SOUND_ERRORS = {
+  notFound: 'Sound not found',
+  notInVoice: 'Join a voice channel to play sounds',
+  cooldown: 'Wait a moment before playing another sound',
 } as const
 
 /** Ack errors of `profile:update`. */
@@ -240,27 +289,8 @@ export function normalizeChannelName(name: unknown, type: ChannelType): string |
   return n.length > 0 ? n : null
 }
 
-/**
- * Free text shown to others (custom status, activity names): NFC, any whitespace run (newlines, tabs…) becomes
- * one space, other control/format/unassigned characters (\p{C}: bidi overrides, zero-width spaces…) are
- * removed except the zero-width joiner that emoji sequences need, then trimmed. Lengths are then checked in
- * UTF-16 units, like an <input maxLength>.
- */
-export function normalizeDisplayText(text: string): string {
-  return text
-    .normalize('NFC')
-    .replace(/\s+/g, ' ')
-    .replace(/(?!\u200d)\p{C}/gu, '')
-    .replace(/ {2,}/g, ' ')
-    .trim()
-}
-
-/** `text` cut to `max` UTF-16 units without splitting a surrogate pair, then trimmed. */
-function truncate(text: string, max: number): string {
-  if (text.length <= max) return text
-  const cut = text.slice(0, max)
-  return (/[\uD800-\uDBFF]$/.test(cut) ? cut.slice(0, -1) : cut).trim()
-}
+// normalizeDisplayText and truncate live in text.ts (shared with the HTTP routes).
+export { normalizeDisplayText } from './text.ts'
 
 const PRESENCE_STATUSES: readonly string[] = ['online', 'idle', 'dnd'] satisfies PresenceStatus[]
 
@@ -280,6 +310,29 @@ const samePresence = (a: Presence, b: Presence) =>
   (a.activity === b.activity ||
     (a.activity !== null && b.activity !== null && a.activity.name === b.activity.name && a.activity.startedAt === b.activity.startedAt))
 
+const STATUS_RANK: Record<PresenceStatus, number> = { idle: 0, online: 1, dnd: 2 }
+
+/**
+ * An account's presence from those of its connected sockets (docs/SPEC.md §5.1): the status is the
+ * "strongest" one (dnd > online > idle: busy anywhere means busy; active anywhere means not away), the
+ * activity is the most recently started one among the sockets that have one. No sockets → DEFAULT_PRESENCE.
+ */
+export function aggregatePresence(perSocket: Iterable<Presence>): Presence {
+  let status: PresenceStatus | null = null
+  let activity: Activity | null = null
+  for (const p of perSocket) {
+    if (status === null || STATUS_RANK[p.status] > STATUS_RANK[status]) status = p.status
+    if (p.activity && (!activity || p.activity.startedAt > activity.startedAt)) activity = p.activity
+  }
+  return status === null ? DEFAULT_PRESENCE : { status, activity }
+}
+
+/** Longest `watching` array the server looks at (anything longer is ignored as a whole). */
+const MAX_WATCHING_PAYLOAD = 64
+
+/** The valid fields of a `presence:update`. */
+type PresencePatch = { status?: PresenceStatus; activity?: Activity | null }
+
 /** Sliding-window rate limiter: `allow(key, now)` records an event and says whether it is within `count` per `windowMs`. */
 function rateLimiter(limit: { count: number; windowMs: number }) {
   const times = new Map<string, number[]>()
@@ -290,6 +343,11 @@ function rateLimiter(limit: { count: number; windowMs: number }) {
       if (allowed) recent.push(now)
       times.set(key, recent)
       return allowed
+    },
+    /** When `allow(key, t)` would next succeed (`now` if it would now). */
+    nextAllowedAt(key: string, now: number): number {
+      const recent = (times.get(key) ?? []).filter((t) => now - t < limit.windowMs)
+      return recent.length < limit.count ? now : recent[recent.length - limit.count] + limit.windowMs
     },
     forget: (key: string) => times.delete(key),
   }
@@ -319,6 +377,11 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
     nudgeCooldownMs = NUDGE_COOLDOWN_MS,
     reactionLimit = { count: LIMITS.reactionsPerWindow, windowMs: LIMITS.reactionWindowMs },
     presenceLimit = { count: LIMITS.presenceUpdatesPerWindow, windowMs: LIMITS.presenceWindowMs },
+    embedFetch = fetch,
+    embedTimeoutMs = LIMITS.embedTimeoutMs,
+    embedLookupsPerMinute = LIMITS.embedLookupsPerMinute,
+    soundUploadsPerMinute = LIMITS.soundUploadsPerMinute,
+    soundCooldownMs = SOUND_COOLDOWN_MS,
     ...rest
   } = options
   const config: Config = { ...base, ...rest, livekit: { ...base.livekit, ...livekit } }
@@ -403,6 +466,26 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
     log,
   })
 
+  const embedRoutes = createEmbedRoutes({
+    users,
+    hashToken,
+    fetch: embedFetch,
+    timeoutMs: embedTimeoutMs,
+    lookupsPerMinute: embedLookupsPerMinute,
+    log,
+  })
+
+  const soundRoutes = createSoundRoutes({
+    dataDir: config.dataDir,
+    users,
+    sounds: db.sounds,
+    hashToken,
+    uploadsPerMinute: soundUploadsPerMinute,
+    onSound: (sound) => io.emit('sound:upsert', sound),
+    onSoundDeleted: (soundId) => io.emit('sound:deleted', { soundId }),
+    log,
+  })
+
   const http = createServer((req, res) => {
     const pathname = (req.url ?? '/').split('?')[0]
     if (pathname === '/health' && (req.method === 'GET' || req.method === 'HEAD')) {
@@ -412,6 +495,8 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
     }
     if (avatarRoutes.handle(req, res)) return
     if (attachmentRoutes.handle(req, res)) return
+    if (embedRoutes.handle(req, res)) return
+    if (soundRoutes.handle(req, res)) return
     if (accountRoutes.handle(req, res)) return
     // socket.io handles /socket.io/* itself; everything else is 404.
     if (!pathname.startsWith('/socket.io')) res.writeHead(404).end()
@@ -447,18 +532,26 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
     }
   }
 
+  /** userId -> time of their last accepted `sound:play` (all sockets). Expired entries are pruned on each play. */
+  const lastSoundPlays = new Map<string, number>()
+
   /** `message:react` requests per user (server-wide: shared by all of a user's sockets). */
   const reactionRate = rateLimiter(reactionLimit)
-  /** `presence:update` events per user (all sockets). */
+  /** `presence:update` events per socket (each device reports only its own state). */
   const presenceRate = rateLimiter(presenceLimit)
 
   /**
-   * userId -> presence, only for online users whose presence isn't DEFAULT_PRESENCE (docs/SPEC.md §5.1).
-   * Per account: the latest `presence:update` from any of its sockets wins. Dropped when the last socket goes.
+   * Presence is kept per socket (docs/SPEC.md §5.1): userId -> socketId -> what that connection reported
+   * (DEFAULT_PRESENCE until it sends `presence:update`). The account's presence is the aggregate over its
+   * connected sockets (see aggregatePresence). Entries go with their socket.
    */
+  const socketPresences = new Map<string, Map<string, Presence>>()
+  /** userId -> the aggregate everyone was last told, only for online users whose aggregate isn't DEFAULT_PRESENCE. */
   const presences = new Map<string, Presence>()
-  /** Stores a user's presence and broadcasts `presence:changed` if it differs from what others know. */
-  function setPresence(userId: string, next: Presence) {
+
+  /** Recomputes `userId`'s aggregate and broadcasts `presence:changed` if it differs from what others know. */
+  function refreshPresence(userId: string) {
+    const next = aggregatePresence(socketPresences.get(userId)?.values() ?? [])
     if (samePresence(presences.get(userId) ?? DEFAULT_PRESENCE, next)) return
     if (samePresence(next, DEFAULT_PRESENCE)) presences.delete(userId)
     else presences.set(userId, next)
@@ -466,16 +559,18 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
   }
 
   /**
-   * The `watching` list of a voice state from an untrusted payload: userIds currently in voice in `channelId`
-   * (per voiceStates), not `userId` itself, without duplicates, at most MAX_WATCHING. Anything else → [].
+   * The `watching` list of a voice state from an untrusted payload: strings of at most 64 characters, not
+   * `userId` itself, without duplicates, at most MAX_WATCHING. Not an array, or longer than
+   * MAX_WATCHING_PAYLOAD → []. Whether those users are in the same channel and streaming is left to clients
+   * (they may announce before the streamer does, e.g. right after a server restart).
    */
-  function sanitizeWatching(raw: unknown, userId: string, channelId: string): string[] {
-    if (!Array.isArray(raw)) return []
+  function sanitizeWatching(raw: unknown, userId: string): string[] {
+    if (!Array.isArray(raw) || raw.length > MAX_WATCHING_PAYLOAD) return []
     const out: string[] = []
     for (const id of raw) {
       if (out.length >= MAX_WATCHING) break
-      if (!isStr(id) || id === userId || out.includes(id)) continue
-      if (voiceStates.get(id)?.channelId === channelId) out.push(id)
+      if (!isStr(id) || !id || id.length > 64 || id === userId || out.includes(id)) continue
+      out.push(id)
     }
     return out
   }
@@ -505,11 +600,17 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
     if (!removed) return
     attachmentRoutes.removeFiles(removed.attachmentIds)
     avatarRoutes.removeFile(target.id)
+    // Their soundboard clips go with them.
+    soundRoutes.removeFiles(removed.soundIds)
+    for (const soundId of removed.soundIds) io.emit('sound:deleted', { soundId })
+    lastSoundPlays.delete(target.id)
+    embedRoutes.forgetUser(target.id)
     if (voiceStates.delete(target.id)) broadcastVoice()
     pruneNudges(Date.now(), target.id)
     reactionRate.forget(target.id)
-    presenceRate.forget(target.id)
-    // No presence:changed: user:removed drops everything clients know about the account.
+    // No presence:changed: user:removed drops everything clients know about the account (and its sockets'
+    // disconnects below then find nothing left to recompute).
+    socketPresences.delete(target.id)
     presences.delete(target.id)
     io.emit('user:removed', { userId: target.id })
     // Their reactions on other people's messages are gone too.
@@ -617,12 +718,19 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
     void socket.join(userRoom(userId))
     const count = (connections.get(userId) ?? 0) + 1
     connections.set(userId, count)
+    // This connection counts as plain online until it reports its own presence (right after connecting).
+    const ownPresences = socketPresences.get(userId) ?? new Map<string, Presence>()
+    ownPresences.set(socket.id, DEFAULT_PRESENCE)
+    socketPresences.set(userId, ownPresences)
     log(`[nexo] ${me().name} connected (${socket.id}, ${count} socket${count > 1 ? 's' : ''})`)
 
     // Device link for "welcome back" (Tailscale addresses only, see isTrustedDeviceAddress).
     if (isTrusted(socket.data.address)) devices.link(userId, socket.data.address)
 
     if (socket.data.created) socket.broadcast.emit('user:upsert', me())
+    // Your other devices were all idle: this new one counts as online (until it reports otherwise). Before
+    // bootstrap, so its `presence` already has the new aggregate.
+    if (count > 1) refreshPresence(userId)
     socket.emit('bootstrap', {
       serverName: config.serverName,
       serverId: db.serverId,
@@ -636,6 +744,7 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
       lastMentionAt: messages.lastMentionAt(userId),
       accessRequests: requestsFor(me()),
       presence: Object.fromEntries([...presences].filter(([id]) => connections.has(id))),
+      sounds: db.sounds.all(),
     })
     // The token is delivered exactly once.
     delete socket.data.newToken
@@ -776,6 +885,62 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
       ok(ack, messages.history(channel.id, before))
     }))
 
+    // ---------- pins / search / reorder ----------
+
+    // Anyone may pin; unpinning is for whoever pinned it, the author, or admins/owner. Idempotent.
+    socket.on('message:pin', guard('message:pin', (p, ack) => {
+      const msg = isObj(p) && isStr(p.messageId) ? messages.get(p.messageId) : undefined
+      if (!msg) return fail(ack, MESSAGE_ERRORS.notFound)
+      if (typeof p.pinned !== 'boolean') return fail(ack, MESSAGE_ERRORS.invalidPin)
+      if (!p.pinned && msg.pinned && msg.pinned.by !== userId && msg.userId !== userId && !isAdmin()) {
+        return fail(ack, MESSAGE_ERRORS.unpinOthers)
+      }
+      const result = messages.pin(msg.id, userId, p.pinned)
+      if (!result) return fail(ack, MESSAGE_ERRORS.notFound)
+      if (result === 'tooMany') return fail(ack, MESSAGE_ERRORS.tooManyPins)
+      if (result.changed) io.emit('message:updated', result.message)
+      ok(ack, null)
+    }))
+
+    socket.on('message:pins', guard('message:pins', (p, ack) => {
+      const channel = isObj(p) && isStr(p.channelId) ? channels.get(p.channelId) : undefined
+      if (!channel || channel.type !== 'text') return fail(ack, 'Channel not found')
+      ok(ack, messages.pins(channel.id))
+    }))
+
+    socket.on('message:search', guard('message:search', (p, ack) => {
+      if (!isObj(p) || !isStr(p.query)) return fail(ack, SEARCH_ERRORS.invalid)
+      if (p.query.length > SEARCH_QUERY_MAX) return fail(ack, SEARCH_ERRORS.tooLong)
+      const filter: { channelId?: string; authorId?: string; before?: number } = {}
+      if (p.channelId !== undefined && p.channelId !== null) {
+        const channel = isStr(p.channelId) ? channels.get(p.channelId) : undefined
+        if (!channel || channel.type !== 'text') return fail(ack, SEARCH_ERRORS.channelNotFound)
+        filter.channelId = channel.id
+      }
+      if (p.authorId !== undefined && p.authorId !== null) {
+        if (!isStr(p.authorId) || !p.authorId) return fail(ack, SEARCH_ERRORS.invalid)
+        filter.authorId = p.authorId
+      }
+      if (p.before !== undefined && p.before !== null) {
+        if (typeof p.before !== 'number' || !Number.isFinite(p.before)) return fail(ack, 'Invalid "before" timestamp')
+        filter.before = p.before
+      }
+      const words = searchWords(p.query)
+      // No words (empty, or only punctuation): only "everything by this author".
+      if (words.length === 0 && !filter.authorId) return fail(ack, SEARCH_ERRORS.noWords)
+      ok(ack, messages.search(words, filter))
+    }))
+
+    socket.on('channel:reorder', guard('channel:reorder', (p, ack) => {
+      if (!isAdmin()) return fail(ack, PERMISSION_ERRORS.manageChannels)
+      if (!isObj(p) || (p.type !== 'text' && p.type !== 'voice')) return fail(ack, REORDER_ERRORS.invalidType)
+      if (!Array.isArray(p.ids) || !p.ids.every(isStr)) return fail(ack, REORDER_ERRORS.changed)
+      const changed = channels.reorder(p.type, p.ids)
+      if (!changed) return fail(ack, REORDER_ERRORS.changed)
+      for (const channel of changed) io.emit('channel:upsert', channel)
+      ok(ack, null)
+    }))
+
     socket.on('typing', guard('typing', (p) => {
       if (!isObj(p) || !isStr(p.channelId)) return
       const now = Date.now()
@@ -854,7 +1019,7 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
         deafened: p.deafened === true,
         camera: p.camera === true,
         streaming: p.streaming === true,
-        watching: sanitizeWatching(p.watching, userId, channel.id),
+        watching: sanitizeWatching(p.watching, userId),
         socketId: socket.id,
       }
       const unchanged =
@@ -916,6 +1081,24 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
       ok(ack, null)
     }))
 
+    // Soundboard: played locally by each client in the caller's voice channel (not through a microphone).
+    socket.on('sound:play', guard('sound:play', (p, ack) => {
+      const sound = isObj(p) && isStr(p.soundId) ? db.sounds.get(p.soundId) : undefined
+      if (!sound) return fail(ack, SOUND_ERRORS.notFound)
+      const state = voiceStates.get(userId)
+      if (!state) return fail(ack, SOUND_ERRORS.notInVoice)
+      const now = Date.now()
+      for (const [uid, at] of lastSoundPlays) if (now - at >= soundCooldownMs) lastSoundPlays.delete(uid)
+      if (lastSoundPlays.has(userId)) return fail(ack, SOUND_ERRORS.cooldown)
+      lastSoundPlays.set(userId, now)
+      const played = { soundId: sound.id, userId, channelId: state.channelId }
+      // Only the sockets that own a voice state in that channel (not the members' other devices).
+      for (const v of voiceStates.values()) {
+        if (v.channelId === state.channelId) io.of('/').sockets.get(v.socketId)?.emit('sound:played', played)
+      }
+      ok(ack, null)
+    }))
+
     // --- profile ---
 
     socket.on('profile:update', guard('profile:update', (p, ack) => {
@@ -939,16 +1122,55 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
 
     // --- presence (status, activity) ---
 
+    /** Valid fields of rate-limited updates, applied (merged) once this socket's window allows it again. */
+    let pendingPresence: PresencePatch | null = null
+    let pendingPresenceTimer: ReturnType<typeof setTimeout> | null = null
+
+    /** Applies a validated patch to this socket's presence and recomputes the account's. */
+    function applyPresence(patch: PresencePatch) {
+      const own = socketPresences.get(userId)
+      const current = own?.get(socket.id)
+      if (!own || !current) return // disconnected (or account removed) meanwhile
+      own.set(socket.id, {
+        status: patch.status ?? current.status,
+        activity: patch.activity !== undefined ? patch.activity : current.activity,
+      })
+      refreshPresence(userId)
+    }
+
+    function flushPendingPresence() {
+      pendingPresenceTimer = null
+      if (!pendingPresence) return
+      const now = Date.now()
+      if (presenceRate.allow(socket.id, now)) {
+        const patch = pendingPresence
+        pendingPresence = null
+        applyPresence(patch)
+        return
+      }
+      pendingPresenceTimer = setTimeout(flushPendingPresence, Math.max(10, presenceRate.nextAllowedAt(socket.id, now) - now))
+      pendingPresenceTimer.unref?.()
+    }
+
     socket.on('presence:update', guard('presence:update', (p) => {
       if (!isObj(p)) return
       const now = Date.now()
-      // Dropped silently: clients re-send their full presence after every reconnect.
-      if (!presenceRate.allow(userId, now)) return
-      const next: Presence = { ...(presences.get(userId) ?? DEFAULT_PRESENCE) }
-      if (isStr(p.status) && PRESENCE_STATUSES.includes(p.status)) next.status = p.status as PresenceStatus
-      if (p.activity === null) next.activity = null
-      else if (p.activity !== undefined) next.activity = parseActivity(p.activity, now) ?? next.activity
-      setPresence(userId, next)
+      const patch: PresencePatch = {}
+      if (isStr(p.status) && PRESENCE_STATUSES.includes(p.status)) patch.status = p.status as PresenceStatus
+      if (p.activity === null) patch.activity = null
+      else if (p.activity !== undefined) {
+        const activity = parseActivity(p.activity, now)
+        if (activity) patch.activity = activity
+      }
+      if (patch.status === undefined && patch.activity === undefined) return
+      if (pendingPresence || !presenceRate.allow(socket.id, now)) {
+        // Over the limit: not lost, only delayed. The latest values are applied when the window allows,
+        // so a burst can't leave this device's presence (and the account's) stale.
+        pendingPresence = { ...pendingPresence, ...patch }
+        if (!pendingPresenceTimer) flushPendingPresence()
+        return
+      }
+      applyPresence(patch)
     }))
 
     // --- accounts (docs/SPEC-ACCOUNTS.md §2) ---
@@ -1005,11 +1227,16 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
         voiceStates.delete(userId)
         broadcastVoice()
       }
-      if (n <= 0) {
-        // Clients clear what they showed (status, activity) for someone who went offline.
-        setPresence(userId, DEFAULT_PRESENCE)
-        broadcastPresence()
-      }
+      if (pendingPresenceTimer) clearTimeout(pendingPresenceTimer)
+      pendingPresence = null
+      presenceRate.forget(socket.id)
+      const own = socketPresences.get(userId)
+      own?.delete(socket.id)
+      if (own && own.size === 0) socketPresences.delete(userId)
+      // The account's presence without this device (DEFAULT_PRESENCE when it was the last one: clients
+      // clear what they showed for someone who went offline).
+      refreshPresence(userId)
+      if (n <= 0) broadcastPresence()
       log(`[nexo] ${me().name} disconnected (${reason})`)
     })
   })
@@ -1018,6 +1245,8 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
 
   await new Promise<void>((resolve, reject) => {
     const onError = (err: Error) => {
+      embedRoutes.close()
+      soundRoutes.close()
       attachmentRoutes.close()
       accountRoutes.close()
       db.close()
@@ -1035,6 +1264,9 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
   let closing: Promise<void> | undefined
   const close = () =>
     (closing ??= (async () => {
+      embedRoutes.close()
+      soundRoutes.close()
+      lastSoundPlays.clear()
       attachmentRoutes.close()
       accountRoutes.close()
       io.disconnectSockets(true)

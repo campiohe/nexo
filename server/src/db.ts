@@ -2,8 +2,11 @@ import { DatabaseSync } from 'node:sqlite'
 import { mkdirSync } from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
+import type { Sound, SoundType } from '../../shared/protocol.ts'
 import type { Attachment, Channel, ChannelType, Message, Reaction, ReplyPreview, Role, User } from '../../shared/protocol.ts'
 import { MAX_REACTIONS_PER_MESSAGE, MESSAGE_PAGE_SIZE, REPLY_PREVIEW_LENGTH } from '../../shared/protocol.ts'
+import type { SearchResult } from '../../shared/protocol.ts'
+import { MAX_PINS_PER_CHANNEL, MENTION_TOKEN_RE, SEARCH_PAGE_SIZE } from '../../shared/protocol.ts'
 
 const SCHEMA = `
   PRAGMA journal_mode = WAL;
@@ -44,9 +47,15 @@ const SCHEMA = `
     -- the id (and its author, cleared when that account is removed) and shows a "deleted" preview.
     reply_to_id       TEXT NULL,
     reply_to_user_id  TEXT NULL,
-    mentions_everyone INTEGER NOT NULL DEFAULT 0
+    mentions_everyone INTEGER NOT NULL DEFAULT 0,
+    -- v0.8 (added by migrate() to older databases): pinned by whom ('' once that account is removed) and
+    -- when; both NULL = not pinned.
+    pinned_by         TEXT NULL,
+    pinned_at         INTEGER NULL
   );
   CREATE INDEX IF NOT EXISTS messages_by_channel ON messages (channel_id, created_at);
+  -- v0.8: search by author (and account removal).
+  CREATE INDEX IF NOT EXISTS messages_by_user ON messages (user_id, created_at);
 
   -- v0.3: chat images. message_id is NULL while the upload is pending (not yet claimed by a message).
   -- Created with IF NOT EXISTS, so older databases simply gain the table.
@@ -107,6 +116,37 @@ const SCHEMA = `
     PRIMARY KEY (message_id, emoji, user_id)
   );
   CREATE INDEX IF NOT EXISTS reactions_by_user ON reactions (user_id);
+
+  -- v0.8: full-text search (docs/SPEC.md §5.2). messages has a TEXT primary key, so its implicit rowid may be
+  -- renumbered by VACUUM and can't key an external-content FTS table. message_search_ids gives every message a
+  -- stable integer (INTEGER PRIMARY KEY), which is the rowid of its row in message_search: a contentless FTS5
+  -- index (no second copy of the text) over the content without <@userId> mention tokens. Rows are written
+  -- by messages.create / messages.edit (and reconciled by migrate()); the trigger drops them with the message,
+  -- however it goes (message:delete, channel ON DELETE CASCADE, account removal).
+  CREATE TABLE IF NOT EXISTS message_search_ids (
+    id          INTEGER PRIMARY KEY,
+    message_id  TEXT NOT NULL UNIQUE
+  );
+  CREATE VIRTUAL TABLE IF NOT EXISTS message_search USING fts5 (
+    body, content = '', contentless_delete = 1, tokenize = 'unicode61 remove_diacritics 2'
+  );
+  CREATE TRIGGER IF NOT EXISTS message_search_on_delete AFTER DELETE ON messages BEGIN
+    DELETE FROM message_search WHERE rowid = (SELECT id FROM message_search_ids WHERE message_id = old.id);
+    DELETE FROM message_search_ids WHERE message_id = old.id;
+  END;
+  -- v0.8: soundboard clips (audio in <dataDir>/sounds/<id>). Removing an account deletes its sounds
+  -- (users.remove does it explicitly to report their ids; the cascade is a safety net).
+  CREATE TABLE IF NOT EXISTS sounds (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    emoji       TEXT NULL,
+    uploader_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    duration_ms INTEGER NOT NULL,
+    type        TEXT NOT NULL,
+    size        INTEGER NOT NULL,
+    created_at  INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS sounds_by_uploader ON sounds (uploader_id);
 `
 
 export type Db = ReturnType<typeof openDb>
@@ -142,7 +182,29 @@ interface MessageRow {
   replyUserId: string | null
   replyContent: string | null
   replyHasAttachments: number
+  pinnedBy: string | null
+  pinnedAt: number | null
 }
+
+// ---------- pins / search / reorder ----------
+
+/** Most words of a search query used (the rest are ignored). */
+export const SEARCH_MAX_WORDS = 10
+
+/** What the search index stores for a message: the content (NFC) without `<@userId>` tokens. */
+const searchText = (content: string): string => content.normalize('NFC').replace(MENTION_TOKEN_RE, ' ')
+
+/**
+ * The words of a search query, as the index's tokenizer (unicode61) sees them: runs of letters, numbers and
+ * private-use characters (NFC), at most SEARCH_MAX_WORDS. Never pass raw user input to MATCH: each word is
+ * then quoted (searchMatch), so FTS5 syntax (`"`, `*`, `AND`, `col:`, parentheses) is just text.
+ */
+export function searchWords(query: string): string[] {
+  return (query.normalize('NFC').match(/[\p{L}\p{N}\p{Co}]+/gu) ?? []).slice(0, SEARCH_MAX_WORDS)
+}
+
+/** FTS5 MATCH expression: every word as a quoted prefix, all required. */
+const searchMatch = (words: string[]): string => words.map((w) => `"${w.replaceAll('"', '""')}"*`).join(' AND ')
 
 /**
  * Idempotent, additive migrations for databases created by older versions.
@@ -176,6 +238,12 @@ function migrate(db: DatabaseSync): void {
     // Here rather than in SCHEMA: the column may only exist after the ALTER above.
     db.exec(`CREATE INDEX IF NOT EXISTS messages_mentioning_everyone ON messages (channel_id, created_at)
              WHERE mentions_everyone = 1`)
+    // v0.8: pins (the index lists a channel's pins; here for the same reason as the one above).
+    if (!msgCols.has('pinned_by')) db.exec('ALTER TABLE messages ADD COLUMN pinned_by TEXT NULL')
+    if (!msgCols.has('pinned_at')) db.exec('ALTER TABLE messages ADD COLUMN pinned_at INTEGER NULL')
+    db.exec(`CREATE INDEX IF NOT EXISTS messages_pinned ON messages (channel_id, pinned_at)
+             WHERE pinned_at IS NOT NULL`)
+    reconcileSearchIndex(db)
     // Exactly one owner: the oldest account, when there is none yet.
     db.exec(`
       UPDATE users SET role = 'owner'
@@ -194,6 +262,35 @@ function migrate(db: DatabaseSync): void {
   } catch (err) {
     db.exec('ROLLBACK')
     throw err
+  }
+}
+
+/**
+ * Brings the search index in line with the messages table (inside migrate()'s transaction): indexes every
+ * message that has no entry (all of them, once, on a database from before v0.8; afterwards only messages
+ * written by an older server after a downgrade) in createdAt order, and drops entries of messages that no
+ * longer exist. Both are index-only lookups, so a no-op on every later start costs a few milliseconds.
+ */
+function reconcileSearchIndex(db: DatabaseSync): void {
+  const insertId = db.prepare('INSERT INTO message_search_ids (message_id) VALUES (?)')
+  const insertText = db.prepare('INSERT INTO message_search (rowid, body) VALUES (?, ?)')
+  const missing = db.prepare(
+    `SELECT id, content FROM messages m
+     WHERE NOT EXISTS (SELECT 1 FROM message_search_ids s WHERE s.message_id = m.id) ORDER BY created_at, id`,
+  )
+  for (const row of missing.iterate() as Iterable<{ id: string; content: string }>) {
+    insertText.run(insertId.run(row.id).lastInsertRowid, searchText(row.content))
+  }
+  const orphans = db
+    .prepare(
+      `SELECT id FROM message_search_ids s WHERE NOT EXISTS (SELECT 1 FROM messages m WHERE m.id = s.message_id)`,
+    )
+    .all() as { id: number }[]
+  const dropText = db.prepare('DELETE FROM message_search WHERE rowid = ?')
+  const dropId = db.prepare('DELETE FROM message_search_ids WHERE id = ?')
+  for (const { id } of orphans) {
+    dropText.run(id)
+    dropId.run(id)
   }
 }
 
@@ -221,9 +318,11 @@ export function openDb(dataDir: string) {
   const msgCols = `m.id, m.channel_id AS channelId, m.user_id AS userId, m.content, m.created_at AS createdAt,
     m.edited_at AS editedAt, m.mentions_everyone AS mentionsEveryone, m.reply_to_id AS replyToId,
     m.reply_to_user_id AS replyToUserId, r.id AS replyFoundId, r.user_id AS replyUserId, r.content AS replyContent,
-    (r.id IS NOT NULL AND EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = r.id)) AS replyHasAttachments`
+    (r.id IS NOT NULL AND EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = r.id)) AS replyHasAttachments,
+    m.pinned_by AS pinnedBy, m.pinned_at AS pinnedAt`
   const msgFrom = 'messages m LEFT JOIN messages r ON r.id = m.reply_to_id'
   const attCols = 'id, type, width, height, size'
+  const soundCols = 'id, name, emoji, uploader_id AS uploaderId, duration_ms AS durationMs, created_at AS createdAt'
 
   const q = {
     usersAll: db.prepare(`SELECT ${userCols} FROM users ORDER BY name`),
@@ -351,6 +450,49 @@ export function openDb(dataDir: string) {
        RETURNING id`,
     ),
     msgDeleteForUser: db.prepare('DELETE FROM messages WHERE user_id = ?'),
+
+    // ---------- pins / search / reorder ----------
+    pinSet: db.prepare('UPDATE messages SET pinned_by = ?, pinned_at = ? WHERE id = ? AND pinned_at IS NULL'),
+    pinClear: db.prepare('UPDATE messages SET pinned_by = NULL, pinned_at = NULL WHERE id = ? AND pinned_at IS NOT NULL'),
+    pinCount: db.prepare('SELECT COUNT(*) AS n FROM messages WHERE channel_id = ? AND pinned_at IS NOT NULL'),
+    pinMaxAt: db.prepare('SELECT COALESCE(MAX(pinned_at), 0) AS t FROM messages WHERE pinned_at IS NOT NULL'),
+    /** A channel's pins, most recently pinned first. */
+    pinList: db.prepare(
+      `SELECT ${msgCols} FROM ${msgFrom} WHERE m.channel_id = ? AND m.pinned_at IS NOT NULL
+       ORDER BY m.pinned_at DESC, m.id DESC LIMIT ?`,
+    ),
+    /** Pins made by a removed account stay, by nobody (''). */
+    pinForgetPinner: db.prepare("UPDATE messages SET pinned_by = '' WHERE pinned_by = ?"),
+    searchIdGet: db.prepare('SELECT id FROM message_search_ids WHERE message_id = ?'),
+    searchIdInsert: db.prepare('INSERT INTO message_search_ids (message_id) VALUES (?)'),
+    searchTextSet: db.prepare('INSERT OR REPLACE INTO message_search (rowid, body) VALUES (?, ?)'),
+    /** ?1 MATCH expression, ?2 channel id or NULL, ?3 author id or NULL, ?4 before, ?5 limit. */
+    searchText: db.prepare(
+      `SELECT ${msgCols} FROM message_search s
+         JOIN message_search_ids i ON i.id = s.rowid
+         JOIN messages m ON m.id = i.message_id
+         LEFT JOIN messages r ON r.id = m.reply_to_id
+       WHERE message_search MATCH ?1 AND (?2 IS NULL OR m.channel_id = ?2) AND (?3 IS NULL OR m.user_id = ?3)
+         AND m.created_at < ?4
+       ORDER BY m.created_at DESC, m.id DESC LIMIT ?5`,
+    ),
+    /** ?1 author id, ?2 channel id or NULL, ?3 before, ?4 limit. */
+    searchAuthor: db.prepare(
+      `SELECT ${msgCols} FROM ${msgFrom} WHERE m.user_id = ?1 AND (?2 IS NULL OR m.channel_id = ?2) AND m.created_at < ?3
+       ORDER BY m.created_at DESC, m.id DESC LIMIT ?4`,
+    ),
+    chansOfType: db.prepare(`SELECT ${chanCols} FROM channels WHERE type = ? ORDER BY position, created_at`),
+    chanSetPosition: db.prepare('UPDATE channels SET position = ? WHERE id = ?'),
+
+    soundsAll: db.prepare(`SELECT ${soundCols} FROM sounds ORDER BY created_at, rowid`),
+    soundById: db.prepare(`SELECT ${soundCols}, type FROM sounds WHERE id = ?`),
+    soundCount: db.prepare('SELECT COUNT(*) AS n FROM sounds'),
+    soundInsert: db.prepare(
+      'INSERT INTO sounds (id, name, emoji, uploader_id, duration_ms, type, size, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    ),
+    soundDelete: db.prepare('DELETE FROM sounds WHERE id = ?'),
+    soundDeleteForUser: db.prepare('DELETE FROM sounds WHERE uploader_id = ? RETURNING id'),
+    soundAllIds: db.prepare('SELECT id FROM sounds'),
   }
 
   /** Runs `fn` in a transaction (rolled back if it throws). */
@@ -430,6 +572,7 @@ export function openDb(dataDir: string) {
         reactions: [],
         mentions: [],
         mentionsEveryone: r.mentionsEveryone === 1,
+        pinned: r.pinnedAt !== null ? { by: r.pinnedBy ?? '', at: r.pinnedAt } : null,
       }
     })
     if (msgs.length === 0) return msgs
@@ -447,6 +590,19 @@ export function openDb(dataDir: string) {
   // To make that exact, message timestamps are kept strictly increasing across the whole server,
   // so two messages never share a createdAt and a page boundary never splits a tie.
   let lastCreatedAt = (q.msgMaxCreated.get() as { t: number }).t
+  // Pin times are kept strictly increasing the same way, so "most recently pinned first" has no ties.
+  let lastPinnedAt = (q.pinMaxAt.get() as { t: number }).t
+  const nextPinTimestamp = () => {
+    lastPinnedAt = Math.max(Date.now(), lastPinnedAt + 1)
+    return lastPinnedAt
+  }
+
+  /** (Re)indexes a message's content for search (in the caller's transaction). */
+  function indexForSearch(messageId: string, content: string) {
+    const row = q.searchIdGet.get(messageId) as { id: number } | undefined
+    const rowid = row ? row.id : q.searchIdInsert.run(messageId).lastInsertRowid
+    q.searchTextSet.run(rowid, searchText(content))
+  }
   const nextTimestamp = () => {
     lastCreatedAt = Math.max(Date.now(), lastCreatedAt + 1)
     return lastCreatedAt
@@ -503,10 +659,14 @@ export function openDb(dataDir: string) {
      * and the row itself, in one transaction. Returns the ids of the deleted attachments (their files, and
      * the avatar file, are the caller's to delete), or undefined if there is no such account.
      */
-    remove(id: string): { attachmentIds: string[]; messages: number; reactions: ReactionsUpdate[] } | undefined {
+    remove(
+      id: string,
+    ): { attachmentIds: string[]; soundIds: string[]; messages: number; reactions: ReactionsUpdate[] } | undefined {
       return transaction(() => {
         if (!users.get(id)) return undefined
         const attachmentIds = ids(q.attDeleteForUser.all(id, id))
+        // Their soundboard clips (files and `sound:deleted` are the caller's).
+        const soundIds = ids(q.soundDeleteForUser.all(id))
         // (Cascades to the reactions on and mentions in these messages.)
         const messages = Number(q.msgDeleteForUser.run(id).changes)
         // Their reactions on other people's messages, whose new lists are returned to be broadcast.
@@ -516,13 +676,15 @@ export function openDb(dataDir: string) {
         q.mentionDeleteForUser.run(id)
         // Replies to their (now deleted) messages forget who wrote the original.
         q.msgForgetReplyAuthor.run(id)
+        // Pins they made on other people's messages stay, pinned by nobody ('').
+        q.pinForgetPinner.run(id)
         q.tokenDeleteForUser.run(id)
         q.deviceDeleteForUser.run(id)
         q.userDelete.run(id)
         const lists = reactionsOf(reacted)
         const changed = q.msgChannels.all(JSON.stringify(reacted)) as unknown as { id: string; channelId: string }[]
         const reactions = changed.map((m) => ({ messageId: m.id, channelId: m.channelId, reactions: lists.get(m.id) ?? [] }))
-        return { attachmentIds, messages, reactions }
+        return { attachmentIds, soundIds, messages, reactions }
       })
     },
     /**
@@ -569,6 +731,28 @@ export function openDb(dataDir: string) {
         return removed
       })
     },
+    /**
+     * Sets the order of all channels of `type` (positions 0..n-1 in the order of `ids`) in one transaction.
+     * Returns the channels whose position changed, or undefined when `ids` isn't exactly the set of channels
+     * of that type (each once).
+     */
+    reorder(type: ChannelType, ids: string[]): Channel[] | undefined {
+      return transaction(() => {
+        const current = q.chansOfType.all(type) as unknown as Channel[]
+        const byId = new Map(current.map((c) => [c.id, c]))
+        if (ids.length !== current.length || new Set(ids).size !== ids.length || !ids.every((id) => byId.has(id))) {
+          return undefined
+        }
+        const changed: Channel[] = []
+        ids.forEach((id, position) => {
+          const channel = byId.get(id)!
+          if (channel.position === position) return
+          q.chanSetPosition.run(position, id)
+          changed.push({ ...channel, position })
+        })
+        return changed
+      })
+    },
   }
 
   const messages = {
@@ -594,6 +778,7 @@ export function openDb(dataDir: string) {
           }
         })
         for (const mentioned of mentions) q.mentionInsert.run(id, mentioned)
+        indexForSearch(id, content)
         return messages.get(id)!
       })
     },
@@ -607,6 +792,7 @@ export function openDb(dataDir: string) {
         if (q.msgEdit.run(content, Date.now(), mentionsEveryone ? 1 : 0, id).changes !== 1) return undefined
         q.mentionDeleteForMessage.run(id)
         for (const mentioned of mentions) q.mentionInsert.run(id, mentioned)
+        indexForSearch(id, content)
         return messages.get(id)
       })
     },
@@ -656,6 +842,52 @@ export function openDb(dataDir: string) {
       const rows = q.msgHistory.all(channelId, before, MESSAGE_PAGE_SIZE) as unknown as MessageRow[]
       return hydrate(rows.reverse())
     },
+
+    // ---------- pins / search ----------
+
+    /**
+     * Pins (`on`) or unpins a message (the caller checks it exists and who may unpin). `changed: false` when it
+     * already was so (nothing written); 'tooMany' when pinning in a channel that has MAX_PINS_PER_CHANNEL.
+     */
+    pin(messageId: string, userId: string, on: boolean): { changed: boolean; message: Message } | 'tooMany' | undefined {
+      return transaction(() => {
+        const msg = messages.get(messageId)
+        if (!msg) return undefined
+        if (on === (msg.pinned != null)) return { changed: false, message: msg }
+        if (on) {
+          if ((q.pinCount.get(msg.channelId) as { n: number }).n >= MAX_PINS_PER_CHANNEL) return 'tooMany'
+          q.pinSet.run(userId, nextPinTimestamp(), messageId)
+        } else {
+          q.pinClear.run(messageId)
+        }
+        return { changed: true, message: messages.get(messageId)! }
+      })
+    },
+    /** A channel's pinned messages, most recently pinned first (at most MAX_PINS_PER_CHANNEL). */
+    pins(channelId: string): Message[] {
+      return hydrate(q.pinList.all(channelId, MAX_PINS_PER_CHANNEL) as unknown as MessageRow[])
+    },
+    /**
+     * One page of search results, newest first: messages containing every word of `words` (each as a prefix;
+     * see searchWords), or with no words, every message of `authorId`. Optionally in one channel / by one
+     * author, created before `before`.
+     */
+    search(words: string[], filter: { channelId?: string; authorId?: string; before?: number } = {}): SearchResult {
+      const channelId = filter.channelId ?? null
+      const authorId = filter.authorId ?? null
+      const before = filter.before ?? Number.MAX_SAFE_INTEGER
+      const limit = SEARCH_PAGE_SIZE + 1
+      let rows: MessageRow[]
+      if (words.length > 0) {
+        rows = q.searchText.all(searchMatch(words), channelId, authorId, before, limit) as unknown as MessageRow[]
+      } else if (authorId !== null) {
+        rows = q.searchAuthor.all(authorId, channelId, before, limit) as unknown as MessageRow[]
+      } else {
+        rows = []
+      }
+      const hasMore = rows.length > SEARCH_PAGE_SIZE
+      return { messages: hydrate(rows.slice(0, SEARCH_PAGE_SIZE)), hasMore }
+    },
   }
 
   const attachments = {
@@ -674,6 +906,30 @@ export function openDb(dataDir: string) {
     /** Deletes pending uploads created before `cutoff` (ms) and returns their ids. */
     deletePendingBefore: (cutoff: number): string[] => ids(q.attDeletePendingBefore.all(cutoff)),
     allIds: (): Set<string> => new Set(ids(q.attAllIds.all())),
+  }
+
+  const sounds = {
+    /** The soundboard, oldest first. */
+    all: (): Sound[] => q.soundsAll.all() as unknown as Sound[],
+    /** A sound with its stored media type (for serving). */
+    get: (id: string): (Sound & { type: SoundType }) | undefined => q.soundById.get(id) as (Sound & { type: SoundType }) | undefined,
+    count: (): number => (q.soundCount.get() as { n: number }).n,
+    /**
+     * Records a sound (the file must already be in place) unless the board already has `max` sounds
+     * (undefined then). Checked and inserted in one transaction. The caller validates the fields and that the
+     * uploader exists.
+     */
+    create(s: Omit<Sound, 'id' | 'createdAt'> & { id: string; type: SoundType; size: number }, max: number): Sound | undefined {
+      return transaction(() => {
+        if (sounds.count() >= max) return undefined
+        const createdAt = Date.now()
+        q.soundInsert.run(s.id, s.name, s.emoji, s.uploaderId, s.durationMs, s.type, s.size, createdAt)
+        return { id: s.id, name: s.name, emoji: s.emoji, uploaderId: s.uploaderId, durationMs: s.durationMs, createdAt }
+      })
+    },
+    /** True if it existed. */
+    delete: (id: string): boolean => q.soundDelete.run(id).changes === 1,
+    allIds: (): Set<string> => new Set(ids(q.soundAllIds.all())),
   }
 
   const devices = {
@@ -703,6 +959,7 @@ export function openDb(dataDir: string) {
     channels,
     messages,
     attachments,
+    sounds,
     close(): void {
       if (db.isOpen) db.close()
     },

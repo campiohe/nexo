@@ -191,6 +191,18 @@ describe('custom status text (profile:update)', () => {
     assert.equal(user.statusText, 'café')
   })
 
+  test('subdivision flags keep their tag characters; stray tag characters are stripped', async () => {
+    const england = '\u{1F3F4}\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}'
+    const scotland = '\u{1F3F4}\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}'
+    let user = await requestOk<User>(alice.socket, 'profile:update', { statusText: `go ${england}${scotland}!` })
+    assert.equal(user.statusText, `go ${england}${scotland}!`)
+    user = await requestOk<User>(alice.socket, 'profile:update', { statusText: 'a\u{E0067}\u{E007F}b \u{1F3F4}' })
+    assert.equal(user.statusText, 'ab \u{1F3F4}')
+    // Back to what the next test expects.
+    user = await requestOk<User>(alice.socket, 'profile:update', { statusText: 'cafe\u0301' })
+    assert.equal(user.statusText, 'caf\u00e9')
+  })
+
   test('only color still works (older clients) and keeps the status', async () => {
     const user = await requestOk<User>(alice.socket, 'profile:update', { color: '#ABCDEF' })
     assert.equal(user.color, '#abcdef')
@@ -343,13 +355,13 @@ describe('presence (status and activity)', () => {
 
   test('kept while another socket of the account is connected; cleared when the last one leaves', async () => {
     const second = await connect(server.url, { token: alice.token })
-    // Any socket of the account can change it (latest wins).
-    const changed = changedFor(alice.id, (p) => p.status === 'idle')
-    send(second.socket, 'presence:update', { status: 'idle' })
-    await changed
+    // The new socket counts as online, but alice is dnd elsewhere: dnd wins, nothing changes.
     assert.deepEqual(second.boot.presence?.[alice.id]?.activity?.name, 'Factorio')
+    assert.equal(second.boot.presence?.[alice.id]?.status, 'dnd')
 
     const none = collect(bob.socket, 'presence:changed', (e) => e.userId === alice.id)
+    send(second.socket, 'presence:update', { status: 'idle' })
+    await sync(second.socket)
     const stillOnline = nextEvent(bob.socket, 'user:upsert', (u) => u.id === alice.id)
     second.socket.close()
     // A later event from alice proves the disconnect above was handled first.
@@ -398,25 +410,145 @@ describe('presence (status and activity)', () => {
   })
 })
 
+describe('presence across several devices (aggregate over sockets)', () => {
+  let server: NexoInstance
+  let a: Conn
+  let b: Conn
+  let bob: Conn
+
+  before(async () => {
+    server = await boot()
+    a = await join(server.url, 'Alice')
+    bob = await join(server.url, 'Bob')
+    b = await connect(server.url, { token: a.token })
+  })
+  after(() => server.close())
+
+  const changedFor = (match: (p: Presence) => boolean = () => true) =>
+    nextEvent(bob.socket, 'presence:changed', (e) => e.userId === a.id && match(e.presence))
+  /** Sends updates and asserts that bob saw no `presence:changed` for alice. */
+  async function noChange(sends: [Conn, Record<string, unknown>][]) {
+    const events = collect(bob.socket, 'presence:changed', (e) => e.userId === a.id)
+    for (const [conn, p] of sends) {
+      send(conn.socket, 'presence:update', p)
+      await sync(conn.socket)
+    }
+    await delay(100)
+    assert.deepEqual(events.stop(), [])
+  }
+
+  test('dnd on one device wins over online on another; no broadcast when the aggregate is unchanged', async () => {
+    const dnd = changedFor((p) => p.status === 'dnd')
+    send(a.socket, 'presence:update', { status: 'dnd' })
+    await dnd
+    // B saying it's online (e.g. after reconnecting) doesn't undo A's Do Not Disturb.
+    await noChange([[b, { status: 'online' }], [b, { status: 'idle' }], [b, { status: 'online' }]])
+    const carol = await join(server.url, 'Carol')
+    assert.deepEqual(carol.boot.presence, { [a.id]: { status: 'dnd', activity: null } }, 'bootstrap carries the aggregate')
+    carol.socket.close()
+  })
+
+  test('idle on one device, online on another → online; idle only when every device is', async () => {
+    // A: dnd → idle while B is online: the account is online.
+    const online = changedFor((p) => p.status === 'online')
+    send(a.socket, 'presence:update', { status: 'idle' })
+    assert.deepEqual((await online).presence, DEFAULT_PRESENCE)
+    const idle = changedFor((p) => p.status === 'idle')
+    send(b.socket, 'presence:update', { status: 'idle' })
+    await idle
+    // A stays idle (its own choice) when B comes back.
+    const back = changedFor((p) => p.status === 'online')
+    send(b.socket, 'presence:update', { status: 'online' })
+    await back
+  })
+
+  test("a device disconnecting: recomputed from the remaining ones", async () => {
+    const idle = changedFor((p) => p.status === 'idle')
+    b.socket.close()
+    await idle // A is idle, B (online) is gone
+    // A new device counts as online until it reports otherwise.
+    const online = changedFor((p) => p.status === 'online')
+    b = await connect(server.url, { token: a.token })
+    await online
+    assert.equal(b.boot.presence?.[a.id], undefined, 'bootstrap: the aggregate with the new socket (default)')
+    const idleAgain = changedFor((p) => p.status === 'idle')
+    send(b.socket, 'presence:update', { status: 'idle' })
+    await idleAgain
+  })
+
+  test('activity: the most recently started one; cleared when its device leaves', async () => {
+    const now = Date.now()
+    let changed = changedFor((p) => p.activity?.name === 'Old Game')
+    send(a.socket, 'presence:update', { status: 'online', activity: { name: 'Old Game', startedAt: now - 60_000 } })
+    await changed
+    changed = changedFor((p) => p.activity?.name === 'New Game')
+    send(b.socket, 'presence:update', { activity: { name: 'New Game', startedAt: now - 1000 } })
+    assert.deepEqual((await changed).presence, { status: 'online', activity: { name: 'New Game', startedAt: now - 1000 } })
+    // An older activity on another device doesn't replace the newer one.
+    await noChange([[a, { activity: { name: 'Older Game', startedAt: now - 120_000 } }]])
+    // B stops playing: A's game shows again.
+    changed = changedFor((p) => p.activity?.name === 'Older Game')
+    send(b.socket, 'presence:update', { activity: null })
+    await changed
+    // A (the one playing) disconnects while B stays: the activity goes, B's status remains (idle).
+    changed = changedFor()
+    a.socket.close()
+    assert.deepEqual((await changed).presence, { status: 'idle', activity: null })
+  })
+})
+
 describe('presence rate limit', () => {
-  test('excess updates per user are dropped silently', async () => {
-    const server = await boot({ presenceLimit: { count: 3, windowMs: 60_000 } })
+  test('per socket: excess updates are delayed, and the latest values applied when the window allows', async () => {
+    const server = await boot({ presenceLimit: { count: 3, windowMs: 400 } })
     try {
       const alice = await join(server.url, 'Alice')
       const bob = await join(server.url, 'Bob')
       const second = await connect(server.url, { token: alice.token })
-      const events = collect(bob.socket, 'presence:changed', (e) => e.userId === alice.id)
-      for (const status of ['dnd', 'idle', 'dnd']) send(alice.socket, 'presence:update', { status })
-      await sync(alice.socket)
-      // The budget is per account, shared by all of its sockets.
-      for (const status of ['idle', 'online']) send(second.socket, 'presence:update', { status })
+      // The second device is idle, so the first one alone decides between online / idle / dnd below.
+      send(second.socket, 'presence:update', { status: 'idle' })
       await sync(second.socket)
-      await delay(150)
-      assert.deepEqual(events.stop().map((e) => e.presence.status), ['dnd', 'idle', 'dnd'])
+      const events = collect(bob.socket, 'presence:changed', (e) => e.userId === alice.id)
+      for (const status of ['dnd', 'idle', 'dnd', 'idle', 'online']) send(alice.socket, 'presence:update', { status })
+      send(alice.socket, 'presence:update', { activity: { name: 'Late Game', startedAt: Date.now() } })
+      await sync(alice.socket)
+      await delay(100)
+      assert.deepEqual(events.seen.map((e) => e.presence.status), ['dnd', 'idle', 'dnd'])
+      // The second socket has its own budget: its update goes through (and changes nothing: the first one is
+      // dnd), and doesn't end the first socket's wait.
+      send(second.socket, 'presence:update', { status: 'idle', activity: null })
+      await sync(second.socket)
+      await delay(50)
+      assert.equal(events.seen.length, 3)
+      // The dropped ones were merged (online + Late Game) and applied once the window let them through.
+      const late = await nextEvent(bob.socket, 'presence:changed', (e) => e.userId === alice.id && e.presence.status === 'online')
+      assert.equal(late.presence.activity?.name, 'Late Game')
+      await delay(50)
+      assert.deepEqual(events.stop().map((e) => e.presence.status), ['dnd', 'idle', 'dnd', 'online'])
       // Bob's own budget is separate.
       const own = nextEvent(alice.socket, 'presence:changed', (e) => e.userId === bob.id)
       send(bob.socket, 'presence:update', { status: 'idle' })
       await own
+    } finally {
+      await server.close()
+    }
+  })
+
+  test('a pending update is dropped with its socket', async () => {
+    const server = await boot({ presenceLimit: { count: 1, windowMs: 300 } })
+    try {
+      const alice = await join(server.url, 'Alice')
+      const bob = await join(server.url, 'Bob')
+      const second = await connect(server.url, { token: alice.token })
+      const dnd = nextEvent(bob.socket, 'presence:changed', (e) => e.userId === alice.id)
+      send(second.socket, 'presence:update', { status: 'dnd' })
+      await dnd
+      send(second.socket, 'presence:update', { status: 'online', activity: { name: 'Ghost', startedAt: Date.now() } })
+      await sync(second.socket)
+      const events = collect(bob.socket, 'presence:changed', (e) => e.userId === alice.id)
+      second.socket.close()
+      await delay(500)
+      // Only the recompute after the disconnect (alice's first socket: plain online), never the pending one.
+      assert.deepEqual(events.stop().map((e) => e.presence), [DEFAULT_PRESENCE])
     } finally {
       await server.close()
     }
@@ -473,24 +605,42 @@ describe('voice state: watching', () => {
     assert.deepEqual(s.watching, [])
   })
 
-  test('kept: users in the same channel; dropped: self, duplicates, other channels, unknown ids, non-strings', async () => {
+  test('only the shape is checked: dropped self, duplicates, non-strings, empty and too long ids', async () => {
     const s = await setVoice(
       owner,
       bob,
-      { channelId: lounge.id, watching: [carol.id, carol.id, owner.id, dave.id, 'nope', 5, bob.id] as string[] },
+      { channelId: lounge.id, watching: [carol.id, carol.id, owner.id, dave.id, 'nope', 5, '', 'x'.repeat(65), bob.id] as string[] },
       (v) => !!v,
     )
-    assert.deepEqual(s.watching, [carol.id, bob.id])
+    // Users in other channels (or not in voice yet) are kept: clients filter by channel.
+    assert.deepEqual(s.watching, [carol.id, dave.id, 'nope', bob.id])
+  })
+
+  test('an array longer than 64 is ignored as a whole', async () => {
+    await setVoice(owner, bob, { channelId: lounge.id, watching: [carol.id] }, (v) => v?.watching?.length === 1)
+    const s = await setVoice(owner, bob, { channelId: lounge.id, watching: [bob.id, ...Array(64).fill('x')] }, (v) => v?.watching?.length === 0)
+    assert.deepEqual(s.watching, [])
+  })
+
+  test('watching someone who announces later (e.g. after a server restart) is kept', async () => {
+    const late = await join(server.url, 'Latecomer')
+    const s = await setVoice(owner, bob, { channelId: lounge.id, watching: [late.id] }, (v) => v?.watching?.[0] === late.id)
+    assert.deepEqual(s.watching, [late.id])
+    await setVoice(late, owner, { channelId: lounge.id, streaming: true }, (v) => v?.channelId === lounge.id)
+    assert.deepEqual(stateOf(seenVoice.get(bob.socket)!, owner.id)?.watching, [late.id])
+    const left = nextEvent(owner.socket, 'voice:states', (st) => !stateOf(st, late.id))
+    late.socket.close()
+    await left
   })
 
   test('a change of watching alone is broadcast; the same list is not', async () => {
-    let s = await setVoice(owner, bob, { channelId: lounge.id, watching: [bob.id] }, (v) => v?.watching?.length === 1)
+    let s = await setVoice(owner, bob, { channelId: lounge.id, watching: [bob.id] }, (v) => v?.watching?.[0] === bob.id)
     assert.deepEqual(s.watching, [bob.id])
 
     const events = collect(bob.socket, 'voice:states')
     send(owner.socket, 'voice:state', { channelId: lounge.id, muted: false, deafened: false, camera: false, streaming: false, watching: [bob.id] })
-    // Same list after filtering (other-channel ids dropped) is unchanged too.
-    send(owner.socket, 'voice:state', { channelId: lounge.id, muted: false, deafened: false, camera: false, streaming: false, watching: [bob.id, dave.id] })
+    // Same list after sanitizing (self and duplicates dropped) is unchanged too.
+    send(owner.socket, 'voice:state', { channelId: lounge.id, muted: false, deafened: false, camera: false, streaming: false, watching: [bob.id, owner.id, bob.id] })
     await sync(owner.socket)
     await delay(150)
     assert.deepEqual(events.stop(), [])
@@ -528,8 +678,8 @@ describe('voice state: watching', () => {
       streaming: false,
       watching: [],
     })
-    // In the new channel, the people there can be watched.
-    const s = await setVoice(bob, owner, { channelId: gaming.id, watching: [dave.id, carol.id] }, (v) => v?.watching?.length === 1)
+    // The client announces what it watches in the new channel.
+    const s = await setVoice(bob, owner, { channelId: gaming.id, watching: [dave.id] }, (v) => v?.watching?.length === 1)
     assert.deepEqual(s.watching, [dave.id])
   })
 })

@@ -31,9 +31,15 @@ export interface User {
 export const STATUS_TEXT_MAX = 64
 
 /**
- * Presence beyond online/offline (docs/SPEC.md). Ephemeral (memory only), per account: the latest
- * `presence:update` from any of the account's sockets wins; dropped when its last socket disconnects.
- * - 'idle': set automatically by the client after inactivity (and back to 'online' on input).
+ * Presence beyond online/offline (docs/SPEC.md). Ephemeral (memory only) and kept per connection: each
+ * device (socket) reports only its own state with `presence:update` (DEFAULT_PRESENCE until it does), and
+ * the account's presence that everyone sees is the aggregate over its connected sockets, recomputed on every
+ * update and every disconnect:
+ * - status: 'dnd' if any socket is dnd, else 'online' if any is online, else 'idle' (busy anywhere = busy;
+ *   active anywhere = not away);
+ * - activity: the one with the latest `startedAt` among the sockets that have one (null if none).
+ * Clients never adopt the aggregate as their own choice: each keeps its own status (per device).
+ * - 'idle': set automatically by the client after inactivity (and back to 'online' on input), or picked.
  * - 'dnd': chosen by the user; their client suppresses notification popups and sounds (wake-ups still ring).
  */
 export type PresenceStatus = 'online' | 'idle' | 'dnd'
@@ -117,7 +123,10 @@ export interface Message {
   mentions?: string[]
   /** The content contains the `@everyone` token. */
   mentionsEveryone?: boolean
-  /** Pinned to its channel (`message:pin`): by whom and when. null/absent = not pinned. */
+  /**
+   * Pinned to its channel (`message:pin`): by whom and when. null/absent = not pinned. `by` is '' once the
+   * pinner's account was removed (the pin stays).
+   */
   pinned?: { by: string; at: number } | null
 }
 
@@ -139,7 +148,7 @@ export const SEARCH_QUERY_MAX = 200
 export interface Embed {
   /** The link as it appears in the message. */
   url: string
-  /** e.g. 'YouTube', 'Twitch', 'Spotify'. */
+  /** 'YouTube', 'Spotify', 'SoundCloud', 'Vimeo' or 'Reddit' (more may come; show it as text). */
   provider: string
   kind: 'video' | 'audio' | 'post'
   title: string
@@ -153,7 +162,7 @@ export const MAX_EMBEDS_PER_MESSAGE = 3
 /** A soundboard clip (docs/SPEC.md). Audio at GET /sounds/:id. */
 export interface Sound {
   id: string
-  /** 1..SOUND_NAME_MAX characters. */
+  /** 1..SOUND_NAME_MAX UTF-16 units, normalized like statusText. */
   name: string
   /** Optional single emoji (EMOJI_RE) shown on the button. */
   emoji: string | null
@@ -219,8 +228,10 @@ export interface VoiceStatePatch {
   streaming: boolean
   /**
    * userIds whose screen share this user is watching (opted in with "Watch stream"); at most
-   * MAX_WATCHING, all must be in the same voice channel (the server drops others). Older clients omit it
-   * (= watching nothing known).
+   * MAX_WATCHING. The server only checks the shape (strings of at most 64 characters, not yourself, no
+   * duplicates; an array longer than 64 is ignored as a whole), not whether those users are in the same
+   * channel or streaming (they may announce after you, e.g. after a server restart): clients count a viewer
+   * only for a streamer in the viewer's channel who is streaming. Older clients omit it (= watching nothing known).
    */
   watching?: string[]
 }
@@ -256,7 +267,7 @@ export interface Bootstrap {
    * with an unread mention. Older servers omit it.
    */
   lastMentionAt?: Record<string, number>
-  /** userId -> presence, for online users whose presence isn't DEFAULT_PRESENCE. Older servers omit it. */
+  /** userId -> aggregate presence, for online users whose presence isn't DEFAULT_PRESENCE. Older servers omit it. */
   presence?: Record<string, Presence>
   /** The soundboard, oldest first. Older servers omit it. */
   sounds?: Sound[]
@@ -325,12 +336,14 @@ export interface ClientToServerEvents {
    * it, the message's author, or admins/owner. Idempotent. Broadcasts `message:updated` with `pinned` set.
    */
   'message:pin': (p: { messageId: string; pinned: boolean }, ack: Ack<null>) => void
-  /** A channel's pinned messages, most recently pinned first. */
+  /** A text channel's pinned messages, most recently pinned first (at most MAX_PINS_PER_CHANNEL). */
   'message:pins': (p: { channelId: string }, ack: Ack<Message[]>) => void
   /**
    * Full-text search (case and accent insensitive; each word matches as a prefix, all words must match).
-   * Optional filters: one channel, one author. `before` pages to older results. `query` may be empty only
-   * when `authorId` is given. Fails for a query over SEARCH_QUERY_MAX characters.
+   * Words are runs of letters and numbers (punctuation separates them; at most the first 10 are used; `<@id>`
+   * mention tokens are not searchable). Optional filters: one text channel, one author. `before` pages to
+   * older results. `query` may have no words only when `authorId` is given (then: that author's messages).
+   * Fails for a query over SEARCH_QUERY_MAX characters.
    */
   'message:search': (
     p: { query: string; channelId?: string; authorId?: string; before?: number },
@@ -343,8 +356,9 @@ export interface ClientToServerEvents {
   'channel:reorder': (p: { type: ChannelType; ids: string[] }, ack: Ack<null>) => void
   /**
    * Play a soundboard clip to your voice channel. You must be in voice; at most one per SOUND_COOLDOWN_MS
-   * (ack error otherwise). The server broadcasts `sound:played` to the sockets of everyone in that channel;
-   * each client plays it locally (not through anyone's microphone), unless deafened.
+   * (ack error otherwise). The server sends `sound:played` to the voice-owning socket of everyone in that
+   * channel (the caller included); each client plays it locally (not through anyone's microphone), unless
+   * deafened.
    */
   'sound:play': (p: { soundId: string }, ack: Ack<null>) => void
   'message:history': (p: { channelId: string; before?: number }, ack: Ack<Message[]>) => void
@@ -360,9 +374,11 @@ export interface ClientToServerEvents {
    */
   'profile:update': (p: { color?: string; statusText?: string | null }, ack: Ack<User>) => void
   /**
-   * Set your status and/or activity (omitted fields keep their value). No ack; invalid fields are ignored.
-   * Rate limited server-side (excess updates are dropped). Broadcasts `presence:changed` when it changed.
-   * Clients re-send their full presence after every (re)connect.
+   * Set this connection's status and/or activity (omitted fields keep their value). No ack; invalid fields
+   * are ignored. The account's presence is the aggregate over its sockets (see PresenceStatus); a
+   * `presence:changed` is broadcast only when that aggregate changed. Rate limited per socket: excess
+   * updates are delayed (merged, latest values win) until the window allows, never lost. A new connection
+   * counts as DEFAULT_PRESENCE, so clients send their full presence after every (re)connect.
    */
   'presence:update': (p: { status?: PresenceStatus; activity?: Activity | null }) => void
   /** Owner only. Can't change the owner's own role (ownership moves with `nexo-server owner <name>`). */
@@ -398,7 +414,10 @@ export interface ServerToClientEvents {
   'sound:deleted': (p: { soundId: string }) => void
   /** `userId` played a clip in voice channel `channelId` (only sent to that channel's members). */
   'sound:played': (p: { soundId: string; userId: string; channelId: string }) => void
-  /** `userId`'s presence changed (DEFAULT_PRESENCE when they went back to plain online or went offline). */
+  /**
+   * `userId`'s aggregate presence changed (DEFAULT_PRESENCE when they went back to plain online or went
+   * offline). Also sent for yourself: it's what others see, not something to adopt as your own status.
+   */
   'presence:changed': (p: { userId: string; presence: Presence }) => void
   'channel:upsert': (c: Channel) => void
   'channel:deleted': (p: { channelId: string }) => void
@@ -409,8 +428,9 @@ export interface ServerToClientEvents {
    */
   'message:deleted': (p: { messageId: string; channelId: string }) => void
   /**
-   * An edited message, complete (replace the stored copy; keep its position). Loaded replies whose
-   * `replyTo.id` is this message should refresh their preview content (cut to REPLY_PREVIEW_LENGTH).
+   * An edited, pinned or unpinned message, complete (replace the stored copy; keep its position). Loaded
+   * replies whose `replyTo.id` is this message should refresh their preview content (cut to
+   * REPLY_PREVIEW_LENGTH).
    */
   'message:updated': (m: Message) => void
   /** The full, new reaction list of a message. */
@@ -502,8 +522,10 @@ export const MAX_MESSAGE_LENGTH = 4000
 // ---- Link previews (HTTP, not socket.io) ----
 // GET /api/embed?url=<encoded url>   Authorization: Bearer <device token>
 //     → 200 { embed: Embed } | 204 (no preview for this link) | 400 bad url | 401 | 429 too many requests
-// Only allowlisted providers (YouTube, Twitch, Spotify, SoundCloud, …) via their oEmbed endpoints; results
-// are cached by the server. Clients cache too and show at most MAX_EMBEDS_PER_MESSAGE per message.
+// Only allowlisted providers (YouTube, Spotify, SoundCloud, Vimeo, Reddit; not Twitch or X, which have no
+// usable keyless oEmbed) via their oEmbed endpoints; results are cached by the server. Clients cache too
+// and show at most MAX_EMBEDS_PER_MESSAGE per message. Thumbnails are https URLs on the provider's image CDN
+// (*.ytimg.com, *.scdn.co, *.spotifycdn.com, *.sndcdn.com, *.vimeocdn.com, *.redditmedia.com, *.redd.it).
 
 // ---- Soundboard (HTTP, not socket.io) ----
 // POST   /api/sounds?name=<name>&emoji=<emoji>&durationMs=<ms>   Authorization: Bearer <device token>

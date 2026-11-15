@@ -533,6 +533,7 @@ describe('migration of a pre-v0.6 database', () => {
         reactions: [],
         mentions: [],
         mentionsEveryone: false,
+        pinned: null,
       })
       // New features work on the upgraded database.
       const reply = db.messages.create('c1', 'u2', 'hi @everyone', [], {
