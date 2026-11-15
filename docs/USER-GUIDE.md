@@ -7,6 +7,9 @@ How to install Nexo, join a server, and use its features. Hosting a server is co
 - [Join a server](#join-a-server)
 - [Profile pictures](#profile-pictures)
 - [Images in chat](#images-in-chat)
+- [Messages](#messages)
+- [Notifications](#notifications)
+- [Status, activity and profile cards](#status-activity-and-profile-cards)
 - [Keybinds](#keybinds)
 - [Push to talk](#push-to-talk)
 - [Noise suppression](#noise-suppression)
@@ -14,6 +17,8 @@ How to install Nexo, join a server, and use its features. Hosting a server is co
 - [Wake up a friend](#wake-up-a-friend)
 - [Moving people between voice channels](#moving-people-between-voice-channels)
 - [Picture in picture](#picture-in-picture)
+- [Soundboard](#soundboard)
+- [Appearance](#appearance)
 - [App settings](#app-settings)
 - [Updates](#updates)
 - [Test builds](#test-builds)
@@ -60,9 +65,14 @@ No accounts, no email: the app remembers you on this device. To check that you c
 
 ## Profile pictures
 
-In **Settings → Profile**, choose **Upload picture** (PNG, JPEG, WebP or GIF; GIFs keep their first frame),
-then drag and zoom the square crop. The app resizes the picture to 256×256 and uploads it as WebP
-(≤ 512 KB). **Remove** goes back to the colored initials. Everyone sees the change right away.
+In **Settings → Profile**, choose **Upload picture** (PNG, JPEG, WebP or GIF), then drag and zoom the
+square crop. The app resizes the picture to 256×256 and uploads it as WebP (≤ 512 KB). **Remove** goes
+back to the colored initials. Everyone sees the change right away.
+
+**Animated pictures:** an animated GIF, WebP or PNG stays animated. Nexo crops every frame, resizes it to
+160×160 and saves it as a GIF of at most 2 MB, simplifying it (fewer frames or colors, at most 10 seconds)
+when needed and telling you if it did. To save CPU while you play, animated pictures show their first
+frame and only move when you hover over them, on profile cards, and while that person is talking.
 
 ## Images in chat
 
@@ -75,6 +85,54 @@ from the server.
 
 Older clients show only the text of messages with images. Older servers don't accept images, and the
 app says so.
+
+## Messages
+
+Hover over a message for its action bar: quick reactions, **React** (emoji picker), **Reply**, **Pin**,
+**Edit** (your own messages) and **Delete**. Arrow keys move between messages.
+
+- **Reactions:** click a reaction to add or remove yours; hover to see who reacted. Up to 20 different
+  emoji per message.
+- **Replies:** the reply shows a preview of the original; click it to jump there. Replying notifies the
+  person you reply to.
+- **Edit:** also with **↑** in an empty message box. Enter saves, Escape cancels; edited messages show
+  "(edited)".
+- **Mentions:** type `@` and pick someone, or `@everyone`. Messages that mention you are highlighted, and
+  the channel gets a red badge until you read it.
+- **Formatting:** `**bold**`, `*italic*`, `__underline__`, `~~strike~~`, `||spoiler||` (click to reveal),
+  `` `code` ``, code blocks with ```` ``` ```` (with a Copy button), `> quotes`, `#` headings and `-` lists.
+  Shortcuts: Ctrl+B, Ctrl+I, Ctrl+U, Ctrl+E (code), Ctrl+Shift+X (strike). A message with only 1–3 emoji
+  shows them large.
+- **Emoji:** the smiley button in the message box, or type `:` and a name (`:joy:`, `:fire:`, `:+1:`).
+- **Pins:** anyone can pin a message (up to 50 per channel). The pin button at the top of a text channel
+  lists them. The person who pinned it, its author or an admin can unpin it.
+- **Search:** the box at the top right (Ctrl+F). Searches ignore case and accents and match the start of
+  words. Add `from:Name` or `in:#channel` to narrow it down. Click a result to jump to it.
+- **Link previews:** links to YouTube, Spotify, SoundCloud, Vimeo and Reddit show a card with the title
+  and thumbnail; videos open in your browser. Your server looks them up, so the sites never see your
+  address. Turn them off in **Settings → Appearance**.
+
+## Notifications
+
+When Nexo isn't in front, or you're in another channel, new messages can show a Windows notification and
+play a sound. Choose **All messages**, **Only mentions** (the default) or **Off** in **Settings →
+Notifications**, where you can also turn off the sound and the taskbar flash and send a test notification.
+Messages in quick succession are grouped per channel. Clicking a notification opens the channel. The
+taskbar button and the tray icon show how many unread mentions you have.
+
+## Status, activity and profile cards
+
+Click your name at the bottom left to set your status: **Online**, **Idle** or **Do not disturb**, and a
+custom status ("back at 9"). Do not disturb silences notification popups and sounds (wake-ups still ring).
+Nexo sets you to Idle after 10 minutes without input, except while you're talking in voice or playing.
+With several devices, Do not disturb on any of them wins, then Online, then Idle.
+
+**What you're playing:** turn on **Settings → Activity → Share what I'm playing** (off by default) and
+friends see "Playing *game*" next to your name. Nexo recognizes about 230 games and you can add others
+from the list of running programs. Only the game's name is shared, and only while it runs.
+
+Click anyone's name or picture to open their **profile card**: status, what they're playing, their voice
+channel with **Join**, and **Mention** and **Wake up**.
 
 ## Keybinds
 
@@ -157,6 +215,8 @@ Admins and the owner can move someone who is in voice to another voice channel: 
 pick a channel under **Move to**, or drag their name in the sidebar onto another voice channel. Their
 mute and deafen stay as they were; a camera or stream they had on stops. Admins can't move the owner.
 
+Admins can drag channels in the sidebar to reorder them (or select one and press Alt+↑ / Alt+↓).
+
 ## Picture in picture
 
 When you're in a call and go to another channel, the stream you're watching keeps playing in a small
@@ -164,6 +224,23 @@ floating player in the corner (if you aren't watching a stream, a friend's camer
 Drag it to any corner. Click it to go back to the call, or close it with the **×** until something else
 is shown. **Pop out** opens it in its own always-on-top window, which keeps playing while Nexo is
 minimized or you're in a game; stream and camera tiles on the voice stage have a **Pop out** button too.
+
+Who is watching a stream shows on the stream's tile, on your own "You're live" card and next to **LIVE**
+in the sidebar.
+
+## Soundboard
+
+In voice, the **soundboard** button (in the voice toolbar and in the voice panel at the bottom left) opens
+the board: click a sound to play it for everyone in your voice channel (once every 2 seconds). Hover a
+sound to preview it just for you. **Add sound** takes any audio file: pick the part you want (up to 5
+seconds), give it a name and an emoji. You can delete your own sounds; admins can delete any. Sounds play
+on each listener's speakers, never through anyone's microphone, and not while you're deafened or have
+muted that person. **Settings → Audio & video** has the soundboard volume and an on/off switch.
+
+## Appearance
+
+**Settings → Appearance:** **Theme** (System, Dark or Light), **Zoom** (also Ctrl +, Ctrl − and Ctrl 0, or
+Ctrl + mouse wheel; 67–200%), **Compact messages**, and **Show link previews**.
 
 ## App settings
 
@@ -276,5 +353,4 @@ no recovery. Pick a new name. The host can free the old name for reuse (see
 - **Linux (and Wayland):** screen/window video works, but there is **no system audio** capture yet.
   macOS system audio is best-effort.
 - Nexo is only available **while the host is on**.
-- No account recovery, no roles: everyone can create, rename and delete channels.
 - The installers are unsigned (SmartScreen warning on Windows, Gatekeeper on macOS).
