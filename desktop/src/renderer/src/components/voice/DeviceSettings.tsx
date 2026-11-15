@@ -369,7 +369,10 @@ function SpeakerTest({ deviceId }: { deviceId: string | null }) {
   )
 }
 
-/** Mute / deafen confirmation and sign-in request sounds (voice/sounds.ts), played on the speaker above. */
+/**
+ * Mute / deafen confirmation, voice join / leave, "wake up" and sign-in request sounds (voice/sounds.ts),
+ * played on the speaker above.
+ */
 function SoundEffectsToggle() {
   const on = useDevicePrefs((s) => s.soundEffects)
   return (
@@ -377,7 +380,8 @@ function SoundEffectsToggle() {
       <span className="toggle-text">
         <span>Sound effects</span>
         <span className="muted small">
-          Short sounds when you mute, unmute, deafen or undeafen, including from keybinds while a game has focus,
+          Short sounds when you mute, unmute, deafen or undeafen (also from keybinds while a game has focus), when
+          someone joins or leaves your voice channel, when someone wakes you up while you're muted or deafened,
           and when someone asks to sign in on a new device. Only you hear them.
         </span>
       </span>

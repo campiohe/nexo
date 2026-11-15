@@ -164,6 +164,8 @@ const bridge: NexoBridge = {
 
   openExternal: (url: string): void => ipcRenderer.send(IPC.openExternal, url),
 
+  requestAttention: (): void => ipcRenderer.send(IPC.requestAttention),
+
   hotkeys: {
     setBindings: (bindings: HotkeyBindings): Promise<HotkeyStatus> =>
       ipcRenderer.invoke(IPC.hotkeysSetBindings, bindings),

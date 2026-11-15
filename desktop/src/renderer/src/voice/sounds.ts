@@ -1,11 +1,11 @@
-// Short synthesized UI sounds for mute / unmute / deafen / undeafen and sign-in requests (no audio files:
-// Web Audio only).
+// Short synthesized UI sounds for mute / unmute / deafen / undeafen, someone joining / leaving your voice
+// channel, a "wake up" nudge and sign-in requests (no audio files: Web Audio only).
 // They play on the selected speaker through one lazily created AudioContext that is suspended again
 // once idle, so nothing runs between sounds. The context only feeds its own destination, never the
 // mic / WebRTC graph, so nobody in the call (or watching a stream) hears them.
 import { useDevicePrefs } from './devices'
 
-export type VoiceSound = 'mute' | 'unmute' | 'deafen' | 'undeafen' | 'request'
+export type VoiceSound = 'mute' | 'unmute' | 'deafen' | 'undeafen' | 'join' | 'leave' | 'nudge' | 'request'
 
 interface Note {
   /** Hz. */
@@ -28,7 +28,8 @@ const RELEASE = 0.015
 const IDLE_SUSPEND_MS = 2000
 
 // Mute/unmute: quick two-note blips (B5 ↔ E5), ~150 ms. Deafen/undeafen: lower, longer pair
-// (G4 ↔ C4), ~210 ms. Descending = off, ascending = on.
+// (G4 ↔ C4), ~210 ms. Join/leave: a warm, slower perfect fourth (A4 ↔ D5), ~270 ms. Descending = off /
+// leaving, ascending = on / joining.
 const SOUNDS: Record<VoiceSound, readonly Note[]> = {
   mute: [
     { freq: 988, at: 0, dur: 0.075 },
@@ -45,6 +46,23 @@ const SOUNDS: Record<VoiceSound, readonly Note[]> = {
   undeafen: [
     { freq: 262, at: 0, dur: 0.1 },
     { freq: 392, at: 0.085, dur: 0.125 },
+  ],
+  // Someone (or you) entered / left the voice channel you're in (voice/presenceSounds.ts).
+  join: [
+    { freq: 440, at: 0, dur: 0.12 },
+    { freq: 587, at: 0.1, dur: 0.17 },
+  ],
+  leave: [
+    { freq: 587, at: 0, dur: 0.12 },
+    { freq: 440, at: 0.1, dur: 0.17 },
+  ],
+  // Someone nudged you ("wake up"): a bright ding-dong played twice (E6 B5 E6 B5), ~0.55 s. Heard while
+  // deafened too: deafen silences the call's <audio> elements, not this context.
+  nudge: [
+    { freq: 1319, at: 0, dur: 0.14 },
+    { freq: 988, at: 0.08, dur: 0.17 },
+    { freq: 1319, at: 0.27, dur: 0.14 },
+    { freq: 988, at: 0.35, dur: 0.2 },
   ],
   // Someone asks to sign in (docs/SPEC-ACCOUNTS.md §4): a rising three-note chime (E5 A5 E6), ~330 ms,
   // unlike any voice sound.
@@ -135,8 +153,8 @@ function schedule(c: AudioContext, notes: readonly Note[]): number {
 }
 
 /**
- * Play a mute / deafen confirmation (or sign-in request) sound on the selected speaker (no-op when sound
- * effects are off).
+ * Play a mute / deafen confirmation, voice join / leave, nudge or sign-in request sound on the selected
+ * speaker (no-op when sound effects are off).
  * Independent of deafen: remote voices are silenced on their own <audio> elements, not here.
  */
 export function playVoiceSound(sound: VoiceSound): void {

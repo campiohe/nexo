@@ -11,6 +11,9 @@ How to install Nexo, join a server, and use its features. Hosting a server is co
 - [Push to talk](#push-to-talk)
 - [Noise suppression](#noise-suppression)
 - [Friend volume](#friend-volume)
+- [Wake up a friend](#wake-up-a-friend)
+- [Moving people between voice channels](#moving-people-between-voice-channels)
+- [Picture in picture](#picture-in-picture)
 - [App settings](#app-settings)
 - [Updates](#updates)
 - [Test builds](#test-builds)
@@ -124,9 +127,11 @@ margin above the noise grew from 11 dB (Off) to 24 dB (Standard) to 30 dB (Enhan
 ## Sound effects and speaking indicators
 
 Nexo plays a short sound when you mute, unmute, deafen or undeafen, from the buttons, your keybinds or
-the tray menu, so you can tell what happened while a game has focus. It plays on your selected speaker
-and only you hear it; push to talk doesn't make a sound. Turn it off in **Settings → Audio & video →
-Sound effects**.
+the tray menu, so you can tell what happened while a game has focus. It also plays a sound when you
+join or leave voice, when someone joins or leaves (or is moved in or out of) the voice channel you're in,
+and when someone [wakes you up](#wake-up-a-friend). Sounds play on your selected speaker and only you
+hear them; push to talk doesn't make a sound. Turn them off in **Settings → Audio & video → Sound
+effects**.
 
 In the voice channel you're in, whoever is speaking gets a green ring, both on the voice stage and next
 to their name in the sidebar. A muted mic never lights up.
@@ -138,6 +143,27 @@ stage). Set their volume from **0–200%**, or **Mute for me**, which affects on
 Settings are remembered per friend on this device. Tiles show a small icon when you've changed
 someone's volume. Deafen still silences everyone, and undeafening restores each friend's level.
 Stream audio has its own volume slider on the stream tile.
+
+## Wake up a friend
+
+When a friend in voice is muted or deafened, right-click them and choose **Wake up**, or click the bell
+that appears when you hover over their name in the sidebar. They hear a chime (even while deafened), see
+a message saying you're trying to get their attention, and their taskbar button flashes if Nexo isn't
+in front. You can wake up the same person once every 15 seconds.
+
+## Moving people between voice channels
+
+Admins and the owner can move someone who is in voice to another voice channel: right-click them and
+pick a channel under **Move to**, or drag their name in the sidebar onto another voice channel. Their
+mute and deafen stay as they were; a camera or stream they had on stops. Admins can't move the owner.
+
+## Picture in picture
+
+When you're in a call and go to another channel, the stream you're watching keeps playing in a small
+floating player in the corner (if you aren't watching a stream, a friend's camera is shown instead).
+Drag it to any corner. Click it to go back to the call, or close it with the **×** until something else
+is shown. **Pop out** opens it in its own always-on-top window, which keeps playing while Nexo is
+minimized or you're in a game; stream and camera tiles on the voice stage have a **Pop out** button too.
 
 ## App settings
 

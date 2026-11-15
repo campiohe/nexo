@@ -16,13 +16,22 @@ interface Props {
   className?: string
   /** Poll resolution / frame rate once per second. */
   onStats?(stats: VideoStats | null): void
+  /** Receives the <video> element once mounted (and null on unmount), e.g. for picture-in-picture. */
+  onElement?(el: HTMLVideoElement | null): void
 }
 
-export function VideoTrackView({ track, fit, mirror, className, onStats }: Props) {
+export function VideoTrackView({ track, fit, mirror, className, onStats, onElement }: Props) {
   const ref = useRef<HTMLVideoElement>(null)
   const statsRef = useRef(onStats)
   statsRef.current = onStats
   const wantStats = !!onStats
+  const elementRef = useRef(onElement)
+  elementRef.current = onElement
+
+  useEffect(() => {
+    elementRef.current?.(ref.current)
+    return () => elementRef.current?.(null)
+  }, [])
 
   useEffect(() => {
     const el = ref.current

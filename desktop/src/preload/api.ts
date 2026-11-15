@@ -368,6 +368,12 @@ export interface NexoBridge {
   openExternal(url: string): void
 
   /**
+   * Flash the main window's taskbar button (e.g. someone nudged you) until it gets focus. Ignored while the
+   * window is focused.
+   */
+  requestAttention(): void
+
+  /**
    * Global hotkeys (work while other apps, e.g. games, have focus). One system-wide hook runs while any
    * binding is set.
    */
@@ -435,6 +441,7 @@ export const IPC = {
   secretRead: 'nexo:secrets:read',
   secretSet: 'nexo:secrets:set',
   openExternal: 'nexo:open-external',
+  requestAttention: 'nexo:window:request-attention',
   pttSetBinding: 'nexo:ptt:set-binding', // legacy: sets the 'ptt' slot only
   hotkeysSetBindings: 'nexo:hotkeys:set-bindings',
   hotkeysCapture: 'nexo:hotkeys:capture',

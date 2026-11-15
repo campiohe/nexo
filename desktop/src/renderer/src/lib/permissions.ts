@@ -48,6 +48,16 @@ export function canSetRole(me: Me, target?: Pick<User, 'id' | 'role'> | null): b
   return !!target && target.id !== me.id && roleOf(target) !== 'owner'
 }
 
+/**
+ * Move someone in voice to another voice channel: admins and the owner only; admins can't move the owner.
+ * Moving yourself is fine.
+ */
+export function canMoveMember(me: Me, target: Pick<User, 'id' | 'role'> | null | undefined): boolean {
+  if (!me || !target || !isStaff(me)) return false
+  if (target.id === me.id || roleOf(me) === 'owner') return true
+  return roleOf(target) !== 'owner'
+}
+
 /** Admins and the owner answer every request; anyone answers requests for their own account. */
 export function canAnswerAccessRequest(me: Me, req: Pick<AccessRequest, 'userId'>): boolean {
   return !!me && (req.userId === me.id || isStaff(me))

@@ -29,6 +29,7 @@ import { CameraButton, DeafenButton, LeaveButton, MuteButton, ShareButton } from
 import { SharePickerHost } from './SharePicker'
 import { VideoTrackView, useVideoStats } from './VideoTrackView'
 import { UserVolumePopover } from './UserVolumePopover'
+import { closePopOut, isPoppedOut, popOut, supportsPopOut, usePip, type PipTarget } from './pip'
 import {
   AlertIcon,
   CollapseIcon,
@@ -38,6 +39,7 @@ import {
   FullscreenIcon,
   HeadphonesOffIcon,
   MicOffIcon,
+  PopOutIcon,
   VolumeIcon,
   VolumeOffIcon,
 } from './icons'
@@ -300,6 +302,13 @@ function stop(e: MouseEvent) {
   e.stopPropagation()
 }
 
+/** Pop-out (OS picture-in-picture) toggle for a tile; null when unavailable. */
+function usePopOut(target: PipTarget | null): { active: boolean; toggle(): void } | null {
+  const active = usePip((s) => !!target && isPoppedOut(s.poppedOut, target))
+  if (!target || !supportsPopOut()) return null
+  return { active, toggle: () => (active ? closePopOut() : popOut(target)) }
+}
+
 interface TileShellProps {
   className: string
   mode: 'grid' | 'focus' | 'strip'
@@ -307,11 +316,13 @@ interface TileShellProps {
   focused: boolean
   onToggleFocus(): void
   onContextMenu?(e: MouseEvent): void
+  /** Pop-out (OS picture-in-picture) button state, when the tile can be popped out. */
+  popOut?: { active: boolean; toggle(): void } | null
   label: string
   children: ReactNode
 }
 
-function TileShell({ className, mode, focusable, focused, onToggleFocus, onContextMenu, label, children }: TileShellProps) {
+function TileShell({ className, mode, focusable, focused, onToggleFocus, onContextMenu, popOut, label, children }: TileShellProps) {
   const ref = useRef<HTMLDivElement>(null)
   const clickTimer = useRef<number | undefined>(undefined)
   useEffect(() => () => window.clearTimeout(clickTimer.current), [])
@@ -338,6 +349,17 @@ function TileShell({ className, mode, focusable, focused, onToggleFocus, onConte
       {children}
       {focusable && mode !== 'strip' && (
         <div className="vx-tile-actions" onClick={stop} onDoubleClick={stop}>
+          {popOut && (
+            <button
+              className="vx-tile-btn"
+              onClick={popOut.toggle}
+              title={popOut.active ? 'Close pop-out' : 'Pop out'}
+              aria-label={popOut.active ? 'Close pop-out' : 'Pop out'}
+              aria-pressed={popOut.active}
+            >
+              <PopOutIcon size={16} />
+            </button>
+          )}
           <button className="vx-tile-btn" onClick={onToggleFocus} title={focused ? 'Back to grid' : 'Focus'} aria-label={focused ? 'Back to grid' : 'Focus'}>
             {focused ? <CollapseIcon size={16} /> : <ExpandIcon size={16} />}
           </button>
@@ -380,6 +402,7 @@ const UserTile = memo(function UserTile({ view, user, mode, focused, onToggleFoc
       }
     : undefined
   const poor = view.connectionQuality === ConnectionQuality.Poor || view.connectionQuality === ConnectionQuality.Lost
+  const popOutCtl = usePopOut(view.cameraTrack && !view.isLocal ? { kind: 'camera', identity: view.identity } : null)
   const avatarSize = mode === 'strip' ? 44 : mode === 'focus' ? 120 : 76
 
   return (
@@ -390,6 +413,7 @@ const UserTile = memo(function UserTile({ view, user, mode, focused, onToggleFoc
       focused={focused}
       onToggleFocus={onToggleFocus}
       onContextMenu={onContextMenu}
+      popOut={popOutCtl}
       label={name}
     >
       {view.cameraTrack ? (
@@ -527,6 +551,7 @@ const StreamTile = memo(function StreamTile({ view, user, watching, volume, deaf
   const color = colorOf(view, user)
   const [stats, setStats] = useVideoStats()
   const track = watching ? view.screenTrack : null
+  const popOutCtl = usePopOut(track ? { kind: 'stream', identity: view.identity } : null)
 
   if (!watching) {
     return (
@@ -551,6 +576,7 @@ const StreamTile = memo(function StreamTile({ view, user, watching, volume, deaf
       focusable={!!track}
       focused={focused}
       onToggleFocus={onToggleFocus}
+      popOut={popOutCtl}
       label={`${name}'s stream`}
     >
       {track ? (

@@ -247,6 +247,21 @@ function wire(s: NexoSocket) {
     useApp.setState({ voice: states })
   })
 
+  // Lazy, like voice/session above: voice/voiceActions imports voice/session, which imports this module.
+  s.on('voice:moved', ({ channelId, by }) => {
+    if (socket !== s) return
+    void import('../voice/voiceActions')
+      .then((m) => m.handleMoved(channelId, by))
+      .catch((err) => console.warn('[nexo] voice move failed', err))
+  })
+
+  s.on('voice:nudged', ({ by }) => {
+    if (socket !== s) return
+    void import('../voice/voiceActions')
+      .then((m) => m.handleNudged(by))
+      .catch((err) => console.warn('[nexo] voice nudge failed', err))
+  })
+
   // ---- accounts and roles (docs/SPEC-ACCOUNTS.md §2, §4); state lives in store/admin.ts ----
   s.on('user:removed', ({ userId }) => {
     if (socket !== s) return

@@ -1,17 +1,62 @@
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
+import { useEffect, useRef, useState, type DragEvent, type FormEvent, type KeyboardEvent } from 'react'
+import { create } from 'zustand'
 import type { Channel, ChannelType, VoiceState } from '@shared/protocol'
 import { useApp } from '../store/app'
 import { isUnread, useUnread } from '../store/unread'
 import { useUi } from '../store/ui'
 import { useShallow } from 'zustand/react/shallow'
 import { useVoice } from '../voice/session'
+import { moveToChannel, nudge } from '../voice/voiceActions'
 import { speakingIdentities, useParticipants } from '../voice/participants'
 import { VoiceControls } from './voice/VoiceControls'
 import { toast } from '../lib/toast'
-import { canManageChannels } from '../lib/permissions'
+import { canManageChannels, canMoveMember } from '../lib/permissions'
 import { Avatar } from './Avatar'
 import { ConfirmDialog } from './Modal'
-import { GearIcon, HashIcon, HeadphonesOffIcon, MicOffIcon, NexoMark, PencilIcon, PlusIcon, SpeakerIcon, TrashIcon, VideoIcon } from './icons'
+import { BellIcon, GearIcon, HashIcon, HeadphonesOffIcon, MicOffIcon, NexoMark, PencilIcon, PlusIcon, SpeakerIcon, TrashIcon, VideoIcon } from './icons'
+
+/**
+ * Dragging a voice member onto another voice channel to move them (admins / owner). The dragged user lives
+ * here rather than in dataTransfer, which can't be read during dragover.
+ */
+const useVoiceDrag = create<{ userId: string | null; from: string | null; over: string | null }>()(() => ({
+  userId: null,
+  from: null,
+  over: null,
+}))
+const VOICE_MEMBER_DRAG_TYPE = 'application/x-nexo-voice-member'
+
+function endVoiceDrag() {
+  useVoiceDrag.setState({ userId: null, from: null, over: null })
+}
+
+/** Drop target handlers for a voice channel (its row and its member list). Same channel: not a target. */
+function voiceDropHandlers(channelId: string) {
+  const accepts = () => {
+    const d = useVoiceDrag.getState()
+    return !!d.userId && d.from !== channelId
+  }
+  return {
+    onDragOver(e: DragEvent<HTMLLIElement>) {
+      if (!accepts()) return
+      e.preventDefault()
+      e.dataTransfer.dropEffect = 'move'
+      if (useVoiceDrag.getState().over !== channelId) useVoiceDrag.setState({ over: channelId })
+    },
+    onDragLeave(e: DragEvent<HTMLLIElement>) {
+      // Ignore moves between the channel's own children.
+      if (e.relatedTarget instanceof Node && e.currentTarget.contains(e.relatedTarget)) return
+      if (useVoiceDrag.getState().over === channelId) useVoiceDrag.setState({ over: null })
+    },
+    onDrop(e: DragEvent<HTMLLIElement>) {
+      const { userId } = useVoiceDrag.getState()
+      if (!userId || !accepts()) return
+      e.preventDefault()
+      endVoiceDrag()
+      moveToChannel(userId, channelId).catch((err) => toast(err, 'error'))
+    },
+  }
+}
 
 /** Select a channel; for voice channels also join it (unless already in it). */
 export function openChannel(channel: Channel) {
@@ -115,9 +160,13 @@ function ChannelRow({ channel }: { channel: Channel }) {
     setConfirming(false)
   }, [canManage])
   const Icon = channel.type === 'text' ? HashIcon : SpeakerIcon
+  const dropTarget = useVoiceDrag((s) => channel.type === 'voice' && s.over === channel.id)
 
   return (
-    <li>
+    <li
+      className={dropTarget ? 'is-drop-target' : undefined}
+      {...(channel.type === 'voice' ? voiceDropHandlers(channel.id) : {})}
+    >
       {renaming ? (
         <InlineNameForm
           type={channel.type}
@@ -260,7 +309,9 @@ const NO_SPEAKERS: string[] = []
 function VoiceMembers({ channelId }: { channelId: string }) {
   const voice = useApp((s) => s.voice)
   const users = useApp((s) => s.users)
-  const meId = useApp((s) => s.me?.id)
+  const me = useApp((s) => s.me)
+  const meId = me?.id
+  const hasOtherVoiceChannel = useApp((s) => s.channels.filter((c) => c.type === 'voice').length > 1)
   // Speaking info only exists for the LiveKit room we're in, so only this channel can light up.
   const connectedHere = useVoice(
     (s) => s.channelId === channelId && (s.status === 'connecting' || s.status === 'connected' || s.status === 'reconnecting'),
@@ -274,24 +325,54 @@ function VoiceMembers({ channelId }: { channelId: string }) {
       {members
         .map((v) => ({ v, user: users[v.userId] }))
         .sort((a, b) => (a.user?.name ?? '').localeCompare(b.user?.name ?? ''))
-        .map(({ v, user }) => (
-          <li
-            key={v.userId}
-            className={`voice-member ${v.userId !== meId ? 'has-menu' : ''} ${speaking.includes(v.userId) ? 'is-speaking' : ''}`}
-            onContextMenu={(e) => {
-              // Right-click someone else: their volume (your own mic level lives in Audio & video settings).
-              if (v.userId === meId) return
-              e.preventDefault()
-              useUi.getState().openVolumePopover(v.userId, { x: e.clientX, y: e.clientY })
-            }}
-            title={v.userId !== meId ? 'Right-click to adjust volume' : undefined}
-          >
-            <Avatar user={user} size={20} />
-            <span className="voice-member-name">{user?.name ?? 'Unknown'}</span>
-            {speaking.includes(v.userId) && <span className="voice-member-sr">, speaking</span>}
-            <VoiceBadges state={v} />
-          </li>
-        ))}
+        .map(({ v, user }) => {
+          const isSelf = v.userId === meId
+          // Staff drag people (themselves too) onto another voice channel; right-click opens the user card.
+          const canDrag = hasOtherVoiceChannel && canMoveMember(me, user)
+          const hasMenu = !isSelf || canDrag
+          const canNudge = !isSelf && (v.muted || v.deafened)
+          const name = user?.name ?? 'Unknown'
+          const hint = isSelf ? 'Right-click or drag to move to another channel' : 'Right-click for volume and actions'
+          return (
+            <li
+              key={v.userId}
+              className={`voice-member ${hasMenu ? 'has-menu' : ''} ${speaking.includes(v.userId) ? 'is-speaking' : ''}`}
+              onContextMenu={(e) => {
+                // Your own mic level lives in Audio & video settings; your own card only has "Move to".
+                if (!hasMenu) return
+                e.preventDefault()
+                useUi.getState().openVolumePopover(v.userId, { x: e.clientX, y: e.clientY })
+              }}
+              draggable={canDrag}
+              onDragStart={
+                canDrag
+                  ? (e) => {
+                      e.dataTransfer.setData(VOICE_MEMBER_DRAG_TYPE, v.userId)
+                      e.dataTransfer.effectAllowed = 'move'
+                      useVoiceDrag.setState({ userId: v.userId, from: channelId, over: null })
+                    }
+                  : undefined
+              }
+              onDragEnd={canDrag ? endVoiceDrag : undefined}
+              title={hasMenu ? (canDrag && !isSelf ? `${hint}; drag to move` : hint) : undefined}
+            >
+              <Avatar user={user} size={20} />
+              <span className="voice-member-name">{name}</span>
+              {speaking.includes(v.userId) && <span className="voice-member-sr">, speaking</span>}
+              {canNudge && (
+                <button
+                  className="icon-btn voice-member-nudge"
+                  onClick={() => void nudge(v.userId)}
+                  aria-label={`Wake up ${name}`}
+                  title="Wake up"
+                >
+                  <BellIcon size={13} />
+                </button>
+              )}
+              <VoiceBadges state={v} />
+            </li>
+          )
+        })}
     </ul>
   )
 }

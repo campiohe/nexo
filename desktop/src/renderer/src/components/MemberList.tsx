@@ -1,7 +1,7 @@
 import type { User, VoiceState } from '@shared/protocol'
 import { useApp } from '../store/app'
 import { useUi } from '../store/ui'
-import { hasRoles, roleOf } from '../lib/permissions'
+import { canMoveMember, hasRoles, roleOf } from '../lib/permissions'
 import { Avatar } from './Avatar'
 import { RoleBadge } from './MembersSection'
 import { SpeakerIcon } from './icons'
@@ -11,7 +11,8 @@ export function MemberList() {
   const online = useApp((s) => s.online)
   const voice = useApp((s) => s.voice)
   const channels = useApp((s) => s.channels)
-  const meId = useApp((s) => s.me?.id)
+  const me = useApp((s) => s.me)
+  const meId = me?.id
   // Servers older than roles send none: show no badges there.
   const roles = useApp((s) => hasRoles(s.me))
 
@@ -20,10 +21,12 @@ export function MemberList() {
   const on = all.filter((u) => online[u.id])
   const off = all.filter((u) => !online[u.id])
   const channelName = (id: string) => channels.find((c) => c.id === id)?.name ?? 'voice'
+  const hasOtherVoiceChannel = channels.filter((c) => c.type === 'voice').length > 1
 
   const renderUser = (u: User, isOnline: boolean) => {
     const v: VoiceState | undefined = voiceByUser.get(u.id)
-    const canAdjust = !!v && u.id !== meId
+    // The voice user card: volume and actions for others; for yourself only "Move to" (admins / owner).
+    const canAdjust = !!v && (u.id !== meId || (hasOtherVoiceChannel && canMoveMember(me, u)))
     const role = roleOf(u)
     return (
       <li
@@ -37,7 +40,7 @@ export function MemberList() {
               }
             : undefined
         }
-        title={canAdjust ? 'Right-click to adjust volume' : undefined}
+        title={canAdjust ? (u.id === meId ? 'Right-click to move to another channel' : 'Right-click for volume and actions') : undefined}
       >
         <Avatar user={u} size={30} online={isOnline} />
         <div className="member-text">
