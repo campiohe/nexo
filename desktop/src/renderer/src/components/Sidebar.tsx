@@ -4,7 +4,13 @@ import type { Channel, ChannelType, VoiceState } from '@shared/protocol'
 import { useApp } from '../store/app'
 import { isUnread, mentionBadgeLabel, unreadMentions, useUnread } from '../store/unread'
 import '../styles/mentions.css'
-import { useUi } from '../store/ui'
+import { anchorOf, useUi, type AnchorRect } from '../store/ui'
+import { STATUS_LABEL, usePresence, usePresenceStore } from '../store/presence'
+import { activityLabel } from '../lib/activity'
+import { StatusMenuPopover } from './StatusMenu'
+import { GamepadIcon } from './peopleIcons'
+import { useStreamViewers } from './voice/StreamViewers'
+import { EyeIcon } from './voice/icons'
 import { useShallow } from 'zustand/react/shallow'
 import { useVoice } from '../voice/session'
 import { moveToChannel, nudge } from '../voice/voiceActions'
@@ -334,6 +340,9 @@ function VoiceMembers({ channelId }: { channelId: string }) {
   )
   // Shallow-compared array: re-renders only when who is speaking changes, not on every LiveKit event.
   const speaking = useParticipants(useShallow((s) => (connectedHere ? speakingIdentities(s) : NO_SPEAKERS)))
+  // "Playing X" under each name (yours from this device, others' from the server).
+  const presences = usePresenceStore((s) => s.byUser)
+  const ownActivity = usePresenceStore((s) => s.activity)
   const members = voice.filter((v) => v.channelId === channelId)
   if (members.length === 0) return null
   return (
@@ -348,11 +357,16 @@ function VoiceMembers({ channelId }: { channelId: string }) {
           const hasMenu = !isSelf || canDrag
           const canNudge = !isSelf && (v.muted || v.deafened)
           const name = user?.name ?? 'Unknown'
-          const hint = isSelf ? 'Right-click or drag to move to another channel' : 'Right-click for volume and actions'
+          const hint = isSelf
+            ? 'Click for your profile; right-click or drag to move to another channel'
+            : 'Click for profile; right-click for volume and actions'
+          const activity = isSelf ? ownActivity : (presences[v.userId]?.activity ?? null)
           return (
             <li
               key={v.userId}
-              className={`voice-member ${hasMenu ? 'has-menu' : ''} ${speaking.includes(v.userId) ? 'is-speaking' : ''}`}
+              className={`voice-member people-click ${hasMenu ? 'has-menu' : ''} ${speaking.includes(v.userId) ? 'is-speaking' : ''} ${activity ? 'has-activity' : ''}`}
+              // Left click: profile card; right click: the voice user card (volume, wake up, move).
+              onClick={(e) => useUi.getState().openProfileCard(v.userId, anchorOf(e.currentTarget), 'right')}
               onContextMenu={(e) => {
                 // Your own mic level lives in Audio & video settings; your own card only has "Move to".
                 if (!hasMenu) return
@@ -370,15 +384,28 @@ function VoiceMembers({ channelId }: { channelId: string }) {
                   : undefined
               }
               onDragEnd={canDrag ? endVoiceDrag : undefined}
-              title={hasMenu ? (canDrag && !isSelf ? `${hint}; drag to move` : hint) : undefined}
+              title={hasMenu ? (canDrag && !isSelf ? `${hint}; drag to move` : hint) : 'Click for your profile'}
             >
-              <Avatar user={user} size={20} />
-              <span className="voice-member-name">{name}</span>
+              <Avatar user={user} size={20} animate={speaking.includes(v.userId)} />
+              {activity ? (
+                <span className="voice-member-text">
+                  <span className="voice-member-name">{name}</span>
+                  <span className="people-sub voice-member-activity" title={activityLabel(activity)}>
+                    <GamepadIcon size={11} />
+                    <span className="people-sub-text">{activity.name}</span>
+                  </span>
+                </span>
+              ) : (
+                <span className="voice-member-name">{name}</span>
+              )}
               {speaking.includes(v.userId) && <span className="voice-member-sr">, speaking</span>}
               {canNudge && (
                 <button
                   className="icon-btn voice-member-nudge"
-                  onClick={() => void nudge(v.userId)}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    void nudge(v.userId)
+                  }}
                   aria-label={`Wake up ${name}`}
                   title="Wake up"
                 >
@@ -393,10 +420,25 @@ function VoiceMembers({ channelId }: { channelId: string }) {
   )
 }
 
+/** "👁 3" next to the LIVE pill: how many people watch this stream (nothing when nobody does). */
+function ViewerCount({ streamerId }: { streamerId: string }) {
+  const viewers = useStreamViewers(streamerId)
+  const users = useApp((s) => s.users)
+  if (viewers.length === 0) return null
+  const label = `${viewers.length} watching: ${viewers.map((id) => users[id]?.name ?? 'Someone').join(', ')}`
+  return (
+    <span className="voice-viewers" title={label} aria-label={label} role="img">
+      <EyeIcon size={12} />
+      {viewers.length}
+    </span>
+  )
+}
+
 export function VoiceBadges({ state }: { state: VoiceState }) {
   return (
     <span className="voice-badges">
       {state.streaming && <span className="live-pill" title="Streaming">LIVE</span>}
+      {state.streaming && <ViewerCount streamerId={state.userId} />}
       {state.camera && (
         <span className="voice-badge" title="Camera on" aria-label="Camera on" role="img">
           <VideoIcon size={14} />
@@ -419,18 +461,55 @@ function UserPanel() {
   const me = useApp((s) => s.me)
   const connection = useApp((s) => s.connection)
   const openSettings = useUi((s) => s.openSettings)
-  const status =
-    connection === 'connected' ? 'Online' : connection === 'reconnecting' ? 'Reconnecting…' : connection === 'connecting' ? 'Connecting…' : 'Offline'
+  const menuOpen = useUi((s) => s.statusMenuOpen)
+  const presence = usePresence(me?.id)
+  const panelRef = useRef<HTMLDivElement>(null)
+  const [anchor, setAnchor] = useState<AnchorRect | null>(null)
+  const connected = connection === 'connected'
+  const statusText = me?.statusText?.trim()
+  const activity = presence?.activity ?? null
+  const status = !connected
+    ? connection === 'reconnecting'
+      ? 'Reconnecting…'
+      : connection === 'connecting'
+        ? 'Connecting…'
+        : 'Offline'
+    : activity
+      ? activityLabel(activity)
+      : statusText || STATUS_LABEL[presence?.status ?? 'online']
+
+  const toggleMenu = () => {
+    const ui = useUi.getState()
+    if (ui.statusMenuOpen) return ui.openStatusMenu(false)
+    if (panelRef.current) setAnchor(anchorOf(panelRef.current))
+    ui.openStatusMenu(true)
+  }
+
   return (
-    <div className="user-panel">
-      <Avatar user={me} size={32} online={connection === 'connected'} />
-      <div className="user-panel-text">
-        <span className="user-panel-name">{me?.name}</span>
-        <span className={`user-panel-status ${connection !== 'connected' ? 'is-warn' : ''}`}>{status}</span>
-      </div>
+    <div className="user-panel" ref={panelRef}>
+      <button
+        type="button"
+        className="user-panel-me"
+        onClick={toggleMenu}
+        aria-haspopup="dialog"
+        aria-expanded={menuOpen}
+        title="Set your status"
+      >
+        <Avatar user={me} size={32} online={connected} status={presence?.status} />
+        <span className="user-panel-text">
+          <span className="user-panel-name">{me?.name}</span>
+          <span
+            className={`user-panel-status ${!connected ? 'is-warn' : activity ? 'is-activity' : ''}`}
+            title={connected ? status : undefined}
+          >
+            {status}
+          </span>
+        </span>
+      </button>
       <button className="icon-btn" onClick={() => openSettings(true)} aria-label="Settings" title="Settings">
         <GearIcon size={18} />
       </button>
+      {menuOpen && anchor && <StatusMenuPopover anchor={anchor} />}
     </div>
   )
 }

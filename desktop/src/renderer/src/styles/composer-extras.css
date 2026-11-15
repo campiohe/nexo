@@ -1,8 +1,8 @@
-/* Composer additions: the @mention popup and the "Replying to" bar (Composer.tsx). */
+/* Composer additions: the @mention / :emoji popup, the emoji button and the "Replying to" bar (Composer.tsx). */
 
 .composer-wrap { position: relative; }
 
-/* ---- @mention autocomplete, floating above the composer ---- */
+/* ---- @mention / :emoji autocomplete (AutocompletePopup), floating above the composer ---- */
 .mention-popup {
   position: absolute;
   left: 0;
@@ -39,6 +39,16 @@
 .mention-option.is-active { background: var(--bg-3); color: var(--text-0); }
 .mention-option-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 .mention-option-hint { margin-left: auto; flex: none; font-size: 12px; color: var(--text-2); }
+.mention-popup-title .ac-query { color: var(--text-1); text-transform: none; letter-spacing: 0; font-family: var(--mono); font-weight: 600; }
+.ac-emoji {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  flex: none;
+  font-size: 20px;
+  line-height: 1;
+}
 .mention-option-at {
   display: grid;
   place-items: center;
@@ -51,6 +61,12 @@
   font-weight: 800;
   font-size: 13px;
 }
+
+/* ---- emoji button (right of the input): warms up on hover, like a smile ---- */
+.composer-emoji { width: 34px; height: 34px; flex: none; }
+.composer-emoji svg { transition: transform 0.15s var(--ease); }
+.composer-emoji:hover:not(:disabled), .composer-emoji.is-active { color: var(--warn); }
+.composer-emoji:hover:not(:disabled) svg, .composer-emoji.is-active svg { transform: scale(1.12) rotate(-8deg); }
 
 /* ---- "Replying to Name" ---- */
 .composer-reply {

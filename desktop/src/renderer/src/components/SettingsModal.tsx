@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState, type ChangeEvent } from 'react'
 import type { AppPrefs, CaptureEngine, HotkeyStatus, Keybind, NativeShareCapabilities, UpdateState } from '../../../preload/api'
 import { useApp } from '../store/app'
-import { useUi } from '../store/ui'
+import { useUi, type SettingsTab } from '../store/ui'
+import { ActivitySection, hasActivityBridge } from './ActivitySettings'
+import { CustomStatusField } from './StatusMenu'
 import { SWATCHES } from '../lib/colors'
 import { toast, useToasts } from '../lib/toast'
 import { AVATAR_INPUT_TYPES, loadImageFile, type LoadedImage } from '../lib/imageCrop'
@@ -22,7 +24,7 @@ import { ColorSwatches } from './ColorSwatches'
 import { ConfirmDialog, Modal } from './Modal'
 import { AlertIcon, LogoutIcon } from './icons'
 
-type Tab = 'profile' | 'av' | 'keybinds' | 'notifications' | 'app' | 'members' | 'server'
+type Tab = SettingsTab
 
 /** The App section needs the Electron bridge (window.nexo.prefs); it's hidden in a plain browser. */
 const hasPrefs = () => typeof window.nexo?.prefs?.get === 'function'
@@ -32,6 +34,7 @@ const TABS: { id: Tab; label: string; available?: () => boolean }[] = [
   { id: 'av', label: 'Audio & video' },
   { id: 'keybinds', label: 'Keybinds' },
   { id: 'notifications', label: 'Notifications', available: hasNativeNotifications },
+  { id: 'activity', label: 'Activity', available: hasActivityBridge },
   { id: 'app', label: 'App', available: hasPrefs },
   { id: 'members', label: 'Members' },
   { id: 'server', label: 'Server' },
@@ -40,7 +43,9 @@ const TABS: { id: Tab; label: string; available?: () => boolean }[] = [
 export function SettingsModal() {
   const open = useUi((s) => s.settingsOpen)
   const close = () => useUi.getState().openSettings(false)
-  const [tab, setTab] = useState<Tab>('profile')
+  // In store/ui.ts so other places can open a given section (e.g. the profile card's "Edit profile").
+  const tab = useUi((s) => s.settingsTab)
+  const setTab = useUi((s) => s.setSettingsTab)
   if (!open) return null
 
   return (
@@ -69,6 +74,7 @@ export function SettingsModal() {
           )}
           {tab === 'keybinds' && <KeybindsSection />}
           {tab === 'notifications' && hasNativeNotifications() && <NotificationsSection />}
+          {tab === 'activity' && hasActivityBridge() && <ActivitySection />}
           {tab === 'app' && hasPrefs() && <AppSection />}
           {tab === 'members' && <MembersSection />}
           {tab === 'server' && <ServerSection onDone={close} />}
@@ -100,7 +106,14 @@ function ProfileSection() {
     <section>
       <h3 className="settings-heading">Profile</h3>
       <div className="profile-card">
-        <Avatar user={me} size={96} />
+        <span className="avatar-preview">
+          <Avatar user={me} size={96} animate />
+          {me.avatar && me.avatarAnimated && (
+            <span className="avatar-gif-badge" title="Animated picture: others see it move when they hover over you or while you talk">
+              GIF
+            </span>
+          )}
+        </span>
         <div className="profile-card-text">
           <div className="profile-name" style={{ color: me.color }}>
             {me.name}
@@ -113,6 +126,7 @@ function ProfileSection() {
         <span className="field-label">Color</span>
         <ColorSwatches value={me.color} onChange={pick} colors={SWATCHES} disabled={saving} />
       </div>
+      <CustomStatusField />
     </section>
   )
 }

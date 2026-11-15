@@ -333,6 +333,35 @@ export interface UnreadBadge {
 /** secrets.read(): `unreadable` = the entry exists but no copy of it could be decrypted/read. */
 export type SecretRead = { status: 'ok'; value: string } | { status: 'missing' } | { status: 'unreadable' }
 
+/** A game the user added in Settings → Activity: its executable and the name others see. */
+export interface CustomGame {
+  /** Executable name as listed by the OS, e.g. "MyGame-Win64-Shipping.exe" (never a path). */
+  exe: string
+  /** What others see ("Playing <name>"), 1..64 characters. */
+  name: string
+}
+
+/** "Playing X" detection settings, stored by main in <userData>/activity.json (per device). */
+export interface ActivitySettings {
+  /** Opt-in (default false): detect running games and share their name. Nothing runs while false. */
+  shareActivity: boolean
+  customGames: CustomGame[]
+}
+
+/** The game main currently detects (display name only), or null. */
+export interface DetectedActivity {
+  name: string
+  /** When it was first detected (ms epoch). */
+  startedAt: number
+}
+
+export interface PresenceBridgeState {
+  /** No keyboard/mouse input for the auto-idle threshold (or the screen is locked). */
+  idle: boolean
+  activity: DetectedActivity | null
+  settings: ActivitySettings
+}
+
 export interface NexoBridge {
   platform: 'win32' | 'darwin' | 'linux'
   /** True when getDisplayMedia can include system audio (loopback) on this OS. */
@@ -457,6 +486,25 @@ export interface NexoBridge {
     onAction(cb: (action: TrayAction) => void): () => void
   }
 
+  /**
+   * Presence helpers in main: system idle (powerMonitor) and opt-in game detection. Missing on older
+   * preloads: callers must check.
+   */
+  presence: {
+    getState(): Promise<PresenceBridgeState>
+    /** Change the activity settings; resolves with the saved settings (rejects on invalid input). */
+    setSettings(patch: Partial<ActivitySettings>): Promise<ActivitySettings>
+    /**
+     * Executable names of the user's running programs (system processes left out), for "Add a game".
+     * Stays on this machine.
+     */
+    listProcesses(): Promise<string[]>
+    /** Idle state changes (true after the threshold without input, false on the next input). */
+    onIdle(cb: (idle: boolean) => void): () => void
+    /** The detected game changed (null = none, or sharing was turned off). */
+    onActivity(cb: (activity: DetectedActivity | null) => void): () => void
+  }
+
   /** Auto-update (main process). */
   updates: {
     getState(): Promise<UpdateState>
@@ -504,4 +552,9 @@ export const IPC = {
   nativeShareStop: 'nexo:native-share:stop',
   nativeShareRelease: 'nexo:native-share:release',
   nativeShareEvent: 'nexo:native-share:event', // main → renderer (NativeShareEvent)
+  presenceGetState: 'nexo:presence:get-state',
+  presenceSetSettings: 'nexo:presence:set-settings',
+  presenceListProcesses: 'nexo:presence:list-processes',
+  presenceIdle: 'nexo:presence:idle', // main → renderer (boolean)
+  presenceActivity: 'nexo:presence:activity', // main → renderer (DetectedActivity | null)
 } as const

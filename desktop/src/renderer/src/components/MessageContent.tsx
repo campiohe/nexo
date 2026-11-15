@@ -1,53 +1,173 @@
-import { memo, useState, type CSSProperties } from 'react'
+import { memo, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
 import type { Attachment } from '@shared/protocol'
 import { openExternal } from '../lib/linkify'
 import { UNKNOWN_USER } from '../lib/mentions'
-import { tokenizeContent, type ContentNode } from '../lib/messageTokens'
+import { parseContent, type Block, type Inline } from '../lib/messageTokens'
+import { toast } from '../lib/toast'
 import { attachmentUrl } from '../net/attachments'
 import { useApp } from '../store/app'
 import '../styles/mentions.css'
+import '../styles/markdown.css'
 
 /**
- * Message text rendered as React text nodes (never HTML): links, `<@id>` mentions and `@everyone` become
- * elements, everything else stays text. Newlines are preserved via CSS (pre-wrap).
+ * Message text with Discord-style markdown (lib/messageTokens), rendered as React elements and text nodes
+ * only (never HTML). A lone paragraph stays inline, so MessageList's "(edited)" follows the text; code
+ * blocks, quotes, headings and lists are blocks. Newlines are preserved via CSS (pre-wrap).
  */
 export const MessageContent = memo(function MessageContent({ text }: { text: string }) {
-  const nodes = tokenizeContent(text)
-  return <div className="message-content">{nodes.map((n, i) => renderNode(n, i))}</div>
+  const parsed = useMemo(() => parseContent(text), [text])
+  return (
+    <div className={`message-content ${parsed.jumbo ? 'is-jumbo' : ''}`}>{renderBlocks(parsed.blocks, 'b')}</div>
+  )
 })
 
-function renderNode(n: ContentNode, key: number) {
-  switch (n.type) {
-    case 'text':
-      return <span key={key}>{n.text}</span>
-    case 'link':
-      return (
-        <a
-          key={key}
-          href={n.href}
-          className="message-link"
-          title={n.href}
-          onClick={(e) => {
-            e.preventDefault()
-            openExternal(n.href)
-          }}
-          onAuxClick={(e) => {
-            e.preventDefault()
-            if (e.button === 1) openExternal(n.href)
-          }}
-        >
-          {n.text}
-        </a>
-      )
-    case 'mention':
-      return <MentionPill key={key} userId={n.userId} />
-    case 'everyone':
-      return (
-        <span key={key} className="mention is-everyone" title="Notifies everyone">
-          @everyone
-        </span>
-      )
+function renderBlocks(blocks: Block[], key: string): ReactNode[] {
+  return blocks.map((b, i) => {
+    const k = `${key}${i}`
+    switch (b.type) {
+      case 'paragraph':
+        return <span key={k}>{renderInline(b.children, k)}</span>
+      case 'heading':
+        return (
+          <div key={k} className={`md-heading md-h${b.level}`} role="heading" aria-level={b.level}>
+            {renderInline(b.children, k)}
+          </div>
+        )
+      case 'list':
+        return (
+          <ul key={k} className="md-list">
+            {b.items.map((item, j) => (
+              <li key={j}>{renderInline(item, `${k}.${j}`)}</li>
+            ))}
+          </ul>
+        )
+      case 'quote':
+        return (
+          <blockquote key={k} className="md-quote">
+            {renderBlocks(b.children, `${k}.`)}
+          </blockquote>
+        )
+      case 'codeblock':
+        return <CodeBlock key={k} lang={b.lang} text={b.text} />
+    }
+  })
+}
+
+function renderInline(nodes: Inline[], key: string): ReactNode[] {
+  return nodes.map((n, i) => {
+    const k = `${key}-${i}`
+    switch (n.type) {
+      case 'text':
+        return n.text
+      case 'link':
+        return (
+          <a
+            key={k}
+            href={n.href}
+            className="message-link"
+            title={n.href}
+            onClick={(e) => {
+              e.preventDefault()
+              openExternal(n.href)
+            }}
+            onAuxClick={(e) => {
+              e.preventDefault()
+              if (e.button === 1) openExternal(n.href)
+            }}
+          >
+            {n.text}
+          </a>
+        )
+      case 'mention':
+        return <MentionPill key={k} userId={n.userId} />
+      case 'everyone':
+        return (
+          <span key={k} className="mention is-everyone" title="Notifies everyone">
+            @everyone
+          </span>
+        )
+      case 'code':
+        return (
+          <code key={k} className="md-code">
+            {n.text}
+          </code>
+        )
+      case 'bold':
+        return <strong key={k}>{renderInline(n.children, k)}</strong>
+      case 'italic':
+        return <em key={k}>{renderInline(n.children, k)}</em>
+      case 'underline':
+        return (
+          <span key={k} className="md-underline">
+            {renderInline(n.children, k)}
+          </span>
+        )
+      case 'strike':
+        return <s key={k}>{renderInline(n.children, k)}</s>
+      case 'spoiler':
+        return <Spoiler key={k}>{renderInline(n.children, k)}</Spoiler>
+    }
+  })
+}
+
+/** Hidden until clicked (or Enter / Space when focused); links and mentions inside don't react until then. */
+function Spoiler({ children }: { children: ReactNode }) {
+  const [shown, setShown] = useState(false)
+  if (shown) return <span className="md-spoiler is-shown">{children}</span>
+  const reveal = (e: MouseEvent | KeyboardEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setShown(true)
   }
+  return (
+    <span
+      className="md-spoiler"
+      role="button"
+      tabIndex={0}
+      aria-label="Spoiler, press to reveal"
+      title="Spoiler: click to reveal"
+      // Capture: a hidden link or mention must not be clicked through the cover.
+      onClickCapture={reveal}
+      onAuxClickCapture={(e) => e.preventDefault()}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') reveal(e)
+      }}
+    >
+      <span className="md-spoiler-content" aria-hidden="true">
+        {children}
+      </span>
+    </span>
+  )
+}
+
+/** A fenced code block: monospace, scrolls sideways, language tag and a Copy button on hover. */
+function CodeBlock({ lang, text }: { lang: string; text: string }) {
+  const [copied, setCopied] = useState(false)
+  const timer = useRef<ReturnType<typeof setTimeout>>(undefined)
+  useEffect(() => () => clearTimeout(timer.current), [])
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopied(true)
+      clearTimeout(timer.current)
+      timer.current = setTimeout(() => setCopied(false), 1500)
+    } catch {
+      toast("Couldn't copy to the clipboard", 'error')
+    }
+  }
+  return (
+    <div className="md-codeblock">
+      <pre tabIndex={0} aria-label={lang ? `${lang} code` : 'Code'}>
+        <code>{text}</code>
+      </pre>
+      <div className="md-codeblock-bar">
+        {lang && <span className="md-codeblock-lang">{lang}</span>}
+        <button className={`md-codeblock-copy ${copied ? 'is-done' : ''}`} onClick={() => void copy()} aria-label="Copy code">
+          {copied ? 'Copied' : 'Copy'}
+        </button>
+      </div>
+    </div>
+  )
 }
 
 /** "@Name" in the user's colour (live: follows renames and colour changes); brighter when it's you. */

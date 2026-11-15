@@ -1,5 +1,6 @@
 // Emoji for the picker and reactions: the curated set in lib/emojiData.ts, parsed once, plus search,
-// "Recent" and the skin tone preference (both in localStorage; everything works without it).
+// "Recent" and the skin tone preference (both in localStorage; everything works without it), and
+// `:shortcodes:` for the composer (autocomplete, replacement as you type and on send).
 // Every emoji offered here passes EMOJI_RE (what the server accepts for reactions).
 import { EMOJI_RE } from '@shared/protocol'
 import { EMOJI_DATA } from './emojiData'
@@ -156,4 +157,199 @@ export function setSkinTone(tone: number): void {
   } catch {
     // ignore
   }
+}
+
+// ---- :shortcodes: (composer autocomplete and auto-replace) ----
+
+/**
+ * Common Discord / Slack names, so muscle memory works (`:joy:`, `:+1:`, `:sob:`…). Every other emoji gets
+ * a snake_case shortcode from its name ("face with tears of joy" -> `:face_with_tears_of_joy:`). Entries
+ * whose emoji isn't in the set are skipped. The first alias of an emoji is the name shown for it.
+ */
+const ALIASES: [string, string][] = [
+  ['smile', '😄'], ['smiley', '😃'], ['grinning', '😀'], ['grin', '😁'], ['laughing', '😆'], ['satisfied', '😆'],
+  ['sweat_smile', '😅'], ['rofl', '🤣'], ['joy', '😂'], ['slight_smile', '🙂'], ['slightly_smiling_face', '🙂'],
+  ['upside_down', '🙃'], ['melting_face', '🫠'], ['wink', '😉'], ['blush', '😊'], ['innocent', '😇'],
+  ['smiling_face_with_3_hearts', '🥰'], ['heart_eyes', '😍'], ['star_struck', '🤩'], ['kissing_heart', '😘'],
+  ['relaxed', '☺️'], ['yum', '😋'], ['stuck_out_tongue', '😛'], ['stuck_out_tongue_winking_eye', '😜'],
+  ['zany_face', '🤪'], ['money_mouth', '🤑'], ['hugging', '🤗'], ['hugs', '🤗'], ['hand_over_mouth', '🤭'],
+  ['shushing_face', '🤫'], ['thinking', '🤔'], ['salute', '🫡'], ['zipper_mouth', '🤐'], ['raised_eyebrow', '🤨'],
+  ['neutral_face', '😐'], ['expressionless', '😑'], ['no_mouth', '😶'], ['smirk', '😏'], ['unamused', '😒'],
+  ['rolling_eyes', '🙄'], ['grimacing', '😬'], ['lying_face', '🤥'], ['relieved', '😌'], ['pensive', '😔'],
+  ['sleepy', '😪'], ['drooling_face', '🤤'], ['sleeping', '😴'], ['mask', '😷'], ['nauseated_face', '🤢'],
+  ['vomiting', '🤮'], ['sneezing_face', '🤧'], ['hot_face', '🥵'], ['cold_face', '🥶'], ['woozy_face', '🥴'],
+  ['dizzy_face', '😵'], ['exploding_head', '🤯'], ['cowboy', '🤠'], ['partying_face', '🥳'], ['sunglasses', '😎'],
+  ['nerd', '🤓'], ['monocle_face', '🧐'], ['confused', '😕'], ['worried', '😟'], ['slight_frown', '🙁'],
+  ['frowning', '☹️'], ['open_mouth', '😮'], ['hushed', '😯'], ['astonished', '😲'], ['flushed', '😳'],
+  ['pleading_face', '🥺'], ['fearful', '😨'], ['cold_sweat', '😰'], ['cry', '😢'], ['sob', '😭'], ['scream', '😱'],
+  ['confounded', '😖'], ['persevere', '😣'], ['disappointed', '😞'], ['sweat', '😓'], ['weary', '😩'],
+  ['tired_face', '😫'], ['yawning_face', '🥱'], ['triumph', '😤'], ['rage', '😡'], ['angry', '😠'],
+  ['cursing_face', '🤬'], ['smiling_imp', '😈'], ['imp', '👿'], ['skull', '💀'], ['poop', '💩'], ['hankey', '💩'],
+  ['clown', '🤡'], ['ghost', '👻'], ['alien', '👽'], ['robot', '🤖'], ['see_no_evil', '🙈'], ['hear_no_evil', '🙉'],
+  ['speak_no_evil', '🙊'], ['heart', '❤️'], ['orange_heart', '🧡'], ['yellow_heart', '💛'], ['green_heart', '💚'],
+  ['blue_heart', '💙'], ['purple_heart', '💜'], ['black_heart', '🖤'], ['white_heart', '🤍'], ['broken_heart', '💔'],
+  ['two_hearts', '💕'], ['sparkling_heart', '💖'], ['100', '💯'], ['boom', '💥'], ['sparkles', '✨'], ['star', '⭐'],
+  ['fire', '🔥'], ['zzz', '💤'], ['sweat_drops', '💦'], ['dash', '💨'], ['wave', '👋'], ['ok_hand', '👌'],
+  ['pinching_hand', '🤏'], ['v', '✌️'], ['crossed_fingers', '🤞'], ['fingers_crossed', '🤞'], ['metal', '🤘'],
+  ['call_me', '🤙'], ['point_left', '👈'], ['point_right', '👉'], ['point_up', '☝️'], ['point_up_2', '👆'],
+  ['point_down', '👇'], ['middle_finger', '🖕'], ['thumbsup', '👍'], ['+1', '👍'], ['thumbs_up', '👍'],
+  ['thumbsdown', '👎'], ['-1', '👎'], ['thumbs_down', '👎'], ['fist', '✊'], ['punch', '👊'], ['clap', '👏'],
+  ['raised_hands', '🙌'], ['open_hands', '👐'], ['handshake', '🤝'], ['pray', '🙏'], ['muscle', '💪'],
+  ['writing_hand', '✍️'], ['nail_care', '💅'], ['eyes', '👀'], ['eye', '👁️'], ['brain', '🧠'], ['shrug', '🤷'],
+  ['person_shrugging', '🤷'], ['facepalm', '🤦'], ['person_facepalming', '🤦'], ['tada', '🎉'],
+  ['confetti_ball', '🎊'], ['balloon', '🎈'], ['gift', '🎁'], ['birthday', '🎂'], ['trophy', '🏆'], ['medal', '🏅'],
+  ['crown', '👑'], ['gem', '💎'], ['moneybag', '💰'], ['money_with_wings', '💸'], ['white_check_mark', '✅'],
+  ['check', '✅'], ['heavy_check_mark', '✔️'], ['x', '❌'], ['warning', '⚠️'], ['question', '❓'],
+  ['exclamation', '❗'], ['no_entry', '⛔'], ['rocket', '🚀'], ['zap', '⚡'], ['rainbow', '🌈'], ['sunny', '☀️'],
+  ['crescent_moon', '🌙'], ['snowflake', '❄️'], ['cloud', '☁️'], ['coffee', '☕'], ['tea', '🍵'], ['beer', '🍺'],
+  ['beers', '🍻'], ['wine_glass', '🍷'], ['pizza', '🍕'], ['hamburger', '🍔'], ['fries', '🍟'], ['popcorn', '🍿'],
+  ['cake', '🍰'], ['cookie', '🍪'], ['dog', '🐶'], ['cat', '🐱'], ['monkey', '🐒'], ['snake', '🐍'], ['unicorn', '🦄'],
+  ['bug', '🐛'], ['goat', '🐐'], ['clown_face', '🤡'], ['bulb', '💡'], ['lock', '🔒'], ['key', '🔑'], ['bell', '🔔'],
+  ['mute', '🔇'], ['headphones', '🎧'], ['microphone', '🎤'], ['video_game', '🎮'], ['joystick', '🕹️'],
+  ['computer', '💻'], ['keyboard', '⌨️'], ['hourglass', '⌛'], ['alarm_clock', '⏰'], ['pushpin', '📌'],
+  ['memo', '📝'], ['link', '🔗'], ['wrench', '🔧'], ['hammer', '🔨'], ['gear', '⚙️'], ['bomb', '💣'],
+  ['knife', '🔪'], ['pill', '💊'], ['trumpet', '🎺'], ['guitar', '🎸'], ['notes', '🎶'], ['musical_note', '🎵'],
+  ['soccer', '⚽'], ['basketball', '🏀'], ['crab', '🦀'], ['flag_br', '🇧🇷'], ['flag_us', '🇺🇸'], ['flag_pt', '🇵🇹'],
+]
+
+export interface ShortcodeMatch {
+  emoji: Emoji
+  /** The shortcode to show (the one that matched, else the emoji's main one), without colons. */
+  code: string
+}
+
+interface ShortcodeIndex {
+  byCode: Map<string, Emoji>
+  primary: Map<Emoji, string>
+  /** Every code: the aliases first, then names. */
+  codes: [string, Emoji][]
+  aliasCount: number
+}
+let shortcodes: ShortcodeIndex | null = null
+
+/** "Face with tears of joy" -> "face_with_tears_of_joy", "flag: Côte d’Ivoire" -> "flag_cote_divoire". */
+export function toShortcode(name: string): string {
+  return name
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
+    .toLowerCase()
+    .replace(/['’]/g, '')
+    .replace(/[^a-z0-9+]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+}
+
+function shortcodeIndex(): ShortcodeIndex {
+  if (shortcodes) return shortcodes
+  const idx: ShortcodeIndex = { byCode: new Map(), primary: new Map(), codes: [], aliasCount: 0 }
+  const add = (code: string, e: Emoji) => {
+    if (!code || idx.byCode.has(code)) return
+    idx.byCode.set(code, e)
+    idx.codes.push([code, e])
+    if (!idx.primary.has(e)) idx.primary.set(e, code)
+  }
+  for (const [code, char] of ALIASES) {
+    const e = findEmoji(qualify(char))
+    if (e && e.char === qualify(char)) add(code, e)
+  }
+  idx.aliasCount = idx.codes.length
+  for (const c of emojiCategories()) for (const e of c.emojis) add(toShortcode(e.name), e)
+  shortcodes = idx
+  return idx
+}
+
+/** The emoji for a shortcode (without colons, any case), if there is one. */
+export function emojiByShortcode(code: string): Emoji | undefined {
+  return shortcodeIndex().byCode.get(code.toLowerCase())
+}
+
+/** The main shortcode of an emoji of the set (without colons). */
+export function shortcodeOf(e: Emoji): string {
+  return shortcodeIndex().primary.get(e) ?? toShortcode(e.name)
+}
+
+/**
+ * Emoji for a `:query` being typed: exact code first, then codes starting with it (aliases before names,
+ * shorter first), then codes with a word starting with it (`:tears` -> face_with_tears_of_joy), then keywords.
+ */
+export function searchShortcodes(query: string, limit = 8): ShortcodeMatch[] {
+  const q = query.toLowerCase()
+  if (!q) return []
+  const { byCode, codes, aliasCount } = shortcodeIndex()
+  const out: ShortcodeMatch[] = []
+  const seen = new Set<Emoji>()
+  const take = (emoji: Emoji, code: string) => {
+    if (out.length >= limit || seen.has(emoji)) return
+    seen.add(emoji)
+    out.push({ emoji, code })
+  }
+  const exact = byCode.get(q)
+  if (exact) take(exact, q)
+  const prefixed = codes
+    .map(([code, e], i) => ({ code, e, rank: (i < aliasCount ? 0 : 1000) + code.length }))
+    .filter((x) => x.code.startsWith(q))
+    .sort((a, b) => a.rank - b.rank)
+  for (const { code, e } of prefixed) take(e, code)
+  for (const [code, e] of codes) if (code.includes(`_${q}`)) take(e, code)
+  if (out.length < limit) for (const e of searchEmoji(q.replace(/_/g, ' '), limit * 2)) take(e, shortcodeOf(e))
+  return out
+}
+
+/** Characters of a shortcode (between the colons). */
+export const SHORTCODE_CHARS = /[a-z0-9_+-]/i
+const SHORTCODE_RE = /(?<![\p{L}\p{N}]):([a-z0-9_+-]{1,48}):/giu
+/** Fenced code and inline code spans: shortcodes in them are left alone. */
+const CODE_RE = /```[\s\S]*?(?:```|$)|`[^`\n]*`/g
+
+/** Replaces every known `:shortcode:` outside code with its emoji (skin tone applied); unknown ones stay. */
+export function replaceShortcodes(text: string, tone = skinTone()): string {
+  if (!text.includes(':')) return text
+  const swap = (part: string) =>
+    part.replace(SHORTCODE_RE, (whole, code: string) => {
+      const e = emojiByShortcode(code)
+      return e ? withTone(e, tone) : whole
+    })
+  let out = ''
+  let last = 0
+  for (const m of text.matchAll(CODE_RE)) {
+    out += swap(text.slice(last, m.index)) + m[0]
+    last = m.index + m[0].length
+  }
+  return out + swap(text.slice(last))
+}
+
+/** Whether `pos` is inside a ``` block or a `code span` (on its line): no shortcode magic there. */
+export function isInCode(text: string, pos: number): boolean {
+  let fences = 0
+  for (let i = text.indexOf('```'); i !== -1 && i < pos; i = text.indexOf('```', i + 3)) fences++
+  if (fences % 2 === 1) return true
+  let ticks = 0
+  for (let i = text.lastIndexOf('\n', pos - 1) + 1; i < pos; i++) if (text[i] === '`') ticks++
+  return ticks % 2 === 1
+}
+
+/** A `:query` being typed (at least 2 characters after the colon): `start` is the index of the colon. */
+export interface ShortcodeQuery {
+  start: number
+  query: string
+}
+
+/** The `:query` ending at the caret, if any. The colon can't follow a letter or digit (`12:30`, `re:x`). */
+export function findShortcodeQuery(text: string, caret: number): ShortcodeQuery | null {
+  let i = caret
+  while (i > 0 && caret - i < 48 && SHORTCODE_CHARS.test(text[i - 1])) i--
+  if (i === 0 || text[i - 1] !== ':' || caret - i < 2) return null
+  const colon = i - 1
+  if (colon > 0 && /[\p{L}\p{N}]/u.test(text[colon - 1])) return null
+  if (isInCode(text, colon)) return null
+  return { start: colon, query: text.slice(i, caret) }
+}
+
+/** A complete `:code:` (known) right before `caret`: its start and emoji, for replacing as you type. */
+export function shortcodeBefore(text: string, caret: number): { start: number; emoji: Emoji } | null {
+  if (text[caret - 1] !== ':') return null
+  const m = /(?<![\p{L}\p{N}]):([a-z0-9_+-]{1,48}):$/iu.exec(text.slice(Math.max(0, caret - 52), caret))
+  const emoji = m ? emojiByShortcode(m[1]) : undefined
+  if (!m || !emoji) return null
+  const start = caret - m[0].length
+  return isInCode(text, start) ? null : { start, emoji }
 }

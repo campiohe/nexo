@@ -7,6 +7,7 @@ import { IPC } from '../preload/api'
 import { installCapture } from './capture'
 import { devMode, isDev, platform, preloadArguments } from './platform'
 import { getPrefs, installPrefs } from './prefs'
+import { installPresence } from './presence'
 import { installHotkeys } from './hotkeys'
 import { installMainLog, logLine } from './log'
 import { installNativeShare, releaseNativeShare } from './native-media'
@@ -219,6 +220,7 @@ if (!app.requestSingleInstanceLock()) {
     installPrefs()
     installHotkeys({ getWindow: () => mainWindow, focusWindow: raiseMainWindow })
     installNativeShare({ getWindow: () => mainWindow })
+    installPresence({ getWindow: () => mainWindow })
     ipcMain.on(IPC.openExternal, (event, url: unknown) => {
       if (isAppUrl(event.senderFrame?.url)) openExternalSafe(url)
     })

@@ -5,8 +5,10 @@ import { contextBridge, ipcRenderer } from 'electron'
 import {
   IPC,
   type AppPrefs,
+  type ActivitySettings,
   type CaptureSource,
   type ChatNotification,
+  type DetectedActivity,
   type GlobalHotkeyAction,
   type HotkeyBindings,
   type HotkeyEvent,
@@ -17,6 +19,7 @@ import {
   type NativeShareEvent,
   type NexoBridge,
   type PttBinding,
+  type PresenceBridgeState,
   type PttStatus,
   type SecretRead,
   type TrayAction,
@@ -139,6 +142,15 @@ async function startNativeShare(opts: unknown): Promise<{ shareId: number }> {
   return { shareId: result.shareId }
 }
 
+// ── Presence (idle, game detection) ─────────────────────────────────────────────────────────────────────
+
+const isBool = (v: unknown): v is boolean => typeof v === 'boolean'
+
+function isDetectedActivity(v: unknown): v is DetectedActivity | null {
+  if (v === null) return true
+  return isObj(v) && typeof v.name === 'string' && v.name.length > 0 && typeof v.startedAt === 'number' && Number.isFinite(v.startedAt)
+}
+
 const bridge: NexoBridge = {
   platform,
   supportsSystemAudio: arg('system-audio') === '1',
@@ -206,6 +218,16 @@ const bridge: NexoBridge = {
   tray: {
     setVoiceState: (state): void => ipcRenderer.send(IPC.trayVoiceState, state),
     onAction: (cb: (action: TrayAction) => void): (() => void) => subscribe(IPC.trayAction, isTrayAction, cb),
+  },
+
+  presence: {
+    getState: (): Promise<PresenceBridgeState> => ipcRenderer.invoke(IPC.presenceGetState),
+    setSettings: (patch: Partial<ActivitySettings>): Promise<ActivitySettings> =>
+      ipcRenderer.invoke(IPC.presenceSetSettings, patch),
+    listProcesses: (): Promise<string[]> => ipcRenderer.invoke(IPC.presenceListProcesses),
+    onIdle: (cb: (idle: boolean) => void): (() => void) => subscribe(IPC.presenceIdle, isBool, cb),
+    onActivity: (cb: (activity: DetectedActivity | null) => void): (() => void) =>
+      subscribe(IPC.presenceActivity, isDetectedActivity, cb),
   },
 
   updates: {

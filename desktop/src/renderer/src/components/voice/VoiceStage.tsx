@@ -29,6 +29,7 @@ import { CameraButton, DeafenButton, LeaveButton, MuteButton, ShareButton } from
 import { SharePickerHost } from './SharePicker'
 import { VideoTrackView, useVideoStats } from './VideoTrackView'
 import { UserVolumePopover } from './UserVolumePopover'
+import { StreamViewers } from './StreamViewers'
 import { closePopOut, isPoppedOut, popOut, supportsPopOut, usePip, type PipTarget } from './pip'
 import {
   AlertIcon,
@@ -421,7 +422,8 @@ const UserTile = memo(function UserTile({ view, user, mode, focused, onToggleFoc
       ) : (
         <div className="vx-user-bg" style={{ ['--tile-color' as string]: color }}>
           <span className="vx-ring">
-            <Avatar user={avatarUser(view, user)} size={avatarSize} />
+            {/* Animated profile pictures play while their owner talks. */}
+            <Avatar user={avatarUser(view, user)} size={avatarSize} animate={view.isSpeaking && !view.micMuted} />
           </span>
         </div>
       )}
@@ -489,6 +491,7 @@ const LiveCard = memo(function LiveCard({ view, user, mode }: LiveCardProps) {
         <span className="vx-unwatched-title">
           <span className="vx-live-badge">LIVE</span> You're live
         </span>
+        <StreamViewers streamerId={view.identity} variant="card" showEmpty />
         {!compact && preset && (
           <span className="vx-livecard-preset">
             {preset.label} · {preset.height}p{preset.fps}
@@ -561,6 +564,7 @@ const StreamTile = memo(function StreamTile({ view, user, watching, volume, deaf
           <span className="vx-unwatched-title">
             <span className="vx-live-badge">LIVE</span> {view.isLocal ? "You're live" : `${name} is streaming`}
           </span>
+          <StreamViewers streamerId={view.identity} variant="card" showEmpty={view.isLocal} />
           <button className="vx-btn vx-btn-primary" onClick={() => watchStream(view.identity)}>
             <EyeIcon size={16} /> {view.isLocal ? 'Preview' : 'Watch stream'}
           </button>
@@ -594,6 +598,7 @@ const StreamTile = memo(function StreamTile({ view, user, watching, volume, deaf
             {stats.width}×{stats.height} · {stats.fps} fps
           </span>
         )}
+        <StreamViewers streamerId={view.identity} variant="chip" />
       </div>
       {mode !== 'strip' && (
         <div className="vx-stream-bottom" onClick={stop} onDoubleClick={stop}>

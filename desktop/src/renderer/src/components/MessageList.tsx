@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import type { Attachment, Message, User } from '@shared/protocol'
 import { NO_REACTIONS, useApp } from '../store/app'
 import { useCompose } from '../store/compose'
+import { anchorOf, useUi } from '../store/ui'
 import { toast } from '../lib/toast'
 import { canDeleteMessage } from '../lib/permissions'
 import { contentToPlain, mentionsUser } from '../lib/mentions'
@@ -386,6 +387,11 @@ const ReplyLine = memo(function ReplyLine({ reply, onJump }: { reply: NonNullabl
   )
 })
 
+/** Clicking a message author's name or avatar opens their profile card next to it. */
+function openAuthorCard(userId: string, el: Element) {
+  useUi.getState().openProfileCard(userId, anchorOf(el), 'right')
+}
+
 const MessageRow = memo(function MessageRow({
   msg,
   head,
@@ -469,7 +475,18 @@ const MessageRow = memo(function MessageRow({
         {msg.replyTo && <ReplyLine reply={msg.replyTo} onJump={onJump} />}
         <div className="message-gutter">
           {head ? (
-            <Avatar user={author} size={36} />
+            author ? (
+              <button
+                type="button"
+                className="people-avatar-btn"
+                onClick={(e) => openAuthorCard(author.id, e.currentTarget)}
+                aria-label={`Profile of ${author.name}`}
+              >
+                <Avatar user={author} size={36} />
+              </button>
+            ) : (
+              <Avatar user={author} size={36} />
+            )
           ) : (
             <time className="message-time-hover" dateTime={new Date(msg.createdAt).toISOString()} title={formatFull(msg.createdAt)}>
               {formatTime(msg.createdAt)}
@@ -479,7 +496,11 @@ const MessageRow = memo(function MessageRow({
         <div className="message-body">
           {head && (
             <div className="message-header">
-              <span className="message-author" style={{ color: author?.color }}>
+              <span
+                className={`message-author ${author ? 'people-click' : ''}`}
+                style={{ color: author?.color }}
+                onClick={author ? (e) => openAuthorCard(author.id, e.currentTarget) : undefined}
+              >
                 {author?.name ?? 'Unknown user'}
               </span>
               <time className="message-time" dateTime={new Date(msg.createdAt).toISOString()} title={formatFull(msg.createdAt)}>

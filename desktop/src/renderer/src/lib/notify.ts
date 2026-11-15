@@ -12,6 +12,7 @@ import type { Message, User } from '@shared/protocol'
 import { useApp } from '../store/app'
 import { useUi } from '../store/ui'
 import { isUnread, totalUnreadMentions, useUnread } from '../store/unread'
+import { isDnd } from '../store/presence'
 import { playVoiceSound } from '../voice/sounds'
 import { avatarUrl } from './avatar'
 import { initials, inkOn } from './colors'
@@ -104,6 +105,10 @@ export function notifyMessage(m: Message): void {
   if (!channel) return
   // The channel on screen with the window focused: you're reading it, nothing to tell.
   if (st.selectedChannelId === m.channelId && windowActive()) return
+
+  // Do Not Disturb: no popup, sound or taskbar flash (unread and mention badges still update elsewhere).
+  // Wake-ups (voice/voiceActions.ts) don't come through here and still ring.
+  if (isDnd()) return
 
   const mentioned = mentionsUser(m, me.id)
   const prefs = useNotifyPrefs.getState()

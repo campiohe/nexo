@@ -2,8 +2,9 @@
 // encode it small enough for the server (AVATAR_MAX_BYTES). Everything happens in a canvas; nothing leaves
 // the machine except the final image.
 import { AVATAR_MAX_BYTES, AVATAR_SIZE } from '@shared/protocol'
+import { animatedTypeOf } from './gifAvatar'
 
-export const AVATAR_INPUT_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'] as const
+export const AVATAR_INPUT_TYPES = ['image/png', 'image/apng', 'image/jpeg', 'image/webp', 'image/gif'] as const
 /** Refuse absurdly large source files before decoding them. */
 export const AVATAR_INPUT_MAX_BYTES = 25 * 1024 * 1024
 const MAX_SOURCE_PIXELS = 80_000_000
@@ -15,9 +16,16 @@ export interface LoadedImage {
   /** blob: URL backing `img`; call release() when done. */
   url: string
   release(): void
+  /** The picked file. */
+  file: Blob
+  /**
+   * Decoder type (image/gif, image/webp, image/png) when the file is an animation this machine can decode:
+   * it's uploaded as an animated GIF (lib/gifAvatar.ts). null = a still picture.
+   */
+  animatedType: string | null
 }
 
-/** Decode a user-picked image file (first frame for GIFs). EXIF orientation is applied by Chromium. */
+/** Decode a user-picked image file (`img` animates for animations). EXIF orientation is applied by Chromium. */
 export async function loadImageFile(file: File): Promise<LoadedImage> {
   if (!(AVATAR_INPUT_TYPES as readonly string[]).includes(file.type)) {
     throw new Error('Pick a PNG, JPEG, WebP or GIF image')
@@ -39,7 +47,8 @@ export async function loadImageFile(file: File): Promise<LoadedImage> {
     URL.revokeObjectURL(url)
     throw new Error(width && height ? 'That image has too many pixels' : "Couldn't read that image")
   }
-  return { img, width, height, url, release: () => URL.revokeObjectURL(url) }
+  const animatedType = await animatedTypeOf(file).catch(() => null)
+  return { img, width, height, url, release: () => URL.revokeObjectURL(url), file, animatedType }
 }
 
 /** A square region of the source image, in source pixels. */

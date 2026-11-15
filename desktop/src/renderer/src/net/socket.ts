@@ -24,6 +24,7 @@ import { handleNotRecognized, resetSignIn, saveNewLogin } from '../store/signin'
 import { forgetChannel, loadReadState, noteDeleted, noteMessage, resetUnread } from '../store/unread'
 import { addAccessRequest, applyUserRemoved, dropAccessRequest, setAccessRequests } from '../store/admin'
 import { notifyMessage } from '../lib/notify'
+import { applyPresenceChanged, pruneOffline, setBootstrapPresence } from '../store/presence'
 
 export type NexoSocket = Socket<ServerToClientEvents, ClientToServerEvents>
 
@@ -192,6 +193,12 @@ function wire(s: NexoSocket) {
 
   s.on('presence', (ids) => {
     useApp.setState({ online: toSet(ids) })
+    pruneOffline(ids)
+  })
+
+  s.on('presence:changed', ({ userId, presence }) => {
+    if (socket !== s || !presence || typeof presence !== 'object') return
+    applyPresenceChanged(userId, presence)
   })
 
   s.on('channel:upsert', (c) => {
@@ -371,6 +378,7 @@ async function handleBootstrap(b: Bootstrap) {
     messages: sameIdentity ? messages : {},
     typing: {},
   })
+  setBootstrapPresence(b.presence)
   resetSignIn() // signed in: any onboarding "Welcome back" / sign-in request state is obsolete
   loadReadState(
     url,

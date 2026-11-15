@@ -1,7 +1,7 @@
 // Profile picture upload/removal over HTTP (PUT/DELETE /api/avatar, see shared/protocol.ts).
 // Auth is the same device token the socket handshake uses, sent as a bearer token.
 import type { User } from '@shared/protocol'
-import { AVATAR_MAX_BYTES } from '@shared/protocol'
+import { AVATAR_ANIMATED_MAX_BYTES, AVATAR_MAX_BYTES } from '@shared/protocol'
 import { useApp } from '../store/app'
 import { settings } from '../store/settings'
 
@@ -52,9 +52,18 @@ async function authed(method: 'PUT' | 'DELETE', body?: Blob): Promise<User> {
   return user
 }
 
-/** Upload an already cropped/resized image (image/webp, image/png or image/jpeg). */
+/**
+ * Upload an already cropped/resized image: image/webp, image/png or image/jpeg (AVATAR_MAX_BYTES), or an
+ * animated image/gif (AVATAR_ANIMATED_MAX_BYTES; the server then sets `avatarAnimated`).
+ */
 export function uploadAvatar(image: Blob): Promise<User> {
-  if (image.size > AVATAR_MAX_BYTES) {
+  if (image.type === 'image/gif') {
+    if (image.size > AVATAR_ANIMATED_MAX_BYTES) {
+      return Promise.reject(
+        new Error(`Animated profile pictures are limited to ${Math.round(AVATAR_ANIMATED_MAX_BYTES / (1024 * 1024))} MB`),
+      )
+    }
+  } else if (image.size > AVATAR_MAX_BYTES) {
     return Promise.reject(new Error(`Profile pictures are limited to ${Math.round(AVATAR_MAX_BYTES / 1024)} KB`))
   }
   return authed('PUT', image)
