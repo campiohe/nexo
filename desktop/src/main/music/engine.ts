@@ -663,7 +663,9 @@ export class MusicEngine {
       } catch (err) {
         const e = classifyError(err)
         errors.push(e)
-        if (e.code === 'network' || gaveUp(errors)) break
+        // One client's endpoint failing (5xx, reset) shouldn't stop the fallbacks; two network failures in a
+        // row most likely mean this device is offline, so stop there.
+        if ((e.code === 'network' && errors.filter((x) => x.code === 'network').length >= 2) || gaveUp(errors)) break
       }
     }
     // A bot check explains the other clients' failures too; then "unavailable" (region, age, removed).
