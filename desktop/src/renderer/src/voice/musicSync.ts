@@ -52,10 +52,14 @@ export function expectedPositionMs(state: MusicState | null | undefined, serverN
 
 /** Beyond this (ms, either way) the player jumps to the right position. */
 export const HARD_SEEK_MS = 750
-/** From this much drift (ms) the player starts nudging its playback rate… */
-export const NUDGE_START_MS = 80
+/**
+ * From this much drift (ms) the player starts nudging its playback rate… Kept small: two clients can each be
+ * off by up to this in opposite directions, and ~60 ms between two speakers in one room is already audible.
+ * (Measured position noise between samples is ~2 ms, so this doesn't flap.)
+ */
+export const NUDGE_START_MS = 30
 /** …and goes back to normal speed once within this much. */
-export const NUDGE_STOP_MS = 40
+export const NUDGE_STOP_MS = 10
 /** Rates used while nudging: slow down when ahead, speed up when behind (±3% is hard to hear; pitch is kept). */
 export const RATE_SLOW = 0.97
 export const RATE_FAST = 1.03

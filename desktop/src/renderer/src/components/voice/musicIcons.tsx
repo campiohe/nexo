@@ -23,11 +23,12 @@ function Svg({ size = 18, children, ...rest }: IconProps & { children: ReactNode
   )
 }
 
+/** A vinyl record (the soundboard uses a music note, so the two toolbar buttons don't look alike). */
 export const MusicIcon = (p: IconProps) => (
   <Svg {...p}>
-    <path d="M9 18V5l11-2v13" />
-    <circle cx="6" cy="18" r="3" />
-    <circle cx="17" cy="16" r="3" />
+    <circle cx="12" cy="12" r="9" />
+    <circle cx="12" cy="12" r="2.5" />
+    <path d="M7.5 9.2a5.5 5.5 0 0 1 2.4-2.5M16.5 14.8a5.5 5.5 0 0 1-2.4 2.5" />
   </Svg>
 )
 

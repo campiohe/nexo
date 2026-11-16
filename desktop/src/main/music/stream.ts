@@ -11,27 +11,42 @@
 // stay valid. Only URLs chosen by the engine (https://*.googlevideo.com/videoplayback) are ever fetched,
 // redirects included: this is not a general proxy.
 //
+// Timeouts: an upstream request must answer (headers) within UPSTREAM_HEADERS_TIMEOUT_MS. Its body has no
+// overall deadline (the element stops pulling once it has buffered enough, for as long as playback is
+// paused); only a read that is pending, i.e. the element wants bytes and upstream sends none, is limited to
+// UPSTREAM_IDLE_TIMEOUT_MS. A stalled or broken body is reopened from the current position, like a response
+// that ends early.
+//
 // No Electron imports: index.ts hands in the fetch implementation.
-import { MusicError, toPlainError, type MusicEngine, type StreamInfo } from './engine'
+import { fetchGooglevideo, MusicError, toPlainError, type MusicEngine, type StreamInfo } from './engine'
 import type { MusicEngineError } from '../../preload/api'
 
 const FIRST_CHUNK_BYTES = 512 * 1024
 const CHUNK_BYTES = 4 * 1024 * 1024
-const MAX_REDIRECTS = 3
-const UPSTREAM_TIMEOUT_MS = 20_000
-const MAX_SHORT_READS = 5
+const UPSTREAM_HEADERS_TIMEOUT_MS = 20_000
+const UPSTREAM_IDLE_TIMEOUT_MS = 20_000
+/** Upstream failures in a row (early end, stall, broken body) without a byte received in between. */
+const MAX_UPSTREAM_FAILURES = 5
 
 export type FetchFn = (input: string, init: RequestInit) => Promise<Response>
 
 class StaleUrl extends Error {}
 
-function isStreamHost(raw: string): boolean {
-  try {
-    const u = new URL(raw)
-    return u.protocol === 'https:' && /(^|\.)googlevideo\.com$/.test(u.hostname) && u.pathname.startsWith('/videoplayback') && !u.username && !u.password && !u.port
-  } catch {
-    return false
-  }
+/** reader.read(), or 'idle' when nothing arrives within `ms` (the read is then left to the caller to cancel). */
+function readWithin<T>(reader: ReadableStreamDefaultReader<T>, ms: number): Promise<ReadableStreamReadResult<T> | 'idle'> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => resolve('idle'), ms)
+    reader.read().then(
+      (r) => {
+        clearTimeout(timer)
+        resolve(r)
+      },
+      (err: unknown) => {
+        clearTimeout(timer)
+        reject(err)
+      },
+    )
+  })
 }
 
 type Range = { start: number; end: number }
@@ -121,8 +136,16 @@ export class TrackStreamer {
 
       let pos = start
       let reader: ReadableStreamDefaultReader<Uint8Array> | null = await open(start)
-      let shortReads = 0
+      let failures = 0
+      /** Drop the current upstream body and continue from `pos` with a new request. */
+      const reopen = (why: string): void => {
+        reader?.cancel().catch(() => {})
+        reader = null
+        if (++failures > MAX_UPSTREAM_FAILURES) throw new MusicError('network', `googlevideo kept failing (${why})`)
+        this.log('INFO', `[music] stream ${videoId}: upstream ${why} at ${pos}, continuing with a new request`)
+      }
       const body = new ReadableStream<Uint8Array>({
+        // Called only while the element wants more bytes: a paused / fully buffered element never times out.
         pull: async (controller) => {
           try {
             for (;;) {
@@ -131,14 +154,28 @@ export class TrackStreamer {
                 return
               }
               reader ??= await open(pos)
-              const { done, value } = await reader.read()
-              if (done) {
-                reader = null
-                // googlevideo sometimes ends a response early: continue from where it stopped.
-                if (pos <= chunkEnd && ++shortReads > MAX_SHORT_READS) throw new MusicError('network', 'stream kept ending early')
+              let result: ReadableStreamReadResult<Uint8Array> | 'idle'
+              try {
+                result = await readWithin(reader, UPSTREAM_IDLE_TIMEOUT_MS)
+              } catch (err) {
+                if (abort.signal.aborted) throw err
+                reopen(`body failed (${toPlainError(err).message})`)
                 continue
               }
+              if (result === 'idle') {
+                reopen('stalled')
+                continue
+              }
+              if (result.done) {
+                // Done exactly at the end of the chunk: the next chunk opens on the next turn. Otherwise
+                // googlevideo ended the response early: continue from where it stopped.
+                if (pos <= chunkEnd) reopen('ended early')
+                else reader = null
+                continue
+              }
+              const value = result.value
               if (!value?.byteLength) continue
+              failures = 0
               const piece = value.byteLength > end - pos + 1 ? value.subarray(0, end - pos + 1) : value
               pos += piece.byteLength
               controller.enqueue(piece)
@@ -162,37 +199,38 @@ export class TrackStreamer {
     }
   }
 
-  /** One upstream range request (redirects followed by hand, googlevideo only) → body reader. */
+  /**
+   * One upstream range request (redirects followed by hand, googlevideo only) → body reader. The timeout
+   * covers the response headers only; the body stays tied to `signal` (the consumer's cancellation).
+   */
   private async fetchChunk(info: StreamInfo, from: number, to: number, signal: AbortSignal): Promise<ReadableStreamDefaultReader<Uint8Array>> {
-    let url = info.url
-    for (let hop = 0; ; hop++) {
-      if (!isStreamHost(url)) throw new MusicError('engine', 'refusing to fetch a non-googlevideo URL')
-      const res = await this.fetchImpl(url, {
+    const headersTimeout = new AbortController()
+    const timer = setTimeout(
+      () => headersTimeout.abort(new MusicError('network', 'googlevideo took too long to answer')),
+      UPSTREAM_HEADERS_TIMEOUT_MS,
+    )
+    let res: Response
+    try {
+      res = await fetchGooglevideo(this.fetchImpl, info.url, {
         method: 'GET',
         headers: { range: `bytes=${from}-${to}`, 'user-agent': info.userAgent, accept: '*/*' },
-        redirect: 'manual',
-        signal: AbortSignal.any([signal, AbortSignal.timeout(UPSTREAM_TIMEOUT_MS)]),
+        signal: AbortSignal.any([signal, headersTimeout.signal]),
       })
-      if (res.status >= 300 && res.status < 400) {
-        const location = res.headers.get('location')
-        await res.body?.cancel().catch(() => {})
-        if (!location || hop >= MAX_REDIRECTS) throw new MusicError('network', `googlevideo redirect without target (${res.status})`)
-        url = new URL(location, url).toString()
-        continue
-      }
-      if (res.status === 403 || res.status === 404 || res.status === 410) {
-        await res.body?.cancel().catch(() => {})
-        throw new StaleUrl(`HTTP ${res.status}`)
-      }
-      const contentRange = res.headers.get('content-range') ?? ''
-      const ok =
-        (res.status === 206 && contentRange.startsWith(`bytes ${from}-`)) ||
-        (res.status === 200 && from === 0 && to === info.contentLength - 1)
-      if (!ok || !res.body) {
-        await res.body?.cancel().catch(() => {})
-        throw new MusicError(res.status >= 500 || res.status === 429 ? 'network' : 'engine', `googlevideo answered ${res.status} ${contentRange}`)
-      }
-      return res.body.getReader()
+    } finally {
+      clearTimeout(timer)
     }
+    if (res.status === 403 || res.status === 404 || res.status === 410) {
+      await res.body?.cancel().catch(() => {})
+      throw new StaleUrl(`HTTP ${res.status}`)
+    }
+    const contentRange = res.headers.get('content-range') ?? ''
+    const ok =
+      (res.status === 206 && contentRange.startsWith(`bytes ${from}-`)) ||
+      (res.status === 200 && from === 0 && to === info.contentLength - 1)
+    if (!ok || !res.body) {
+      await res.body?.cancel().catch(() => {})
+      throw new MusicError(res.status >= 500 || res.status === 429 ? 'network' : 'engine', `googlevideo answered ${res.status} ${contentRange}`)
+    }
+    return res.body.getReader()
   }
 }

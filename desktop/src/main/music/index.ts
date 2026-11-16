@@ -11,6 +11,9 @@ import { IPC, type MusicEngineError } from '../../preload/api'
 import { logLine } from '../log'
 import { isAppUrl } from '../security'
 import { MusicEngine, toPlainError } from './engine'
+import { createPlayerEvaluator } from './evaluator'
+// electron-vite bundles evaluatorWorker.ts as a separate file in out/main and returns a Worker factory for it.
+import spawnEvaluatorWorker from './evaluatorWorker?nodeWorker'
 import { VIDEO_ID_RE } from './mapping'
 import { errorResponse, TrackStreamer } from './stream'
 
@@ -87,6 +90,7 @@ export function installMusic(): void {
     location: /^[A-Z]{2}$/.test(app.getLocaleCountryCode()) ? app.getLocaleCountryCode() : undefined,
     fetch: globalThis.fetch.bind(globalThis),
     log,
+    evaluate: createPlayerEvaluator(spawnEvaluatorWorker),
   })
   const streamer = new TrackStreamer(engine, (input, init) => globalThis.fetch(input, init), log)
 

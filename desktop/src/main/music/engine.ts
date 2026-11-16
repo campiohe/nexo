@@ -13,9 +13,11 @@
 //   URLs), MWEB URLs 403 right away, TV answers "The page needs to be reloaded".
 //   Every candidate URL is probed before use (its first KB and its last 2 KB, the latter past that 1 MB
 //   limit), so a client that starts needing a PO token falls through to the next one.
-import type { Innertube as InnertubeT } from 'youtubei.js'
+import { createHash } from 'node:crypto'
+import { isAbsolute, relative, resolve as resolvePath } from 'node:path'
+import type { Innertube as InnertubeT, Types as YTTypes } from 'youtubei.js'
 import type { MusicCollection, MusicCollectionTracks, MusicEngineError, MusicSearchResults, MusicTrackInfo } from '../../preload/api'
-import { evaluatePlayerScript } from './evaluator'
+import type { PlayerEvaluator } from './evaluator'
 import {
   bestArtwork,
   cleanChannelName,
@@ -70,6 +72,11 @@ export interface EngineOptions {
   location?: string
   fetch?: typeof fetch
   log?: LogFn
+  /**
+   * Runs the player script's decipher code (evaluator.ts, in a worker). Without it the ciphered YTMUSIC
+   * fallback is skipped; the other clients don't need it.
+   */
+  evaluate?: PlayerEvaluator
 }
 
 const SEARCH_MAX_QUERY = 200
@@ -86,6 +93,10 @@ const EXPIRY_MARGIN_MS = 10 * 60_000
 const CACHE_MAX = 300
 const UNAVAILABLE_TTL_MS = 10 * 60_000
 const SESSION_RESET_INTERVAL_MS = 10 * 60_000
+/** How long the file a video was last served from (itag + length) is kept after its last use, and how many. */
+const PIN_TTL_MS = 6 * 3600_000
+const PIN_MAX = 1000
+const MAX_REDIRECTS = 3
 const DESKTOP_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36'
 
@@ -181,7 +192,69 @@ function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
   return Promise.race([p, timeout]).finally(() => clearTimeout(timer))
 }
 
-const isGooglevideo = (u: URL): boolean => u.protocol === 'https:' && /(^|\.)googlevideo\.com$/.test(u.hostname) && !u.username && !u.password && !u.port
+// ── googlevideo requests (shared with stream.ts) ───────────────────────────────────────────────────────
+
+/** https://*.googlevideo.com/videoplayback… (no credentials, no explicit port): the only URLs ever fetched. */
+export function isStreamUrl(raw: string): boolean {
+  try {
+    const u = new URL(raw)
+    return u.protocol === 'https:' && /(^|\.)googlevideo\.com$/.test(u.hostname) && u.pathname.startsWith('/videoplayback') && !u.username && !u.password && !u.port
+  } catch {
+    return false
+  }
+}
+
+/**
+ * fetch for googlevideo stream URLs: redirects are followed by hand, and only to another stream URL (at most
+ * MAX_REDIRECTS hops). Never answers with a 3xx. The caller owns the signal (timeouts, cancellation).
+ */
+export async function fetchGooglevideo(
+  fetchImpl: (input: string, init: RequestInit) => Promise<Response>,
+  url: string,
+  init: Omit<RequestInit, 'redirect'>,
+): Promise<Response> {
+  for (let hop = 0; ; hop++) {
+    if (!isStreamUrl(url)) throw new MusicError('engine', 'refusing to fetch a non-googlevideo URL')
+    const res = await fetchImpl(url, { ...init, redirect: 'manual' })
+    if (res.status < 300 || res.status >= 400) return res
+    const location = res.headers.get('location')
+    await res.body?.cancel().catch(() => {})
+    if (!location || hop >= MAX_REDIRECTS) throw new MusicError('network', `googlevideo redirect without target (${res.status})`)
+    url = new URL(location, url).toString()
+  }
+}
+
+/**
+ * youtubei.js's file cache keyed by names it gets from YouTube (the player id): keys are reduced to a plain
+ * file name (else hashed) and must resolve inside the cache directory, so a hostile id can't write elsewhere.
+ */
+export class SafeCache implements YTTypes.ICache {
+  private readonly dir: string
+  constructor(private readonly inner: YTTypes.ICache) {
+    this.dir = resolvePath(inner.cache_dir)
+  }
+  get cache_dir(): string {
+    return this.inner.cache_dir
+  }
+  private key(raw: string): string {
+    const plain = typeof raw === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(raw) && !/^(con|prn|aux|nul|com\d|lpt\d)$/i.test(raw)
+    const key = plain ? raw : `h_${createHash('sha256').update(String(raw)).digest('hex').slice(0, 40)}`
+    const rel = relative(this.dir, resolvePath(this.dir, key))
+    if (!rel || rel.startsWith('..') || isAbsolute(rel) || /[\\/]/.test(rel)) throw new Error('invalid cache key')
+    return key
+  }
+  get(key: string): Promise<ArrayBuffer | undefined> {
+    return this.inner.get(this.key(key))
+  }
+  set(key: string, value: ArrayBuffer): Promise<void> {
+    return this.inner.set(this.key(key), value)
+  }
+  remove(key: string): Promise<void> {
+    return this.inner.remove(this.key(key))
+  }
+}
+
+const refuseEval: PlayerEvaluator = () => Promise.reject(new Error('no player script evaluator'))
 
 /** EBML (WebM) or an ISO BMFF box ('ftyp' / 'sidx' / 'moov' at offset 4). */
 function looksLikeAudio(bytes: Uint8Array, mime: StreamInfo['mimeType']): boolean {
@@ -218,10 +291,19 @@ interface TrackMeta {
 interface CacheEntry {
   stream: StreamInfo | null
   meta: TrackMeta | null
-  /** Last itag served for this video: a refresh keeps the same file, so byte ranges stay valid. */
-  itag: number | null
   /** Set while the video is known unavailable (negative cache). */
   unavailable: { until: number; error: MusicError } | null
+}
+
+/**
+ * The file a video was last served from. A re-resolve (expiry, eviction, 403 refresh) must land on the same
+ * file, or the byte offsets of a playback in progress would point into a different one.
+ */
+interface Pin {
+  itag: number
+  contentLength: number
+  client: ClientName
+  at: number
 }
 
 // ── Engine ────────────────────────────────────────────────────────────────────────────────────────────
@@ -231,7 +313,7 @@ let ytModule: Promise<YT> | null = null
 /** Loads youtubei.js lazily (keeps it off the startup path) and plugs in the evaluator and logging. */
 function loadYoutubei(log: LogFn): Promise<YT> {
   ytModule ??= import('youtubei.js').then((yt) => {
-    yt.Platform.shim.eval = evaluatePlayerScript
+    yt.Platform.shim.eval = refuseEval
     yt.Log.setLevel(yt.Log.Level.ERROR)
     // Parser drift (new/changed node classes) is expected and mostly harmless: one line per class, not a dump.
     const seen = new Set<string>()
@@ -254,6 +336,8 @@ export class MusicEngine {
   private readonly log: LogFn
   private readonly limiter = new Limiter(MAX_CONCURRENT)
   private readonly cache = new Map<string, CacheEntry>()
+  /** Kept apart from `cache` (and its LRU), which drops entries much sooner. */
+  private readonly pins = new Map<string, Pin>()
   private readonly inflight = new Map<string, Promise<StreamInfo>>()
   private sessions: { plain: Promise<InnertubeT> | null; player: Promise<InnertubeT> | null } = { plain: null, player: null }
   private lastSessionReset = 0
@@ -281,9 +365,11 @@ export class MusicEngine {
     if (existing) return existing
     const created = (async () => {
       const yt = await loadYoutubei(this.log)
+      // Process-wide hook; one engine per process.
+      yt.Platform.shim.eval = this.opts.evaluate ?? refuseEval
       const started = Date.now()
       const it = await yt.Innertube.create({
-        cache: this.opts.cacheDir ? new yt.UniversalCache(true, this.opts.cacheDir) : undefined,
+        cache: this.opts.cacheDir ? new SafeCache(new yt.UniversalCache(true, this.opts.cacheDir)) : undefined,
         retrieve_player: withPlayer,
         // Fixed (the default is random per session), so the cached session data matches and is reused.
         user_agent: DESKTOP_UA,
@@ -317,7 +403,7 @@ export class MusicEngine {
       )
     } catch (err) {
       const e = classifyError(err)
-      if (e.code !== 'unavailable') this.log('WARN', `[music] ${what} failed (${e.code}):`, errorChain(err).messages[0] ?? err)
+      if (e.code !== 'unavailable') this.log('WARN', `[music] ${what} failed (${e.code}):`, errorChain(err).messages[0] ?? e.message)
       this.maybeResetSessions(e)
       throw e
     }
@@ -460,6 +546,7 @@ export class MusicEngine {
       // LRU: move to the end.
       this.cache.delete(videoId)
       this.cache.set(videoId, entry)
+      this.pinFor(videoId)
       return Promise.resolve(entry.stream)
     }
     const running = this.inflight.get(videoId)
@@ -470,7 +557,7 @@ export class MusicEngine {
   }
 
   private remember(videoId: string, patch: Partial<CacheEntry>): void {
-    const prev = this.cache.get(videoId) ?? { stream: null, meta: null, itag: null, unavailable: null }
+    const prev = this.cache.get(videoId) ?? { stream: null, meta: null, unavailable: null }
     this.cache.delete(videoId)
     this.cache.set(videoId, { ...prev, ...patch })
     while (this.cache.size > CACHE_MAX) {
@@ -480,13 +567,38 @@ export class MusicEngine {
     }
   }
 
+  /** The live pin of a video (refreshing its age), or null. */
+  private pinFor(videoId: string): Pin | null {
+    const pin = this.pins.get(videoId)
+    if (!pin) return null
+    this.pins.delete(videoId)
+    if (Date.now() - pin.at > PIN_TTL_MS) return null
+    pin.at = Date.now()
+    this.pins.set(videoId, pin)
+    return pin
+  }
+
+  private setPin(videoId: string, s: StreamInfo): void {
+    this.pins.delete(videoId)
+    this.pins.set(videoId, { itag: s.itag, contentLength: s.contentLength, client: s.client, at: Date.now() })
+    while (this.pins.size > PIN_MAX) {
+      const oldest = this.pins.keys().next().value
+      if (oldest === undefined) break
+      this.pins.delete(oldest)
+    }
+  }
+
   private async resolveStream(videoId: string): Promise<StreamInfo> {
     // Two clients saying "unavailable" (removed, private, region, age): it's the video, not the client.
     const gaveUp = (errors: MusicError[]): boolean => errors.filter((e) => e.code === 'unavailable').length >= 2
     const yt = await loadYoutubei(this.log)
-    const preferItag = this.cache.get(videoId)?.itag ?? null
+    // A known file: ask the client that produced it first, and accept only that same file.
+    const pin = this.pinFor(videoId)
+    const clients = pin ? [...STREAM_CLIENTS].sort((a, b) => Number(b.client === pin.client) - Number(a.client === pin.client)) : STREAM_CLIENTS
+    let otherFile = false
     const errors: MusicError[] = []
-    for (const { client, needsPlayer } of STREAM_CLIENTS) {
+    for (const { client, needsPlayer } of clients) {
+      if (needsPlayer && !this.opts.evaluate) continue
       try {
         const it = await this.session(needsPlayer)
         const info = await it.getBasicInfo(videoId, { client })
@@ -519,24 +631,33 @@ export class MusicEngine {
             (typeof f.url === 'string' || (needsPlayer && (typeof f.signature_cipher === 'string' || typeof f.cipher === 'string'))),
         )
         const order = (f: FormatLike): number => {
-          const itag = f.itag as number
-          const preferred = itag === preferItag ? -100 : 0
           const nonDefaultTrack = f.audio_track && f.audio_track.audio_is_default === false ? 50 : 0
-          return preferred + nonDefaultTrack + ITAG_ORDER.indexOf(itag)
+          return nonDefaultTrack + ITAG_ORDER.indexOf(f.itag as number)
         }
         formats.sort((a, b) => order(a) - order(b))
         if (!formats.length) {
           errors.push(new MusicError('engine', `${client}: no direct audio URLs`))
           continue
         }
-        const format = formats[0]
+        const format = pin ? formats.find((f) => f.itag === pin.itag) : formats[0]
+        if (!format) {
+          otherFile = true
+          errors.push(new MusicError('engine', `${client}: itag ${pin?.itag} no longer offered`))
+          continue
+        }
         const url = needsPlayer ? await format.decipher(it.session.player) : (format.url as string)
         const stream = await this.checkStream(yt, videoId, client, format, url)
         if (!stream) {
           errors.push(new MusicError('engine', `${client}: stream URL refused`))
           continue
         }
-        this.remember(videoId, { stream, itag: stream.itag, unavailable: null })
+        if (pin && stream.contentLength !== pin.contentLength) {
+          otherFile = true
+          errors.push(new MusicError('engine', `${client}: itag ${stream.itag} is now ${stream.contentLength} B, was ${pin.contentLength} B`))
+          continue
+        }
+        this.remember(videoId, { stream, unavailable: null })
+        this.setPin(videoId, stream)
         this.log('INFO', `[music] stream ${videoId}: ${client} itag ${stream.itag} (${stream.mimeType}, ${stream.contentLength} B)`)
         return stream
       } catch (err) {
@@ -554,6 +675,12 @@ export class MusicEngine {
       new MusicError('engine', 'no stream found')
     if (pick.code === 'unavailable') this.remember(videoId, { stream: null, unavailable: { until: Date.now() + UNAVAILABLE_TTL_MS, error: pick } })
     this.log('WARN', `[music] no stream for ${videoId}:`, errors.map((e) => `${e.code}: ${e.message}`).join('; '))
+    if (otherFile && pick.code !== 'bot-check' && pick.code !== 'unavailable') {
+      // YouTube serves a different file now: fail this request rather than mix two files' bytes, and forget
+      // the pin so the player's reload (which starts from byte 0) gets the new file.
+      this.pins.delete(videoId)
+      throw new MusicError('engine', 'YouTube now serves a different file for this track; it has to be reloaded.')
+    }
     throw pick
   }
 
@@ -568,7 +695,7 @@ export class MusicEngine {
     } catch {
       return null
     }
-    if (!isGooglevideo(u) || !u.pathname.startsWith('/videoplayback')) return null
+    if (!isStreamUrl(u.toString())) return null
     const mimeBase = typeof format.mime_type === 'string' ? format.mime_type.split(';', 1)[0].trim() : ''
     const mimeType = mimeBase === 'audio/webm' ? 'audio/webm' : mimeBase === 'audio/mp4' ? 'audio/mp4' : null
     if (!mimeType) return null
@@ -576,9 +703,9 @@ export class MusicEngine {
     const expire = Number(u.searchParams.get('expire'))
     const expiresAt = Number.isFinite(expire) && expire > 0 ? expire * 1000 : Date.now() + 5 * 3600_000
     const probe = async (from: number, to: number): Promise<{ status: number; body: Uint8Array; total: number }> => {
-      const res = await this.fetchImpl(u, {
+      // Redirects only to another googlevideo stream URL, as in stream.ts: a URL is never approved off-site.
+      const res = await fetchGooglevideo(this.fetchImpl, u.toString(), {
         headers: { range: `bytes=${from}-${to}`, 'user-agent': userAgent, accept: '*/*' },
-        redirect: 'follow',
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       })
       const body = new Uint8Array(await res.arrayBuffer())
