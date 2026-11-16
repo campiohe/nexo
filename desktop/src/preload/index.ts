@@ -17,6 +17,9 @@ import {
   type HotkeyEvent,
   type HotkeyStatus,
   type KeybindCapture,
+  type MusicCollectionTracks,
+  type MusicEngineError,
+  type MusicSearchResults,
   type NativeShareCapabilities,
   type NativeShareError,
   type NativeShareEvent,
@@ -151,6 +154,33 @@ async function startNativeShare(opts: unknown): Promise<{ shareId: number }> {
   return { shareId: result.shareId }
 }
 
+// ── Music ───────────────────────────────────────────────────────────────────────────────────────────────
+
+const MUSIC_VIDEO_ID = /^[A-Za-z0-9_-]{11}$/
+const MUSIC_ERROR_CODES: readonly MusicEngineError['code'][] = ['bot-check', 'unavailable', 'network', 'engine']
+
+/** Rejections are plain objects (contextBridge drops custom Error properties), like nativeShare's. */
+function musicError(code: MusicEngineError['code'], message: string): MusicEngineError {
+  return { name: 'MusicEngineError', code, message }
+}
+
+/** Main answers music calls with { ok: true, data } or { ok: false, error: MusicEngineError }. */
+async function invokeMusic<T>(channel: string, arg: unknown): Promise<T> {
+  let result: unknown
+  try {
+    result = await ipcRenderer.invoke(channel, arg)
+  } catch (err) {
+    throw musicError('engine', err instanceof Error ? err.message : String(err))
+  }
+  if (isObj(result) && result.ok === true) return result.data as T
+  if (isObj(result) && result.ok === false && isObj(result.error)) {
+    const e = result.error
+    const code = MUSIC_ERROR_CODES.includes(e.code as MusicEngineError['code']) ? (e.code as MusicEngineError['code']) : 'engine'
+    throw musicError(code, typeof e.message === 'string' ? e.message : 'music engine error')
+  }
+  throw musicError('engine', 'invalid reply from main')
+}
+
 // ── Presence (idle, game detection) ─────────────────────────────────────────────────────────────────────
 
 const isBool = (v: unknown): v is boolean => typeof v === 'boolean'
@@ -188,6 +218,23 @@ const bridge: NexoBridge = {
   },
 
   openExternal: (url: string): void => ipcRenderer.send(IPC.openExternal, url),
+
+  music: {
+    search: (query: string): Promise<MusicSearchResults> => invokeMusic(IPC.musicSearch, query),
+    resolve: (input: string): Promise<MusicCollectionTracks | null> => invokeMusic(IPC.musicResolve, input),
+    streamUrl: (videoId: string): string => {
+      if (typeof videoId !== 'string' || !MUSIC_VIDEO_ID.test(videoId)) throw new Error('invalid video id')
+      return `nexo-music://track/${videoId}`
+    },
+    prefetch: async (videoId: string): Promise<void> => {
+      if (typeof videoId !== 'string' || !MUSIC_VIDEO_ID.test(videoId)) return
+      await ipcRenderer.invoke(IPC.musicPrefetch, videoId).catch(() => {})
+    },
+    lastError: async (videoId: string): Promise<MusicEngineError | null> => {
+      if (typeof videoId !== 'string' || !MUSIC_VIDEO_ID.test(videoId)) return null
+      return ((await ipcRenderer.invoke(IPC.musicLastError, videoId).catch(() => null)) as MusicEngineError | null) ?? null
+    },
+  },
 
   requestAttention: (): void => ipcRenderer.send(IPC.requestAttention),
 

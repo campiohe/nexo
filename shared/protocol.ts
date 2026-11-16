@@ -276,6 +276,10 @@ export interface Bootstrap {
   presence?: Record<string, Presence>
   /** The soundboard, oldest first. Older servers omit it. */
   sounds?: Sound[]
+  /** Which built-in plugins the admins turned on. Older servers omit it (= no plugins). */
+  plugins?: ServerPlugins
+  /** Music sessions of voice channels that have one (MusicState.current or queue non-empty). */
+  music?: MusicState[]
 }
 
 /** Sent in the socket.io handshake `auth` field. */
@@ -366,6 +370,40 @@ export interface ClientToServerEvents {
    * deafened.
    */
   'sound:play': (p: { soundId: string }, ack: Ack<null>) => void
+  /**
+   * Admins/owner: turn a built-in plugin on or off for the whole server (persisted). Broadcasts `plugins:changed`
+   * when it changed. Turning `music` off ends every music session.
+   */
+  'plugins:set': (p: { plugin: PluginId; enabled: boolean }, ack: Ack<ServerPlugins>) => void
+  /** The server's clock (ms epoch), for MusicState timing. Clients estimate their offset from several RTTs. */
+  'time:now': (p: Record<string, never>, ack: Ack<{ now: number }>) => void
+  /**
+   * Add tracks to a voice channel's music queue (the `music` plugin must be on and you must be in that voice
+   * channel). `next: true` inserts them right after the current track instead of at the end. Starts playing
+   * when nothing was. At most MUSIC_MAX_ADD per call, MUSIC_MAX_QUEUE queued in total (the track that starts
+   * playing doesn't count); one invalid track fails the whole call. Shares `music:control`'s rate limit.
+   * Broadcasts `music:state`.
+   */
+  'music:add': (p: { channelId: string; tracks: MusicTrackInfo[]; next?: boolean }, ack: Ack<MusicState>) => void
+  /**
+   * Control a voice channel's music (same rules as `music:add`). `play`/`pause` resume or pause at the
+   * current position; `seek` to `positionMs` (clamped to [0, durationMs - 1000]); `skip` plays the next track
+   * (also when paused; stops when the queue is empty); `previous` restarts the current track and plays it (or
+   * goes back to the last played one when within the first 3 s, the current one returning to the queue's front);
+   * `remove` / `move` a queued entry by `queueId` (move to `toIndex` in `queue`); `clear` empties the queue
+   * (keeps the current track); `stop` clears everything. Rate limited per user. Broadcasts `music:state`
+   * (a no-op, e.g. `pause` while paused, only acks the state).
+   */
+  'music:control': (
+    p: {
+      channelId: string
+      action: 'play' | 'pause' | 'seek' | 'skip' | 'previous' | 'remove' | 'move' | 'clear' | 'stop'
+      positionMs?: number
+      queueId?: string
+      toIndex?: number
+    },
+    ack: Ack<MusicState>,
+  ) => void
   'message:history': (p: { channelId: string; before?: number }, ack: Ack<Message[]>) => void
   typing: (p: { channelId: string }) => void
   'voice:token': (p: { channelId: string }, ack: Ack<VoiceCredentials>) => void
@@ -419,6 +457,9 @@ export interface ServerToClientEvents {
   'sound:deleted': (p: { soundId: string }) => void
   /** `userId` played a clip in voice channel `channelId` (only sent to that channel's members). */
   'sound:played': (p: { soundId: string; userId: string; channelId: string }) => void
+  'plugins:changed': (p: ServerPlugins) => void
+  /** A voice channel's music session changed (also sent when it becomes empty: current null, queue []). */
+  'music:state': (s: MusicState) => void
   /**
    * `userId`'s aggregate presence changed (DEFAULT_PRESENCE when they went back to plain online or went
    * offline). Also sent for yourself: it's what others see, not something to adopt as your own status.
@@ -544,3 +585,64 @@ export const MAX_MESSAGE_LENGTH = 4000
 // GET    /sounds/:id       → the audio (no auth; unguessable id; cached forever)
 // Clients trim/convert clips to <= SOUND_MAX_MS WAV before uploading and play them with Web Audio
 // (fetch + decodeAudioData), since the renderer CSP's media-src doesn't allow server URLs.
+
+// ---- Plugins (built-in, toggled by admins) ----
+export type PluginId = 'music'
+export interface ServerPlugins {
+  /** "YouTube Music": listen together in voice channels. */
+  music: boolean
+}
+export const DEFAULT_PLUGINS: ServerPlugins = { music: false }
+
+// ---- Music plugin: listen together (docs/SPEC.md) ----
+// Every client in the voice channel fetches and plays the same track itself (YouTube Music via InnerTube in
+// the desktop main process) at the position derived from MusicState; the server only keeps the shared
+// state and advances the queue on a timer (durationMs). Nothing is re-broadcast through voice.
+
+/** A track as found by a client's search (YouTube video id + metadata). Validated by the server. */
+export interface MusicTrackInfo {
+  /** YouTube video id: /^[A-Za-z0-9_-]{11}$/. */
+  videoId: string
+  /** 1..200 characters (UTF-16 units, after the server normalizes it like other display text). */
+  title: string
+  /** Artist(s) as one string, 0..200 characters. */
+  artist: string
+  /** 0..200 characters, or null ('' becomes null). */
+  album: string | null
+  /** 1 s .. MUSIC_MAX_TRACK_MS. */
+  durationMs: number
+  /** https artwork on ytimg.com, *.ytimg.com or *.googleusercontent.com, no credentials/port (else dropped), or null. */
+  artwork: string | null
+}
+
+export interface MusicTrack extends MusicTrackInfo {
+  /** Unique per queue entry (the same song can be queued twice). */
+  queueId: string
+  /** userId who added it. */
+  addedBy: string
+}
+
+export interface MusicState {
+  channelId: string
+  current: MusicTrack | null
+  /** Upcoming tracks, in order. */
+  queue: MusicTrack[]
+  /**
+   * While playing: the server time (ms epoch) at which `current` was at position 0 (position now =
+   * serverNow - startedAt). null while paused or stopped.
+   */
+  startedAt: number | null
+  /** While paused: the position (ms) to resume from. null while playing or stopped. */
+  pausedAt: number | null
+  /**
+   * Bumped on every change; clients ignore a state older than the one they have. One server-wide counter that
+   * never goes back (not when a channel's session ends and starts again, nor across server restarts).
+   */
+  rev: number
+}
+
+export const MUSIC_MAX_QUEUE = 200
+export const MUSIC_MAX_ADD = 100
+export const MUSIC_MAX_TRACK_MS = 3 * 60 * 60 * 1000
+/** A voice channel's session is cleared after its voice channel has been empty this long (paused meanwhile). */
+export const MUSIC_IDLE_CLEAR_MS = 30 * 60 * 1000

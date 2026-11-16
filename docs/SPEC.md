@@ -202,6 +202,11 @@ The visual design is Nexo's own: dark ink background, mint accent, rounded tiles
   relays `sound:play` to the voice members of the caller's channel (§8). Cooldowns live in memory.
 - **Link previews:** answers `GET /api/embed` from allowlisted oEmbed providers only, with an in-memory cache
   (§5.3).
+- **Plugins:** built-in features admins/owner turn on or off for the whole server (`ServerPlugins`, stored as
+  JSON in `meta.plugins`; missing or invalid values read as `DEFAULT_PLUGINS`, everything off). Today only
+  `music`.
+- **Music plugin:** an in-memory `MusicState` per voice channel (queue, current track, timing), advanced on a
+  timer; nothing is relayed through voice (§5.4).
 
 ### 5.2 Data model (SQLite)
 
@@ -228,6 +233,7 @@ reactions (message_id → messages ON DELETE CASCADE, emoji TEXT, user_id → us
           created_at INT, emoji_position INT, PK (message_id, emoji, user_id))
 sounds   (id TEXT PK, name TEXT, emoji TEXT NULL, uploader_id → users ON DELETE CASCADE,
           duration_ms INT, type TEXT, size INT, created_at INT)   INDEX (uploader_id); file DATA_DIR/sounds/<id>
+meta     (key TEXT PK, value TEXT)               'server_id' (permanent random id), 'plugins' (ServerPlugins JSON)
 ```
 
 `reply_to_id` has no foreign key on purpose: when the original is deleted the reply keeps the id (and
@@ -266,7 +272,7 @@ its place while anyone still has it. Older databases gain the new columns and ta
 
 On first run the server seeds `#general` and `#clips-and-memes` (text) and `Lounge` and `Gaming` (voice).
 
-Voice and presence state stay in memory on purpose. They are temporary and rebuilt from live connections, so a server restart only makes clients reconnect and re-announce.
+Voice, presence and music state stay in memory on purpose. They are temporary and rebuilt from live connections, so a server restart only makes clients reconnect and re-announce (music sessions are simply gone).
 
 ### 5.3 Why socket.io and not REST
 
@@ -319,6 +325,31 @@ no auth (random UUID; other ids → 404 before touching the disk) and serves the
 `cache-control: public, max-age=31536000, immutable` and `access-control-allow-origin: *` (clients fetch
 and decode it with Web Audio). Removing an account deletes its sounds (rows, files, a `sound:deleted` each).
 Files without a row and temp files are removed at start.
+
+### 5.4 Music plugin (listen together)
+
+**Shared state, local playback.** Each client in a voice channel fetches the YouTube Music track itself (InnerTube,
+in the desktop main process) and plays it locally at the position the shared `MusicState` implies; no audio goes
+through the server or LiveKit. The server (`server/src/music.ts`) only keeps, per voice channel and in memory,
+`{current, queue, startedAt, pausedAt, rev}`: playing → position = serverNow − `startedAt`; paused → `pausedAt`.
+Every change bumps `rev` (one server-wide counter seeded from the clock, so it never goes back, even when a session
+ends and starts again or the server restarts) and is broadcast to everyone as `music:state` (the sidebar shows
+what plays where); bootstrap `music` carries the sessions that show something.
+
+**Server timing.** While playing, the queue advances at `startedAt + durationMs` + 750 ms of grace (clients start a
+little late: fetch, buffering, network, so they finish the track naturally instead of being cut). The next track's
+`startedAt` is the moment of the advance, not the previous track's nominal end: every client then starts it from
+about 0, and nothing drifts since each track is re-anchored. An empty queue stops (`current` null). The last 20
+played tracks are kept for `previous`. When the last person leaves the voice channel (leave, disconnect, move,
+account removal) the session pauses at its position and is cleared after `MUSIC_IDLE_CLEAR_MS` = 30 min; someone
+joining cancels the clear (it stays paused until someone presses play). Deleting the channel or turning the
+plugin off ends its sessions (empty states broadcast).
+
+**Client responsibilities.** Estimate the server clock offset with `time:now` (several round trips, keep the one
+with the lowest RTT) and derive the position from it; seek when local playback drifts more than about a second;
+ignore a `music:state` whose `rev` is lower than the one shown; replace all music state from bootstrap on every
+(re)connect; treat `durationMs` as authoritative (stop at it, the server moves on); show `addedBy` even when the
+account is gone. Search and stream fetching are entirely client-side; the server only validates `MusicTrackInfo`.
 
 ---
 
@@ -408,6 +439,10 @@ All shared types live in `shared/protocol.ts`, imported by both the server and t
 | `voice:move` | `{userId, channelId}` (admins/owner; admins can't move the owner; same channel = no-op) | `null` |
 | `voice:nudge` | `{userId}` (target in voice and muted or deafened; not yourself; once per `NUDGE_COOLDOWN_MS` = 15 s per sender → target) | `null` |
 | `sound:play` | `{soundId}` ("Sound not found"; you must be in voice: "Join a voice channel to play sounds"; once per `SOUND_COOLDOWN_MS` = 2 s per user: "Wait a moment before playing another sound"). Sends `sound:played` to the voice-owning socket of everyone in your voice channel, you included | `null` |
+| `plugins:set` | `{plugin, enabled}` (admins/owner: "Only admins can change plugins"; `plugin` not a `PluginId`: "Unknown plugin"; `enabled` not a boolean: "Invalid plugin setting"). Persisted; broadcasts `plugins:changed` when it changed. Turning `music` off ends every music session | `ServerPlugins` |
+| `time:now` | `{}` | `{now}` (server clock, ms epoch) |
+| `music:add` | `{channelId, tracks, next?}`: "The Music plugin is off"; a voice channel ("Voice channel not found"); you must be in it ("Join the voice channel to control its music"). `tracks`: 1..`MUSIC_MAX_ADD` = 100 ("You can add at most 100 tracks at once") valid `MusicTrackInfo` (else the whole call fails: "Invalid track"): `videoId` `/^[A-Za-z0-9_-]{11}$/`, `title` 1..200 and `artist` 0..200 UTF-16 units and `album` null or 0..200 (`''` → null) after normalizing like status text, `durationMs` an integer in 1000..`MUSIC_MAX_TRACK_MS` (3 h); `artwork` an https URL without credentials or port on `ytimg.com`, `*.ytimg.com` or `*.googleusercontent.com`, else null (never an error). Queue at most `MUSIC_MAX_QUEUE` = 200 ("The queue is full (200 tracks)"; a track that starts playing doesn't count). Appended (`next`: right after the current one); the first starts now when nothing plays. Shares the rate limit of `music:control`. Broadcasts `music:state` | `MusicState` |
+| `music:control` | `{channelId, action, positionMs?, queueId?, toIndex?}` (same checks as `music:add`; 20 `music:add`/`music:control` per user per 10 s: "Slow down"). `play`/`pause` at the current position; `seek` to `positionMs` (a finite number, clamped to [0, `durationMs` − 1000]); `skip` plays the next track (stops at the end of the queue); `previous` plays the last played track within 3 s of the current one's start, else restarts it; `remove`/`move` a queued entry by `queueId` ("That track is no longer in the queue"; `move` needs a numeric `toIndex`, clamped); `clear` empties the queue (keeps the current track); `stop` ends the session. Bad action or parameter: "Invalid music action". A no-op (e.g. pause while paused) acks the state without a broadcast | `MusicState` |
 | `profile:update` | `{color?, statusText?}`, at least one ("Nothing to update"). `color` `#rrggbb` ("Invalid color"). `statusText` string or null ("Invalid status"): normalized (NFC, whitespace runs → one space, other `\p{C}` removed except the emoji ZWJ, trimmed), `''`/null clears it, longer than `STATUS_TEXT_MAX` = 64 UTF-16 units → "Status is limited to 64 characters". Broadcasts `user:upsert` | `User` |
 | `presence:update` | `{status?, activity?}` (no ack). Omitted fields keep their value; invalid ones are ignored (`status` not in `online`/`idle`/`dnd`; `activity` not `null` or `{name, startedAt}` with a non-empty name and finite `startedAt`). The activity name is normalized like status text and cut to `ACTIVITY_NAME_MAX` = 64; `startedAt` is clamped to [now − 7 days, now]. Per connection (the account's presence is the aggregate over its sockets, see above). 20 updates per socket per minute; excess updates are delayed (merged) until the window allows, not lost. Broadcasts `presence:changed` only when the aggregate changed | — |
 
@@ -415,7 +450,7 @@ All shared types live in `shared/protocol.ts`, imported by both the server and t
 
 | Event | Payload |
 |---|---|
-| `bootstrap` | `{serverName, me, token?, users, online, channels, voice, lastMessageAt, lastMentionAt, presence, sounds, …}` sent on every connect (`presence`: userId → `Presence` for online users whose presence isn't the default; `sounds`: the soundboard, oldest first) |
+| `bootstrap` | `{serverName, me, token?, users, online, channels, voice, lastMessageAt, lastMentionAt, presence, sounds, plugins, music, …}` sent on every connect (`presence`: userId → `Presence` for online users whose presence isn't the default; `sounds`: the soundboard, oldest first; `plugins`: `ServerPlugins`; `music`: the `MusicState`s with a current track or a queue) |
 | `user:upsert` | `User` |
 | `presence` | `string[]` of online user IDs |
 | `presence:changed` | `{userId, presence}` (`DEFAULT_PRESENCE` when they went back to plain online or offline) |
@@ -429,6 +464,8 @@ All shared types live in `shared/protocol.ts`, imported by both the server and t
 | `voice:nudged` | `{by}` to the target's voice-owning socket only ("wake up" while muted or deafened) |
 | `sound:upsert` / `sound:deleted` | `Sound` / `{soundId}` (a clip was added / deleted, also by an account removal) |
 | `sound:played` | `{soundId, userId, channelId}` to the voice-owning sockets in that channel only; each client plays it locally (not through anyone's microphone) unless deafened |
+| `plugins:changed` | `ServerPlugins` (an admin turned a plugin on or off) |
+| `music:state` | `MusicState` to everyone, on every change of a voice channel's session (also its empty state when it ends: `current` null, `queue` []) |
 
 A `Message` carries, besides `content` and `attachments`: `editedAt` (null = never edited), `replyTo` (a
 `ReplyPreview` `{id, userId, content ≤ 200 chars, hasAttachments, deleted}` or null), `reactions`

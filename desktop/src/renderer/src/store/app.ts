@@ -10,6 +10,8 @@ import { findLogin, NOTICE_UNREADABLE, resetSignIn } from './signin'
 import { useCompose } from './compose'
 import { chatPanelsMessageDeleted, chatPanelsMessageUpdated, chatPanelsUnpinned, resetChatPanels } from './chatPanels'
 import { resetSounds } from './sounds'
+import { resetPlugins } from './plugins'
+import { resetMusic } from './music'
 
 export type ConnectionStatus = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'error'
 
@@ -231,6 +233,8 @@ export const useApp = create<AppState>()((set, get) => {
       resetSignIn()
       resetChatPanels()
       resetSounds()
+      resetPlugins()
+      resetMusic()
       set({ ...emptySession(), view: 'onboarding', onboardingNotice: null })
     },
 
@@ -246,6 +250,8 @@ export const useApp = create<AppState>()((set, get) => {
       resetSignIn()
       resetChatPanels()
       resetSounds()
+      resetPlugins()
+      resetMusic()
       set({ ...emptySession(), view: 'onboarding', onboardingNotice: null })
     },
 

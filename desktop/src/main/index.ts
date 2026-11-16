@@ -1,5 +1,5 @@
 // Owner: workstream B. Electron main process: window, tray, global hotkeys, security, capture, native share,
-// secrets, updates.
+// secrets, updates, music engine.
 import { app, BrowserWindow, ipcMain, Menu, type MenuItemConstructorOptions } from 'electron'
 import { join, resolve } from 'node:path'
 import icon from '../../resources/icon.png?asset'
@@ -11,6 +11,7 @@ import { getPrefs, installPrefs } from './prefs'
 import { installPresence } from './presence'
 import { installHotkeys } from './hotkeys'
 import { installMainLog, logLine } from './log'
+import { installMusic, registerMusicScheme } from './music'
 import { installNativeShare, releaseNativeShare } from './native-media'
 import { closeAllNotifications, installNotifications } from './notifications'
 import { installSecrets } from './secrets'
@@ -187,6 +188,8 @@ function applyUserDataDirSwitch(): void {
 applyUserDataDirSwitch()
 // Right after userData is final: everything below may log.
 installMainLog()
+// Custom schemes must be registered as privileged before 'ready'.
+registerMusicScheme()
 
 /**
  * Windows screen/window capture: hand frames to the encoder as GPU textures (Windows.Graphics.Capture)
@@ -226,6 +229,7 @@ if (!app.requestSingleInstanceLock()) {
     installHotkeys({ getWindow: () => mainWindow, focusWindow: raiseMainWindow })
     installNativeShare({ getWindow: () => mainWindow })
     installPresence({ getWindow: () => mainWindow })
+    installMusic()
     ipcMain.on(IPC.openExternal, (event, url: unknown) => {
       if (isAppUrl(event.senderFrame?.url)) openExternalSafe(url)
     })

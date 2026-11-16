@@ -44,6 +44,7 @@ export type SettingsTab =
   | 'notifications'
   | 'activity'
   | 'app'
+  | 'plugins'
   | 'members'
   | 'server'
 

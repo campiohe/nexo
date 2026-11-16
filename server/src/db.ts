@@ -6,6 +6,8 @@ import type { Sound, SoundType } from '../../shared/protocol.ts'
 import type { Attachment, Channel, ChannelType, Message, Reaction, ReplyPreview, Role, User } from '../../shared/protocol.ts'
 import { MAX_REACTIONS_PER_MESSAGE, MESSAGE_PAGE_SIZE, REPLY_PREVIEW_LENGTH } from '../../shared/protocol.ts'
 import type { SearchResult } from '../../shared/protocol.ts'
+import type { ServerPlugins } from '../../shared/protocol.ts'
+import { DEFAULT_PLUGINS } from '../../shared/protocol.ts'
 import { MAX_PINS_PER_CHANNEL, MENTION_TOKEN_RE, SEARCH_PAGE_SIZE } from '../../shared/protocol.ts'
 
 const SCHEMA = `
@@ -389,6 +391,7 @@ export function openDb(dataDir: string) {
     deviceDeleteForUser: db.prepare('DELETE FROM user_devices WHERE user_id = ?'),
 
     metaGet: db.prepare('SELECT value FROM meta WHERE key = ?'),
+    metaSet: db.prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value'),
 
     chansAll: db.prepare(`SELECT ${chanCols} FROM channels ORDER BY type, position, created_at`),
     chanById: db.prepare(`SELECT ${chanCols} FROM channels WHERE id = ?`),
@@ -1001,6 +1004,30 @@ export function openDb(dataDir: string) {
 
   const serverId = (q.metaGet.get('server_id') as { value: string }).value
 
+  /** Which built-in plugins are on (meta.plugins, JSON). Unknown keys are ignored, missing/invalid ones default. */
+  const plugins = {
+    get(): ServerPlugins {
+      const row = q.metaGet.get('plugins') as { value: string } | undefined
+      let stored: unknown
+      try {
+        stored = row ? JSON.parse(row.value) : undefined
+      } catch {
+        stored = undefined
+      }
+      const out: ServerPlugins = { ...DEFAULT_PLUGINS }
+      if (typeof stored === 'object' && stored !== null) {
+        for (const key of Object.keys(DEFAULT_PLUGINS) as (keyof ServerPlugins)[]) {
+          const v = (stored as Record<string, unknown>)[key]
+          if (typeof v === 'boolean') out[key] = v
+        }
+      }
+      return out
+    },
+    set(value: ServerPlugins): void {
+      q.metaSet.run('plugins', JSON.stringify(value))
+    },
+  }
+
   if (channels.count() === 0) {
     channels.create('general', 'text')
     channels.create('clips-and-memes', 'text')
@@ -1017,6 +1044,7 @@ export function openDb(dataDir: string) {
     messages,
     attachments,
     sounds,
+    plugins,
     close(): void {
       if (db.isOpen) db.close()
     },

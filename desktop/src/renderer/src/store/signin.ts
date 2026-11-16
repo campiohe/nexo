@@ -20,6 +20,8 @@ import { toast } from '../lib/toast'
 import { useApp } from './app'
 import { resetChatPanels } from './chatPanels'
 import { resetSounds } from './sounds'
+import { resetPlugins } from './plugins'
+import { resetMusic } from './music'
 import { knownServerId, readLogin, rememberServerId, saveLogin, type LoginRead } from './logins'
 
 export const NOTICE_UNREADABLE =
@@ -110,6 +112,8 @@ export function handleNotRecognized(): void {
   useSignIn.setState({ welcome: null })
   resetChatPanels()
   resetSounds()
+  resetPlugins()
+  resetMusic()
   useApp.setState({ view: 'onboarding', connection: 'idle', connectionError: null, onboardingNotice: NOTICE_NOT_RECOGNIZED })
 }
 

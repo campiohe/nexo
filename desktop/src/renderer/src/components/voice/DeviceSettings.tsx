@@ -3,6 +3,7 @@
 // Rendered by workstream C inside the Settings modal. Changes apply live when in voice.
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { saveNoiseMode, saveSoundboardPrefs, saveSoundEffects, useDevicePrefs, type DeviceKind } from '../../voice/devices'
+import { MusicSettingsSection } from './MusicSettings'
 import { effectiveNoiseMode, NOISE_MODES, noiseConstraints, RnnoiseGraph, useNoiseStatus } from '../../voice/noise'
 import { actionLabel, findConflict } from '../../lib/keybinds'
 import { allKeybinds, PTT_RELEASE_DELAY_MAX, setInputPrefs, useInputPrefs, type InputMode } from '../../voice/prefs'
@@ -98,6 +99,7 @@ export function DeviceSettings() {
       <SpeakerTest deviceId={prefs.audiooutput} />
       <SoundEffectsToggle />
       <SoundboardSection />
+      <MusicSettingsSection />
 
       <DeviceSelect
         icon={<CameraIcon size={16} />}

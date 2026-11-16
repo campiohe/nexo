@@ -9,6 +9,7 @@ import { useParticipants } from '../../voice/participants'
 import { CameraButton, DeafenButton, LeaveButton, MuteButton, QualityBars, ShareButton } from './ControlButtons'
 import { SharePickerHost } from './SharePicker'
 import { SoundboardButton } from './Soundboard'
+import { VoicePanelMusic } from './MusicBar'
 import { AlertIcon, CloseIcon } from './icons'
 import './voice.css'
 
@@ -119,6 +120,7 @@ export function VoiceControls() {
           </button>
         </div>
       )}
+      <VoicePanelMusic />
       <div className="vx-panel-buttons">
         <MuteButton />
         <DeafenButton />
