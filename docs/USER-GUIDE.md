@@ -18,6 +18,7 @@ How to install Nexo, join a server, and use its features. Hosting a server is co
 - [Moving people between voice channels](#moving-people-between-voice-channels)
 - [Picture in picture](#picture-in-picture)
 - [Soundboard](#soundboard)
+- [Music (listen together)](#music-listen-together)
 - [Appearance](#appearance)
 - [App settings](#app-settings)
 - [Updates](#updates)
@@ -236,6 +237,24 @@ sound to preview it just for you. **Add sound** takes any audio file: pick the p
 seconds), give it a name and an emoji. You can delete your own sounds; admins can delete any. Sounds play
 on each listener's speakers, never through anyone's microphone, and not while you're deafened or have
 muted that person. **Settings → Audio & video** has the soundboard volume and an on/off switch.
+
+## Music (listen together)
+
+An admin turns on **YouTube Music** in **Settings → Plugins**. Then, in a voice channel, click the music
+button (the record in the voice toolbar) or **Play music** on the voice stage. Search YouTube Music for
+songs, albums and playlists, or paste a music.youtube.com / youtube.com / youtu.be link, and choose **Add
+to queue** or **Play next** (an album or playlist has **Add all**).
+
+Everyone in the voice channel hears the same song at the same moment, and anyone there can pause, seek,
+skip, go back and reorder or remove queued songs. Each person's Nexo plays the song from YouTube itself
+(nothing goes through the voice chat), so the sound is full quality and you set your own **music volume**
+in the bar or in **Settings → Audio & video**, where you can also turn on **Lower music while people
+talk** (on by default) or stop music on this device. Deafening silences the music too. The sidebar shows
+what's playing under each voice channel.
+
+If a song can't play for you (YouTube sometimes blocks a song in your region, or asks a device to prove it
+isn't a bot), the bar says so and offers **Retry**; it keeps playing for everyone else. When everyone leaves
+the channel the music pauses, and the queue is cleared after 30 minutes.
 
 ## Appearance
 
