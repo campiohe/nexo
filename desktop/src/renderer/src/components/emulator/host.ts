@@ -266,6 +266,11 @@ export async function hostGame(channelId: string, system: EmuSystem, main: File,
   engine.setLocalVolume(effectiveVolume())
   if (session.paused) engine.pause()
   useEmuHost.setState({ channelId, engine, loading: null, paused: engine.paused, hasSave: false })
+  engine.onCrash = () => {
+    if (useEmuHost.getState().engine !== engine) return
+    useEmuHost.setState({ paused: true })
+    toast('The game crashed and stopped. Load it again to keep playing.', 'error')
+  }
   // A held key of the previous game doesn't carry over: the component re-applies the host's pad on change.
   try {
     // Replaces the previous game's picture in place when one was streaming.

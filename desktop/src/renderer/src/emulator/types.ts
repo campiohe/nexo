@@ -53,6 +53,11 @@ export interface EmulatorEngine {
   /** Quick save / load in memory (one slot). Optional per engine. */
   saveState?(): Promise<Uint8Array>
   loadState?(state: Uint8Array): Promise<void>
+  /**
+   * Set by the UI: called once if the core crashes (the game then stays paused for good; only loading a game
+   * again helps). Without it, a crash only shows in the console.
+   */
+  onCrash: ((message: string) => void) | null
   /** Stops everything, ends the stream's tracks, frees the core. Safe to call twice. */
   destroy(): void
 }

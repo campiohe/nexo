@@ -88,6 +88,7 @@ class N64Engine implements EmulatorEngine {
   private readonly pending = new Map<number, { resolve: (m: FromWorker) => void; reject: (e: Error) => void }>()
   private nextId = 1
   private _paused = false
+  onCrash: ((message: string) => void) | null = null
   private crashed = false
   private destroyed = false
 
@@ -113,6 +114,7 @@ class N64Engine implements EmulatorEngine {
         if (this.crashed) break
         this.crashed = true
         console.error('[emulator] the N64 core crashed:', msg.message)
+        this.onCrash?.(msg.message)
         for (const p of this.pending.values()) p.reject(new EmulatorError('The game stopped working'))
         this.pending.clear()
         break

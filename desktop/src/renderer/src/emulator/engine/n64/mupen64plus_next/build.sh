@@ -77,7 +77,8 @@ emcc -O3 -msimd128 --profiling-funcs "$OBJ/nexo_frontend.o" -Wl,--whole-archive 
   -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=128MB -sSTACK_SIZE=4MB -sDYNAMIC_EXECUTION=0 -sEXIT_RUNTIME=0 \
   -sMIN_WEBGL_VERSION=2 -sMAX_WEBGL_VERSION=2 -sFULL_ES3=1 -sGL_ENABLE_GET_PROC_ADDRESS=1 -lEGL -lGL \
   -sEXPORTED_FUNCTIONS="$EXPORTS" -sEXPORTED_RUNTIME_METHODS=HEAPU8,GL \
-  -sINCOMING_MODULE_JS_API=print,printErr,instantiateWasm
+  -sINCOMING_MODULE_JS_API=print,printErr,instantiateWasm \
+  --js-library "$HERE/nexo_gl.js" # buffer mapping that GLideN64 can use (see the file)
 
 mkdir -p "$OUT_DIR"
 {

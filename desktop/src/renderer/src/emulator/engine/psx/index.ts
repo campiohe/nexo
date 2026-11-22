@@ -94,6 +94,15 @@ class PsxEngine implements EmulatorEngine {
   private stream: MediaStream | null = null
   private dirty = false
   private _paused = false
+  onCrash: ((message: string) => void) | null = null
+  private hasCrashed = false
+
+  /** The core threw (a WebAssembly trap): tell the UI once; the game stays paused. */
+  private crashed(e: unknown): void {
+    if (this.hasCrashed) return
+    this.hasCrashed = true
+    this.onCrash?.(e instanceof Error ? e.message : String(e))
+  }
   private destroyed = false
 
   constructor(core: PcsxModule, log: CoreLog) {
@@ -149,6 +158,7 @@ class PsxEngine implements EmulatorEngine {
     } catch (e) {
       console.error('[emulator] the core crashed', e)
       this.pause()
+      this.crashed(e)
       return
     }
     if (this.dirty) this.draw()

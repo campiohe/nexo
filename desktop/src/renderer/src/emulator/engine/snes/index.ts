@@ -64,6 +64,15 @@ class Snes9xEngine implements EmulatorEngine {
   private timer: number | undefined
   private stream: MediaStream | null = null
   private _paused = false
+  onCrash: ((message: string) => void) | null = null
+  private hasCrashed = false
+
+  /** The core threw (a WebAssembly trap): tell the UI once; the game stays paused. */
+  private crashed(e: unknown): void {
+    if (this.hasCrashed) return
+    this.hasCrashed = true
+    this.onCrash?.(e instanceof Error ? e.message : String(e))
+  }
   private destroyed = false
 
   constructor(core: Snes9xModule) {
@@ -119,6 +128,7 @@ class Snes9xEngine implements EmulatorEngine {
     } catch (e) {
       console.error('[emulator] the core crashed', e)
       this.pause()
+      this.crashed(e)
       return
     }
     if (ran > 0) this.draw()
