@@ -1,10 +1,10 @@
-// Emulator plugin entry points outside the emulator area: whether the area shows on a stage, the "Your own game"
-// card in the Games picker, the sidebar line under a voice channel and the plugin's icon. Kept apart from
-// EmulatorArea.tsx (and free of imports from components/games) so the games UI can use it without a cycle.
-import { useRef, useState, type DragEvent } from 'react'
+// Emulator plugin entry points outside the emulator area: whether the area shows on a stage, the stage toolbar
+// button (load a game / show or hide it), the sidebar line under a voice channel and the plugin's icon.
+import { useRef, type DragEvent } from 'react'
 import { useEmulator, setEmulatorHidden } from '../../store/emulator'
 import { usePlugins } from '../../store/plugins'
 import { useApp } from '../../store/app'
+import { useVoice } from '../../voice/session'
 import { acceptFor, hostGameFile, useEmuHost } from './host'
 import '../../styles/emulator.css'
 
@@ -44,63 +44,41 @@ export function dragHasFiles(e: DragEvent): boolean {
 }
 
 /**
- * Games picker card: "Your own game" (SNES). Click (or drop a file on it) to load a game file you own;
- * while someone else hosts in this channel it shows their game instead.
+ * Stage toolbar: with no game running in your channel, opens a file picker to load a game you own (you host it);
+ * with one running, shows or hides it (the stage shows people instead).
  */
-export function EmulatorPickerCard({ channelId, onHosted }: { channelId: string; onHosted?(): void }) {
-  const session = useEmulator((s) => s.byChannel[channelId])
+export function EmulatorButton({ size = 'lg' }: { size?: 'sm' | 'lg' }) {
+  const on = usePlugins((s) => s.plugins.emulator)
+  const channelId = useVoice((s) => s.channelId)
+  const session = useEmulator((s) => (channelId ? s.byChannel[channelId] : undefined))
+  const shown = useEmuAreaShown(channelId)
   const loading = useEmuHost((s) => s.loading)
-  const users = useApp((s) => s.users)
-  const meId = useApp((s) => s.me?.id)
   const input = useRef<HTMLInputElement>(null)
-  const [over, setOver] = useState(false)
-  const otherHost = session && session.hostId !== meId ? session.hostId : null
-
-  const load = async (file: File | undefined) => {
-    if (!file || loading) return
-    await hostGameFile(channelId, file)
-    if (useEmulator.getState().byChannel[channelId]?.hostId === useApp.getState().me?.id) onHosted?.()
-  }
+  if (!on || !channelId) return null
   const click = () => {
-    if (session) {
-      setEmulatorHidden(channelId, false)
-      onHosted?.()
-    } else input.current?.click()
+    if (session) setEmulatorHidden(channelId, shown)
+    else if (!loading) input.current?.click()
   }
-
   return (
     <>
       <button
-        className={`gm-card emu-card ${over ? 'is-drop' : ''} ${session ? 'is-current' : ''}`}
-        disabled={!!loading}
+        className={`vx-ctl vx-ctl-${size} emu-ctl ${shown ? 'is-on' : ''}`}
         onClick={click}
-        onDragOver={(e) => {
-          if (!dragHasFiles(e) || otherHost) return
-          e.preventDefault()
-          e.dataTransfer.dropEffect = 'copy'
-          setOver(true)
-        }}
-        onDragLeave={() => setOver(false)}
-        onDrop={(e) => {
-          if (!dragHasFiles(e)) return
-          e.preventDefault()
-          setOver(false)
-          if (!otherHost) void load(e.dataTransfer.files[0])
-        }}
+        disabled={!!loading && !session}
+        title={
+          session
+            ? shown
+              ? 'Hide the game (show people)'
+              : `Show ${session.title}`
+            : loading
+              ? 'Loading the game…'
+              : 'Play a game: load a SNES game file you own'
+        }
+        aria-label="Emulator"
+        aria-pressed={shown}
       >
-        <span className="gm-card-art emu-card-art" aria-hidden="true">
-          <ConsoleIcon size={34} />
-        </span>
-        <span className="gm-card-name">Your own game</span>
-        <span className="gm-card-tag">
-          {session
-            ? otherHost
-              ? `${users[otherHost]?.name ?? 'Someone'} is playing ${session.title}. Click to watch or join.`
-              : `You're hosting ${session.title}. Click to show it.`
-            : 'Load a SNES game file you own and play it with friends. It stays on your computer.'}
-        </span>
-        <span className="gm-card-meta">SNES · 1–4 players · {acceptFor('snes').split(',').join(' ')}</span>
-        {loading && <span className="gm-card-busy">Loading…</span>}
+        <ConsoleIcon size={size === 'lg' ? 20 : 18} />
+        {session && !shown && <span className="emu-dot" aria-hidden="true" />}
       </button>
       <input
         ref={input}
@@ -110,7 +88,7 @@ export function EmulatorPickerCard({ channelId, onHosted }: { channelId: string;
         onChange={(e) => {
           const file = e.target.files?.[0]
           e.target.value = ''
-          void load(file)
+          if (file) void hostGameFile(channelId, file)
         }}
       />
     </>

@@ -1,4 +1,4 @@
-// Controller input for `pad` games: keyboard (while the game is on screen and you aren't typing) and gamepads
+// Controller input for the emulator: keyboard (while the game is on screen and you aren't typing) and gamepads
 // (standard mapping), merged into one GAME_PAD bitmask. `onChange` gets every new mask (send it to the server).
 import { GAME_PAD } from '@shared/protocol'
 

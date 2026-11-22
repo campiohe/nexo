@@ -6,7 +6,6 @@ import { usePlugins } from '../store/plugins'
 import { isStaff } from '../lib/permissions'
 import { setPlugin } from '../voice/musicActions'
 import { MusicIcon } from './voice/musicIcons'
-import { GamepadIcon } from './games/GameArea'
 import { ConsoleIcon } from './emulator/EmulatorEntry'
 import type { PluginId } from '@shared/protocol'
 import '../styles/music.css'
@@ -14,7 +13,6 @@ import '../styles/music.css'
 export function PluginsSection() {
   const supported = usePlugins((s) => s.supported)
   const music = usePlugins((s) => s.plugins.music)
-  const games = usePlugins((s) => s.plugins.games)
   const emulator = usePlugins((s) => s.plugins.emulator)
   const canEdit = useApp((s) => !!s.me && isStaff(s.me))
   const [busy, setBusy] = useState<PluginId | null>(null)
@@ -55,28 +53,6 @@ export function PluginsSection() {
           checked={music}
           disabled={!canEdit || !supported || !!busy}
           onChange={(e) => void toggle('music', e.target.checked)}
-        />
-      </label>
-      <label className={`plugin-card ${games ? 'is-on' : ''}`} style={{ cursor: canEdit && supported ? 'pointer' : 'default' }}>
-        <span className="plugin-icon" aria-hidden="true">
-          <GamepadIcon size={20} />
-        </span>
-        <span className="plugin-text">
-          <span className="plugin-name">Retro games</span>
-          <span className="muted small">
-            Play arcade games together in voice channels: a bomber battle, kart racing, a platform brawler, a 1v1
-            fighter and a color card game. The server runs every match, so everyone sees the same game. Keyboard or
-            gamepad. Computer players can fill empty seats.
-          </span>
-        </span>
-        <input
-          type="checkbox"
-          role="switch"
-          className="switch"
-          aria-label="Retro games"
-          checked={games}
-          disabled={!canEdit || !supported || !!busy}
-          onChange={(e) => void toggle('games', e.target.checked)}
         />
       </label>
       <label className={`plugin-card ${emulator ? 'is-on' : ''}`} style={{ cursor: canEdit && supported ? 'pointer' : 'default' }}>

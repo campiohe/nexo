@@ -29,9 +29,8 @@ import { CameraButton, DeafenButton, LeaveButton, MuteButton, ShareButton } from
 import { SharePickerHost } from './SharePicker'
 import { SoundboardButton } from './Soundboard'
 import { MusicBar, MusicButton } from './MusicBar'
-import { GameArea, GamesButton, useGameAreaShown } from '../games/GameArea'
 import { EmulatorArea } from '../emulator/EmulatorArea'
-import { useEmuAreaShown } from '../emulator/EmulatorEntry'
+import { EmulatorButton, useEmuAreaShown } from '../emulator/EmulatorEntry'
 import { useEmulator } from '../../store/emulator'
 import { VideoTrackView, useVideoStats } from './VideoTrackView'
 import { UserVolumePopover } from './UserVolumePopover'
@@ -155,12 +154,10 @@ function Stage() {
     if (focusKey && !focused) setFocusKey(null)
   }, [focusKey, focused])
 
-  // A running emulator game takes the main spot (the host's stream shown inside it); otherwise an open game
-  // of the Games plugin. People move to the strip.
+  // A running emulator game takes the main spot (the host's stream shown inside it); people move to the strip.
   const emuShown = useEmuAreaShown(channelId)
   const emuHostId = useEmulator((s) => (emuShown && channelId ? (s.byChannel[channelId]?.hostId ?? null) : null))
-  const gameShown = useGameAreaShown(channelId)
-  const layout = useGridLayout(gridRef, focused || emuShown || gameShown ? 0 : tiles.length)
+  const layout = useGridLayout(gridRef, focused || emuShown ? 0 : tiles.length)
 
   // When you start watching someone, open their stream large right away (not the emulator host's stream,
   // which the emulator area watches and shows itself).
@@ -227,21 +224,12 @@ function Stage() {
       )}
 
       {emuShown && channelId ? (
-        <div className="vx-focus gm-focus">
+        <div className="vx-focus emu-focus">
           <div className="vx-focus-main">
             <EmulatorArea channelId={channelId} />
           </div>
           <div className="vx-strip" role="list">
             {tiles.filter((t) => !(t.kind === 'stream' && t.view.identity === emuHostId)).map((t) => renderTile(t, 'strip'))}
-          </div>
-        </div>
-      ) : gameShown && channelId ? (
-        <div className="vx-focus gm-focus">
-          <div className="vx-focus-main">
-            <GameArea channelId={channelId} />
-          </div>
-          <div className="vx-strip" role="list">
-            {tiles.map((t) => renderTile(t, 'strip'))}
           </div>
         </div>
       ) : focused ? (
@@ -270,7 +258,7 @@ function Stage() {
         <ShareButton size="lg" />
         <SoundboardButton size="lg" />
         <MusicButton size="lg" />
-        <GamesButton size="lg" />
+        <EmulatorButton size="lg" />
         <span className="vx-toolbar-sep" />
         <LeaveButton size="lg" />
       </div>

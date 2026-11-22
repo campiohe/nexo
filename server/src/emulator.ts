@@ -1,4 +1,4 @@
-// Emulator plugin (docs/SPEC.md §5.6): one emulator session per voice channel. The host's Nexo runs the emulator
+// Emulator plugin (docs/SPEC.md §5.5): one emulator session per voice channel. The host's Nexo runs the emulator
 // on a game file loaded from their own disk and streams it to the call (LiveKit); the file never reaches the
 // server. The server only keeps who hosts, the game's title, who is on which controller port and whether it is
 // paused (broadcast to everyone as `emu:session`), and relays each player's held buttons to the socket that owns
@@ -68,7 +68,7 @@ export function createEmuSessions(options: EmuSessionsOptions) {
   const sessions = new Map<string, Session>()
   /** channelId -> who is in that voice channel now (from server.ts after every voice change). */
   let members = new Map<string, EmuMember[]>()
-  /** Server-wide revision counter seeded from the clock (never goes back, like music and games). */
+  /** Server-wide revision counter seeded from the clock (never goes back, like music). */
   let lastRev = Math.max(0, Math.floor(now()))
 
   const snapshot = (s: Session): EmuSession => ({

@@ -470,7 +470,7 @@ describe('plugins and music over sockets', () => {
   after(() => server.close())
 
   test('bootstrap: plugins off by default, no music', () => {
-    assert.deepEqual(owner.boot.plugins, { music: false, games: false, emulator: false })
+    assert.deepEqual(owner.boot.plugins, { music: false, emulator: false })
     assert.deepEqual(owner.boot.music, [])
   })
 
@@ -489,8 +489,8 @@ describe('plugins and music over sockets', () => {
     assert.equal(await requestErr(owner.socket, 'plugins:set', { plugin: 'radio', enabled: true }), 'Unknown plugin')
     assert.equal(await requestErr(owner.socket, 'plugins:set', { plugin: 'music', enabled: 'yes' }), PLUGIN_ERRORS.invalid)
     const changed = nextEvent(bob.socket, 'plugins:changed')
-    assert.deepEqual(await requestOk<ServerPlugins>(owner.socket, 'plugins:set', { plugin: 'music', enabled: true }), { music: true, games: false, emulator: false })
-    assert.deepEqual(await changed, { music: true, games: false, emulator: false })
+    assert.deepEqual(await requestOk<ServerPlugins>(owner.socket, 'plugins:set', { plugin: 'music', enabled: true }), { music: true, emulator: false })
+    assert.deepEqual(await changed, { music: true, emulator: false })
   })
 
   test('music: channel and voice checks', async () => {
@@ -516,7 +516,7 @@ describe('plugins and music over sockets', () => {
     assert.deepEqual(await seenByBob, s)
     const late = await join(server.url, 'Late')
     assert.deepEqual(late.boot.music, [s])
-    assert.deepEqual(late.boot.plugins, { music: true, games: false, emulator: false })
+    assert.deepEqual(late.boot.plugins, { music: true, emulator: false })
     late.socket.close()
   })
 
@@ -606,7 +606,7 @@ describe('plugins and music over sockets', () => {
     await server.close()
     server = await boot(dataDir, bootOpts())
     const again = await connect(server.url, { token: owner.token })
-    assert.deepEqual(again.boot.plugins, { music: true, games: false, emulator: false })
+    assert.deepEqual(again.boot.plugins, { music: true, emulator: false })
     assert.deepEqual(again.boot.music, [])
   })
 })

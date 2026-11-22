@@ -4,12 +4,12 @@
 // play (your keyboard / gamepad go to the host through the server), the host or an admin can assign them.
 // The host's engine and its lifecycle: ./host.ts.
 import { useEffect, useLayoutEffect, useRef, useState, type DragEvent } from 'react'
-import { EMU_PORTS, GAME_SEAT_COLORS, type EmuSession, type User } from '@shared/protocol'
+import { EMU_PORTS, type EmuSession, type User } from '@shared/protocol'
 import { useApp } from '../../store/app'
 import { useEmulator, setEmulatorHidden } from '../../store/emulator'
 import { assignEmuPort, sendEmuInput, stopEmu, takeEmuPort } from '../../emulator/actions'
 import type { EmulatorEngine } from '../../emulator/types'
-import { startPadInput, BUTTON_KEYS } from '../../games/input'
+import { startPadInput, BUTTON_KEYS } from '../../emulator/input'
 import { isStaff } from '../../lib/permissions'
 import { setStreamVolume, stopWatching, useVoice, watchStream } from '../../voice/session'
 import { useParticipants } from '../../voice/participants'
@@ -28,10 +28,11 @@ import {
   useEmuHost,
 } from './host'
 import { ConsoleIcon, dragHasFiles } from './EmulatorEntry'
-import '../../styles/games.css'
 import '../../styles/emulator.css'
 
-const portColor = (i: number) => GAME_SEAT_COLORS[i % GAME_SEAT_COLORS.length]
+/** One color per controller port (P1 red, P2 blue, P3 yellow, P4 green). */
+const PORT_COLORS = ['#ff5a5f', '#3d9cff', '#ffd23f', '#3ee6b0']
+const portColor = (i: number) => PORT_COLORS[i % PORT_COLORS.length]
 
 export function EmulatorArea({ channelId }: { channelId: string }) {
   const session = useEmulator((s) => s.byChannel[channelId])

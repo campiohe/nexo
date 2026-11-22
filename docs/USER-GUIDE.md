@@ -19,7 +19,6 @@ How to install Nexo, join a server, and use its features. Hosting a server is co
 - [Picture in picture](#picture-in-picture)
 - [Soundboard](#soundboard)
 - [Music (listen together)](#music-listen-together)
-- [Retro games](#retro-games)
 - [Emulator](#emulator)
 - [Appearance](#appearance)
 - [App settings](#app-settings)
@@ -258,44 +257,14 @@ If a song can't play for you (YouTube sometimes blocks a song in your region, or
 isn't a bot), the bar says so and offers **Retry**; it keeps playing for everyone else. When everyone leaves
 the channel the music pauses, and the queue is cleared after 30 minutes.
 
-## Retro games
-
-An admin turns on **Retro games** in **Settings → Plugins**. Then, in a voice channel, click the gamepad
-button in the voice toolbar and pick a game:
-
-| Game | Players | What it is |
-|---|---|---|
-| **Blast Arena** | 2–4 | Drop bombs in a maze, blow up crates for power-ups, be the last one standing |
-| **Kart Rally** | 1–8 | Kart racing with drifts, boosts and items |
-| **Ring Out** | 2–4 | Platform fighting: the more damage someone has, the farther they fly off the stage |
-| **Dojo Duel** | 2 | One-on-one fighting with special moves |
-| **Color Rush** | 2–8 | Card game: match the color or the number and empty your hand first |
-
-Whoever opens the game is the **host**. Everyone in the voice channel sees the lobby: click **Take a seat**
-to play. The host can add **bots** (computer players) for empty seats, **Change game**, and **Start**.
-People who don't take a seat watch. While a match runs, the people in the call move to a strip under the
-game; **Hide** (or the gamepad button) switches back to the people, and a new match shows the game again.
-When a match ends, the host can **Play again** or change the game. **Close** ends the game for everyone.
-
-Controls: arrow keys or WASD to move, **Space**/**J** for A, **K** for B, **L** for X and **I** for Y, or
-plug in a gamepad. Each game lists its controls in the lobby and under **Controls**. Keys only go to the
-game while you're playing and not typing. Color Rush is played with the mouse.
-
-The server runs every match, so everyone sees the same game and nobody can cheat. Your moves reach the
-server after your ping, so action games feel best on a good connection. If you leave the voice channel
-during a match you're out of it. If the host leaves, the role passes to another player. When everyone has
-left, the game closes. Game sounds play on your speaker. Turn them off with **Sound on/off** in the game
-bar. Deafening also silences them.
-
 ## Emulator
 
 An admin turns on **Emulator** in **Settings → Plugins**. It lets you play console games you own together:
 one person (the **host**) runs the game on their computer, Nexo streams it to the voice channel, and friends
 play along with their own keyboard or gamepad. For now it plays **SNES** games.
 
-**Host a game.** In a voice channel, click the gamepad button in the voice toolbar and choose **Your own
-game**, then pick a SNES game file you own (`.sfc`, `.smc`, `.swc`, `.fig` or `.zip`), or drag the file onto
-the card. The game starts on your computer and becomes your stream in the call (you're LIVE, like when you
+**Host a game.** In a voice channel, click the controller button in the voice toolbar and pick a SNES game
+file you own (`.sfc`, `.smc`, `.swc`, `.fig` or `.zip`). The game starts on your computer and becomes your stream in the call (you're LIVE, like when you
 share your screen; starting a screen share replaces it, and **Stream it** puts the game back). You're player 1.
 The bar under the game has **Pause** (for everyone), **Reset**, **Quick save** / **Quick load** (one slot, kept
 until you load another game) and your own game **Volume** (it doesn't change what friends hear). **Load another
@@ -304,7 +273,7 @@ everyone; so does leaving the voice channel.
 
 **Play along.** Everyone in the channel sees the host's game on the stage, with the people in a strip below.
 There are 4 controllers: click **Take** on a free one to play, **Leave** to give it up and just watch. The host
-(or an admin) can put someone on a controller or free it with the **⋯** menu. **Hide** (or the gamepad button)
+(or an admin) can put someone on a controller or free it with the **⋯** menu. **Hide** (or the controller button)
 switches back to the people. Your keys only go to the game while it's on screen and you aren't typing.
 
 Keys: arrows or WASD for the D-pad, **Q** / **E** for L / R, **Enter** for Start and **Backspace** for Select.

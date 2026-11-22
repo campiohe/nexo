@@ -47,8 +47,7 @@ import { normalizeDisplayText, truncate } from './text.ts'
 import { createEmbedRoutes } from './embeds.ts'
 import { createSoundRoutes } from './sounds.ts'
 import { createMusic, MUSIC_ERRORS, type MusicTimers } from './music.ts'
-import { createGames, GAME_ERRORS, GAME_LIMITS, type GameMember, type GameTimers } from './games.ts'
-import { createEmuSessions, EMU_ERRORS, EMU_LIMITS } from './emulator.ts'
+import { createEmuSessions, EMU_ERRORS, EMU_LIMITS, type EmuMember } from './emulator.ts'
 
 interface SocketData {
   user: User
@@ -113,12 +112,6 @@ export interface StartOptions extends Partial<Omit<Config, 'livekit'>> {
   musicIdleClearMs?: number
   /** Music: the timers of the state machine (tests inject fake ones). Default: setTimeout/clearTimeout. */
   musicTimers?: MusicTimers
-  /** Games: the match timers (tests inject fake ones). Default: setTimeout/clearTimeout. */
-  gameTimers?: GameTimers
-  /** Games: the game registry (tests inject their own). Default: shared/games GAMES. */
-  gameRegistry?: Parameters<typeof createGames>[0]['games']
-  /** Games: lobby requests + moves per user per window. Default: GAME_LIMITS.requestsPer10s / 10 s. */
-  gameLimit?: { count: number; windowMs: number }
   /** Emulator: session requests per user per window. Default: EMU_LIMITS.requestsPer10s / 10 s. */
   emuLimit?: { count: number; windowMs: number }
 }
@@ -288,8 +281,6 @@ export const PLUGIN_ERRORS = {
 /** Ack errors of `music:add` and `music:control`. */
 export { MUSIC_ERRORS } from './music.ts'
 
-/** Ack errors of the `games:*` requests. */
-export { GAME_ERRORS } from './games.ts'
 
 /** Ack errors of the `emu:*` requests. */
 export { EMU_ERRORS } from './emulator.ts'
@@ -440,9 +431,6 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
     musicAdvanceGraceMs,
     musicIdleClearMs,
     musicTimers,
-    gameTimers,
-    gameRegistry,
-    gameLimit = { count: GAME_LIMITS.requestsPer10s, windowMs: 10_000 },
     emuLimit = { count: EMU_LIMITS.requestsPer10s, windowMs: 10_000 },
     ...rest
   } = options
@@ -585,13 +573,11 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
   const broadcastVoice = () => {
     io.emit('voice:states', voiceList())
     music.setOccupied(new Set([...voiceStates.values()].flatMap((v) => (v.channelId ? [v.channelId] : []))))
-    const members = gameMembers()
-    games.setMembers(members)
-    emulator.setMembers(members)
+    emulator.setMembers(voiceMembers())
   }
   /** channelId -> the people in that voice channel and the socket that owns each one's voice state. */
-  const gameMembers = () => {
-    const out = new Map<string, GameMember[]>()
+  const voiceMembers = () => {
+    const out = new Map<string, EmuMember[]>()
     for (const v of voiceStates.values()) {
       if (!v.channelId) continue
       out.set(v.channelId, [...(out.get(v.channelId) ?? []), { userId: v.userId, socketId: v.socketId }])
@@ -637,24 +623,8 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
     idleClearMs: musicIdleClearMs,
   })
 
-  /** Per-voice-channel game sessions (docs/SPEC.md §5.5, memory only). Lobbies go to everyone, frames to players. */
-  const games = createGames({
-    onLobby: (lobby) => io.emit('games:lobby', lobby),
-    onFrame: (socketIds, frame) => {
-      if (socketIds.length > 0) io.to(socketIds).emit('games:frame', frame)
-    },
-    nameOf: (id) => users.get(id)?.name ?? 'Someone',
-    now,
-    timers: gameTimers,
-    ...(gameRegistry ? { games: gameRegistry } : {}),
-  })
-  /** Lobby requests and moves per user (server-wide). */
-  const gameRate = rateLimiter(gameLimit)
-  /** `games:input` per socket. */
-  const gameInputRate = rateLimiter({ count: GAME_LIMITS.inputsPerSecond, windowMs: 1000 })
-
   /**
-   * Per-voice-channel emulator sessions (docs/SPEC.md §5.6, memory only). Sessions go to everyone; player input
+   * Per-voice-channel emulator sessions (docs/SPEC.md §5.5, memory only). Sessions go to everyone; player input
    * only to the socket that owns the host's voice state.
    */
   const emulator = createEmuSessions({
@@ -737,7 +707,6 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
     reactionRate.forget(target.id)
     searchRate.forget(target.id)
     musicRate.forget(target.id)
-    gameRate.forget(target.id)
     emuRate.forget(target.id)
     // No presence:changed: user:removed drops everything clients know about the account (and its sockets'
     // disconnects below then find nothing left to recompute).
@@ -878,7 +847,6 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
       sounds: db.sounds.all(),
       plugins,
       music: music.active(),
-      games: games.active(),
       emulator: emulator.active(),
     })
     // The token is delivered exactly once.
@@ -919,9 +887,8 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
       const existing = isObj(p) && isStr(p.channelId) ? channels.get(p.channelId) : undefined
       if (!existing) return fail(ack, 'Channel not found')
       attachmentRoutes.removeFiles(channels.delete(existing.id))
-      // Its music session ends (before broadcastVoice, which would only pause it), its game and its emulator.
+      // Its music session ends (before broadcastVoice, which would only pause it), and its emulator session.
       music.drop(existing.id)
-      games.drop(existing.id)
       emulator.drop(existing.id)
       // Everyone in a deleted voice channel is out of voice.
       let voiceChanged = false
@@ -1253,8 +1220,6 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
       io.emit('plugins:changed', plugins)
       // Turning Music off ends every session (their empty states are broadcast).
       if (plugin === 'music' && !p.enabled) music.clearAll()
-      // Turning Games off closes every session.
-      if (plugin === 'games' && !p.enabled) games.clearAll()
       // Turning the Emulator off ends every session.
       if (plugin === 'emulator' && !p.enabled) emulator.clearAll()
       log(`[nexo] ${me().name} turned the ${plugin} plugin ${p.enabled ? 'on' : 'off'}`)
@@ -1290,49 +1255,7 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
       ok(ack, result)
     }))
 
-    // --- games (docs/SPEC.md §5.5) ---
-
-    /**
-     * The voice channel of a `games:*` request, or the ack error: plugin on, a voice channel, the caller in it
-     * from this very socket (the one that gets the frames), and (`rated`) within the request rate.
-     */
-    function gameChannel(p: unknown, rated = true): { channelId: string } | { error: string } {
-      if (!plugins.games) return { error: GAME_ERRORS.pluginOff }
-      const channel = isObj(p) && isStr(p.channelId) ? channels.get(p.channelId) : undefined
-      if (!channel || channel.type !== 'voice') return { error: GAME_ERRORS.channelNotFound }
-      const v = voiceStates.get(userId)
-      if (v?.channelId !== channel.id || v.socketId !== socket.id) return { error: GAME_ERRORS.notInChannel }
-      if (rated && !gameRate.allow(userId, now())) return { error: GAME_ERRORS.slowDown }
-      return { channelId: channel.id }
-    }
-
-    /** A lobby request: checks, then `fn`, acking its lobby or its error. */
-    const lobbyRequest = (event: string, fn: (channelId: string, p: Record<string, unknown>) => string | object | null) =>
-      guard(event, (p: unknown, ack: unknown) => {
-        const target = gameChannel(p)
-        if ('error' in target) return fail(ack, target.error)
-        const result = fn(target.channelId, p as Record<string, unknown>)
-        if (typeof result === 'string') return fail(ack, result)
-        ok(ack, result)
-      })
-
-    socket.on('games:open', lobbyRequest('games:open', (ch, p) => games.open(ch, userId, p.gameId, isAdmin())))
-    socket.on('games:join', lobbyRequest('games:join', (ch) => games.join(ch, userId)))
-    socket.on('games:leave', lobbyRequest('games:leave', (ch) => games.leave(ch, userId)))
-    socket.on('games:bots', lobbyRequest('games:bots', (ch, p) => games.bots(ch, userId, p.count, isAdmin())))
-    socket.on('games:start', lobbyRequest('games:start', (ch) => games.start(ch, userId, isAdmin())))
-    socket.on('games:stop', lobbyRequest('games:stop', (ch) => games.stop(ch, userId, isAdmin())))
-    socket.on('games:close', lobbyRequest('games:close', (ch) => games.close(ch, userId, isAdmin())))
-    socket.on('games:action', lobbyRequest('games:action', (ch, p) => games.action(ch, userId, p.matchId, p.action)))
-
-    socket.on('games:input', guard('games:input', (p) => {
-      const target = gameChannel(p, false)
-      if ('error' in target || !gameInputRate.allow(socket.id, now())) return
-      const { matchId, buttons } = p as { matchId?: unknown; buttons?: unknown }
-      games.input(target.channelId, userId, matchId, buttons)
-    }))
-
-    // --- emulator (docs/SPEC.md §5.6) ---
+    // --- emulator (docs/SPEC.md §5.5) ---
 
     /**
      * The voice channel of an `emu:*` request, or the ack error: plugin on, a voice channel, the caller in it
@@ -1501,7 +1424,6 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
       if (pendingPresenceTimer) clearTimeout(pendingPresenceTimer)
       pendingPresence = null
       presenceRate.forget(socket.id)
-      gameInputRate.forget(socket.id)
       emuInputRate.forget(socket.id)
       const own = socketPresences.get(userId)
       own?.delete(socket.id)
@@ -1541,7 +1463,6 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
       soundRoutes.close()
       lastSoundPlays.clear()
       music.close()
-      games.shutdown()
       emulator.shutdown()
       attachmentRoutes.close()
       accountRoutes.close()

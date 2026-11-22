@@ -280,8 +280,6 @@ export interface Bootstrap {
   plugins?: ServerPlugins
   /** Music sessions of voice channels that have one (MusicState.current or queue non-empty). */
   music?: MusicState[]
-  /** Games plugin: the open game session of each voice channel that has one. Older servers omit it. */
-  games?: GameLobby[]
   /** Emulator plugin: the running emulator session of each voice channel that has one. Older servers omit it. */
   emulator?: EmuSession[]
 }
@@ -376,8 +374,8 @@ export interface ClientToServerEvents {
   'sound:play': (p: { soundId: string }, ack: Ack<null>) => void
   /**
    * Admins/owner: turn a built-in plugin on or off for the whole server (persisted). Broadcasts `plugins:changed`
-   * when it changed. Turning `music` off ends every music session; turning `games` or `emulator` off closes
-   * every game / emulator session.
+   * when it changed. Turning `music` off ends every music session; turning `emulator` off closes every
+   * emulator session.
    */
   'plugins:set': (p: { plugin: PluginId; enabled: boolean }, ack: Ack<ServerPlugins>) => void
   /** The server's clock (ms epoch), for MusicState timing. Clients estimate their offset from several RTTs. */
@@ -399,32 +397,6 @@ export interface ClientToServerEvents {
    * (keeps the current track); `stop` clears everything. Rate limited per user. Broadcasts `music:state`
    * (a no-op, e.g. `pause` while paused, only acks the state).
    */
-  /**
-   * Games plugin (docs/SPEC.md §5.5). Every `games:*` request needs the `games` plugin on and must come from
-   * the socket that owns the caller's voice state, in that voice channel. `games:open` starts the channel's
-   * session (lobby) with that game and seats the caller as host; on an existing session, the host (or an
-   * admin) switches its game when no match is running. Broadcasts `games:lobby`.
-   */
-  'games:open': (p: { channelId: string; gameId: GameId }, ack: Ack<GameLobby>) => void
-  /** Take a seat for the next match (lobby or finished; a bot gives up its seat when the table is full). */
-  'games:join': (p: { channelId: string }, ack: Ack<GameLobby>) => void
-  /** Give up your seat (during a match: you forfeit and watch). The host role moves on; nobody left closes. */
-  'games:leave': (p: { channelId: string }, ack: Ack<GameLobby>) => void
-  /** Host / admins: how many bots (computer players) fill seats in the next match (games that have bots). */
-  'games:bots': (p: { channelId: string; count: number }, ack: Ack<GameLobby>) => void
-  /** Host / admins: start a match (also "play again" after one finished). Needs enough players + bots. */
-  'games:start': (p: { channelId: string }, ack: Ack<GameLobby>) => void
-  /** Host / admins: abort the running match (back to the lobby, no result). */
-  'games:stop': (p: { channelId: string }, ack: Ack<GameLobby>) => void
-  /** Host / admins: close the channel's game session. */
-  'games:close': (p: { channelId: string }, ack: Ack<null>) => void
-  /**
-   * Controller state of a `pad` game: the buttons (GAME_PAD bits) you hold now. Sent on every change; the
-   * server keeps the last one per seat. No ack; ignored when you have no seat in `matchId`, rate limited.
-   */
-  'games:input': (p: { channelId: string; matchId: string; buttons: number }) => void
-  /** One move of an `actions` game (e.g. play a card). The game validates it; its refusal is the ack error. */
-  'games:action': (p: { channelId: string; matchId: string; action: unknown }, ack: Ack<null>) => void
   /**
    * Emulator plugin (docs/SPEC.md §5.6). Every `emu:*` request needs the `emulator` plugin on and must come from
    * the socket that owns the caller's voice state, in that voice channel. `emu:start`: the caller hosts a game
@@ -512,10 +484,6 @@ export interface ServerToClientEvents {
   'plugins:changed': (p: ServerPlugins) => void
   /** A voice channel's music session changed (also sent when it becomes empty: current null, queue []). */
   'music:state': (s: MusicState) => void
-  /** A voice channel's game session changed (to everyone; `status: 'closed'` when it ended). Not per frame. */
-  'games:lobby': (l: GameLobby) => void
-  /** The running match's state as seen by you (to the voice-owning sockets in that channel, at the game's rate). */
-  'games:frame': (f: GameFrame) => void
   /** A voice channel's emulator session changed (to everyone; `status: 'closed'` when it ended). */
   'emu:session': (s: EmuSession) => void
   /**
@@ -650,16 +618,14 @@ export const MAX_MESSAGE_LENGTH = 4000
 // (fetch + decodeAudioData), since the renderer CSP's media-src doesn't allow server URLs.
 
 // ---- Plugins (built-in, toggled by admins) ----
-export type PluginId = 'music' | 'games' | 'emulator'
+export type PluginId = 'music' | 'emulator'
 export interface ServerPlugins {
   /** "YouTube Music": listen together in voice channels. */
   music: boolean
-  /** "Retro games": play together in voice channels (docs/SPEC.md §5.5). */
-  games: boolean
   /** "Emulator": the host plays a console game file they load; friends play along over the stream (§5.6). */
   emulator: boolean
 }
-export const DEFAULT_PLUGINS: ServerPlugins = { music: false, games: false, emulator: false }
+export const DEFAULT_PLUGINS: ServerPlugins = { music: false, emulator: false }
 
 // ---- Music plugin: listen together (docs/SPEC.md) ----
 // Every client in the voice channel fetches and plays the same track itself (YouTube Music via InnerTube in
@@ -714,15 +680,10 @@ export const MUSIC_MAX_TRACK_MS = 3 * 60 * 60 * 1000
 /** A voice channel's session is cleared after its voice channel has been empty this long (paused meanwhile). */
 export const MUSIC_IDLE_CLEAR_MS = 30 * 60 * 1000
 
-// ---- Games plugin: play together in a voice channel (docs/SPEC.md §5.5) ----
-// The server runs the match (shared/games/<id>: pure, deterministic game logic) and sends each player the state
-// they may see, at the game's rate; clients only draw it and send their controller state or moves.
-
-export type GameId = 'bomber' | 'kart' | 'brawl' | 'fighter' | 'cards'
-export const GAME_IDS: readonly GameId[] = ['bomber', 'kart', 'brawl', 'fighter', 'cards']
+// ---- Controllers (emulator) ----
 
 /**
- * Controller buttons (bit flags) of `pad` games and the emulator. Keyboard: arrows / WASD, A = Space / J / Z,
+ * Controller buttons (bit flags), as players send them to the emulator. Keyboard: arrows / WASD, A = Space / J / Z,
  * B = K / X, X = L / C, Y = I / V, L = Q, R = E, Start = Enter, Select = Backspace / right Shift. Gamepads: the
  * standard mapping. Positions follow the standard gamepad: A bottom, B right, X left, Y top.
  */
@@ -741,75 +702,6 @@ export const GAME_PAD = {
   SELECT: 2048,
 } as const
 export const GAME_PAD_MASK = 4095
-
-/** A seat of a match: a person (userId) or a bot (userId null). */
-export interface GameSeat {
-  /** 0-based, also the index in the game's state. */
-  seat: number
-  userId: string | null
-  /** The person's name when the match started, or "CPU 1"… */
-  name: string
-  /** GAME_SEAT_COLORS[seat]. */
-  color: string
-}
-
-/** One color per seat, in seat order (distinct, readable on dark and light backgrounds). */
-export const GAME_SEAT_COLORS: readonly string[] = [
-  '#ff5a5f',
-  '#3d9cff',
-  '#ffd23f',
-  '#3ee6b0',
-  '#c06bff',
-  '#ff9f43',
-  '#ff6bcb',
-  '#b8c4d6',
-]
-
-export type GameStatus = 'lobby' | 'playing' | 'finished' | 'closed'
-
-export interface GameResult {
-  /** Winning seats (empty: nobody won, e.g. a draw or the match was cut). */
-  winners: GameSeat[]
-  /** One line, e.g. "Ana wins 3–1". */
-  summary: string
-}
-
-export interface GameLobby {
-  channelId: string
-  gameId: GameId
-  /**
-   * `lobby`: picking players; `playing`: a match runs (frames flow); `finished`: the last match's `result` shows
-   * (play again or change game); `closed`: the session ended (clients drop it).
-   */
-  status: GameStatus
-  /** Starts matches, adds bots, changes the game. Always someone in the voice channel. */
-  hostId: string
-  /** People seated for the next match, in the order they joined (= seat order). */
-  players: string[]
-  /** Bots that fill seats after the players (0 for games without bots). */
-  bots: number
-  /** The running (or last finished) match: its id and seats. null before the first start. */
-  matchId: string | null
-  seats: GameSeat[]
-  /** Server time (ms epoch) the match started. */
-  startedAt: number | null
-  /** While `finished`. */
-  result: GameResult | null
-  /** Bumped on every change; one server-wide counter that never goes back (like MusicState.rev). */
-  rev: number
-}
-
-export interface GameFrame {
-  channelId: string
-  matchId: string
-  /** Simulation tick of this state (0 at the start, +1 per 1 / tickHz s). */
-  tick: number
-  /** The game's view of the match for this recipient (shape defined by the game). */
-  view: unknown
-}
-
-/** Longest a match may run; then it ends without a winner. */
-export const GAME_MAX_MATCH_MS = 30 * 60 * 1000
 
 // ---- Emulator plugin: the host plays a console game, friends play along (docs/SPEC.md §5.6) ----
 // The host's Nexo runs the emulator on a game file loaded from their own disk (never uploaded or downloaded by

@@ -1,4 +1,4 @@
-// Emulator plugin (docs/SPEC.md §5.6): the session manager (emulator.ts) with a fake clock, then the socket
+// Emulator plugin (docs/SPEC.md §5.5): the session manager (emulator.ts) with a fake clock, then the socket
 // events through an in-process server (voice checks, input relay to the host's voice socket, cleanup).
 // Run with `npm test -w server`.
 import { after, before, beforeEach, describe, test } from 'node:test'
@@ -345,7 +345,7 @@ describe('emulator over sockets', () => {
   after(() => server.close())
 
   test('plugin off by default; requests refused', async () => {
-    assert.deepEqual(owner.boot.plugins, { music: false, games: false, emulator: false })
+    assert.deepEqual(owner.boot.plugins, { music: false, emulator: false })
     assert.deepEqual(owner.boot.emulator, [])
     await setVoice(mia, owner, lounge.id)
     assert.equal(await requestErr(mia.socket, 'emu:start', { channelId: lounge.id, system: 'snes', title: 'Mario' }), EMU_ERRORS.pluginOff)
@@ -356,10 +356,9 @@ describe('emulator over sockets', () => {
     const changed = nextEvent(bob.socket, 'plugins:changed')
     assert.deepEqual(await requestOk<ServerPlugins>(owner.socket, 'plugins:set', { plugin: 'emulator', enabled: true }), {
       music: false,
-      games: false,
       emulator: true,
     })
-    assert.deepEqual(await changed, { music: false, games: false, emulator: true })
+    assert.deepEqual(await changed, { music: false, emulator: true })
     const start = (c: Conn, p: Record<string, unknown>) => request<EmuSession>(c.socket, 'emu:start', { system: 'snes', title: 'Mario', ...p })
     assert.deepEqual(await start(mia, { channelId: general.id }), { ok: false, error: EMU_ERRORS.channelNotFound })
     assert.deepEqual(await start(mia, { channelId: 'nope' }), { ok: false, error: EMU_ERRORS.channelNotFound })

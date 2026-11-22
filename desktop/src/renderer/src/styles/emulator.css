@@ -1,6 +1,85 @@
 /* Emulator plugin: the emulator area on the voice stage (host canvas / host's stream, controller ports, game
-   controls), the "Your own game" picker card and the sidebar line (components/emulator/*). Builds on the games
-   area's gm- classes (styles/games.css). All classes here are prefixed `emu-`. */
+   controls), the toolbar button and the sidebar line (components/emulator/*). Emulator-specific classes are
+   prefixed `emu-`; the stage panel's generic pieces (header, buttons, chips, help, sidebar line) use `gm-`. */
+.emu-focus .vx-strip > .vx-tile { width: 144px; height: 81px; }
+.gm-area {
+  flex: 1; min-width: 0; min-height: 0;
+  display: flex; flex-direction: column;
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--bg-1);
+  overflow: hidden;
+}
+.gm-head {
+  display: flex; align-items: center; gap: 8px; flex: none;
+  height: 44px; padding: 0 10px 0 14px;
+  border-bottom: 1px solid var(--line);
+}
+.gm-head-icon { display: inline-grid; place-items: center; color: var(--accent); }
+.gm-head-title { font: 700 14px var(--font); color: var(--text-0); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gm-head-spacer { flex: 1; }
+.gm-chip {
+  display: inline-flex; align-items: center; height: 20px; padding: 0 8px;
+  border-radius: 999px;
+  font: 700 10.5px var(--font); letter-spacing: 0.04em; text-transform: uppercase;
+  background: var(--bg-3); color: var(--text-1);
+}
+.gm-chip-playing { background: var(--live-soft); color: var(--live); }
+.gm-chip-finished { background: var(--warn-soft); color: var(--warn); }
+.gm-body { flex: 1; min-height: 0; display: flex; position: relative; }
+.gm-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  height: 30px; padding: 0 12px;
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  background: var(--bg-2); color: var(--text-0);
+  font: 600 12.5px var(--font);
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, transform 0.08s;
+}
+.gm-btn:hover:not(:disabled) { background: var(--bg-3); border-color: var(--line-hover); }
+.gm-btn:active:not(:disabled) { transform: scale(0.97); }
+.gm-btn:disabled { opacity: 0.45; cursor: default; }
+.gm-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.gm-btn-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.gm-btn-primary:hover:not(:disabled) { background: var(--accent-strong); border-color: var(--accent-strong); }
+.gm-btn-ghost { background: transparent; border-color: transparent; color: var(--text-1); }
+.gm-btn-ghost:hover:not(:disabled) { color: var(--text-0); }
+.gm-icon-btn {
+  height: 26px; padding: 0 8px;
+  border: 0; border-radius: var(--radius-sm);
+  background: transparent; color: var(--text-2);
+  font: 600 11.5px var(--font);
+  cursor: pointer;
+}
+.gm-icon-btn:hover { background: var(--bg-3); color: var(--text-0); }
+.gm-icon-btn.is-off { color: var(--warn); }
+.gm-note { color: var(--text-2); font: 500 12.5px var(--font); }
+.gm-side-title { margin: 0 0 10px; font: 700 11px var(--font); letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-2); }
+.gm-tag { padding: 1px 6px; border-radius: 4px; background: var(--accent-soft); color: var(--accent); font: 700 10px var(--font); text-transform: uppercase; }
+.gm-help { margin: 0; display: flex; flex-direction: column; gap: 8px; }
+.gm-help-row { display: flex; flex-direction: column; gap: 2px; }
+.gm-help dt { display: flex; align-items: center; gap: 6px; }
+.gm-help dd { margin: 0; color: var(--text-1); font: 500 12.5px var(--font); }
+.gm-help kbd {
+  display: inline-block; min-width: 20px; padding: 1px 6px;
+  border: 1px solid var(--line-strong); border-bottom-width: 2px; border-radius: 4px;
+  background: var(--bg-3); color: var(--text-0);
+  font: 700 11px var(--mono); text-align: center;
+}
+.gm-help-keys { color: var(--text-2); font: 500 11px var(--mono); }
+.gm-help-pad { margin: 4px 0 0; color: var(--text-2); font: 500 11.5px var(--font); }
+.gm-channel-line {
+  display: flex; align-items: center; gap: 6px;
+  margin: 0 8px 2px 30px; padding: 1px 0;
+  color: var(--text-2); font: 500 11.5px var(--font);
+  min-width: 0;
+}
+.gm-channel-line svg { flex: none; }
+.gm-channel-line.is-live { color: var(--accent); }
+.gm-channel-line-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gm-help-label { font: 700 12px var(--font); color: var(--text-0); }
+.gm-help dt { flex-wrap: wrap; }
+.gm-help kbd { white-space: nowrap; }
+
 
 /* ---------- layout ---------- */
 .emu-body { flex: 1; min-height: 0; display: flex; }
@@ -142,11 +221,15 @@
 .emu-help dd { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
 .emu-help-where { color: var(--text-2); font-weight: 500; }
 
-/* ---------- picker card, sidebar line ---------- */
-.emu-card .emu-card-art { color: var(--accent); }
-.emu-card.is-drop { border-color: var(--accent); border-style: dashed; background: var(--accent-soft); }
-
 @media (max-width: 860px) {
   .emu-body { flex-direction: column; }
   .emu-side { width: auto; max-height: 40%; border-left: 0; border-top: 1px solid var(--line); }
+}
+
+/* ---------- toolbar button: a dot while a game runs but is hidden ---------- */
+.emu-ctl { position: relative; }
+.emu-dot {
+  position: absolute; top: 6px; right: 6px;
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--live); box-shadow: 0 0 0 2px var(--bg-1);
 }

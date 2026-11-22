@@ -19,7 +19,6 @@ import { speakingIdentities, useParticipants } from '../voice/participants'
 import { VoiceControls } from './voice/VoiceControls'
 import { SoundboardHost } from './voice/Soundboard'
 import { ChannelMusicLine } from './voice/MusicBar'
-import { ChannelGameLine } from './games/GameArea'
 import { ChannelEmuLine } from './emulator/EmulatorEntry'
 import { MusicPanelHost } from './voice/MusicPanel'
 import '../styles/channel-reorder.css'
@@ -442,7 +441,6 @@ function ChannelRow({ channel }: { channel: Channel }) {
         </div>
       )}
       {channel.type === 'voice' && <ChannelMusicLine channelId={channel.id} />}
-      {channel.type === 'voice' && <ChannelGameLine channelId={channel.id} />}
       {channel.type === 'voice' && <ChannelEmuLine channelId={channel.id} />}
       {channel.type === 'voice' && <VoiceMembers channelId={channel.id} />}
       {confirming && (

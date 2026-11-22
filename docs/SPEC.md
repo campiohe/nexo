@@ -203,14 +203,12 @@ The visual design is Nexo's own: dark ink background, mint accent, rounded tiles
 - **Link previews:** answers `GET /api/embed` from allowlisted oEmbed providers only, with an in-memory cache
   (§5.3).
 - **Plugins:** built-in features admins/owner turn on or off for the whole server (`ServerPlugins`, stored as
-  JSON in `meta.plugins`; missing or invalid values read as `DEFAULT_PLUGINS`, everything off): `music`,
-  `games` and `emulator`.
+  JSON in `meta.plugins`; missing or invalid values read as `DEFAULT_PLUGINS`, everything off): `music`
+  and `emulator`.
 - **Music plugin:** an in-memory `MusicState` per voice channel (queue, current track, timing), advanced on a
   timer; nothing is relayed through voice (§5.4).
-- **Games plugin:** an in-memory game session per voice channel (lobby + the running match), simulated by the
-  server at each game's tick rate (§5.5).
 - **Emulator plugin:** an in-memory emulator session per voice channel (host, game title, controller ports); the
-  server relays players' buttons to the host and never sees the game (§5.6).
+  server relays players' buttons to the host and never sees the game (§5.5).
 
 ### 5.2 Data model (SQLite)
 
@@ -355,44 +353,7 @@ ignore a `music:state` whose `rev` is lower than the one shown; replace all musi
 (re)connect; treat `durationMs` as authoritative (stop at it, the server moves on); show `addedBy` even when the
 account is gone. Search and stream fetching are entirely client-side; the server only validates `MusicTrackInfo`.
 
-### 5.5 Games plugin (play together)
-
-**Server-authoritative.** Each game is pure, deterministic logic in `shared/games/<id>/logic.ts` implementing
-`GameDefinition` (`shared/games/types.ts`): `create(seats)`, `tick(state, {held, pressed})`, `action(state, seat,
-move)` for turn-based games, `bot` / `botAction`, `leave`, `view(state, seat | null)` and `result`. The server
-(`server/src/games.ts`) keeps one session per voice channel in memory, runs the match on a timer at the game's
-`tickHz` (catching up at most 5 ticks after a stall, then dropping the backlog), and sends each person in that
-voice channel (their voice-owning socket) a `games:frame` every `frameEvery` ticks and after each move: one view
-for everyone, or one per seat when the game hides information (`perSeatView`, e.g. card hands; spectators get
-`view(state, null)`). Randomness comes from a per-match seeded PRNG. Clients only draw the latest frames
-(interpolating between two, placed on a timeline by tick number) and send input.
-
-**Input.** `pad` games: the client sends its held buttons (`GAME_PAD` bits: d-pad, A, B, X, Y, L, R, Start, Select) on every
-change (`games:input`, no ack, at most 120 per socket per second); the server keeps the last mask per seat and also
-the buttons pressed since the previous tick (`pressed`), so a tap shorter than a tick is never lost. `actions`
-games: `games:action` with a game-defined move; the game validates it and its refusal is the ack error.
-
-**Session.** `games:open` creates the session (`status: 'lobby'`) with the caller as host and first player. People
-take or give up seats (`games:join` / `games:leave`), the host sets `bots` (seats after the people; joining a full
-table takes a bot's seat) and starts a match (`games:start`: seats = players in join order, then `CPU n`; colors
-`GAME_SEAT_COLORS[seat]`; needs `minPlayers` people + bots and at least one person). A match ends when the game's
-`result` is non-null, after `GAME_MAX_MATCH_MS` (30 min, nobody wins) or when every person in it left; the session
-becomes `finished` with `result` (winners as seats, a summary line) and keeps its players for **Play again**. The host
-(or an admin) may switch the game between matches (players beyond the new game's maximum lose their seat; bots are
-clamped), abort a match (`games:stop`, back to `lobby`) or close the session (`games:close`). Leaving the voice
-channel gives up your seat; in a running match that's a forfeit (`leave`, then `result` is checked). The host role
-moves to the next seated player in the channel, else anyone in it; when the channel is empty the session closes.
-Deleting the channel or turning the plugin off closes its sessions. Every lobby change bumps `rev` (one server-wide
-counter seeded from the clock) and is broadcast to everyone as `games:lobby` (`status: 'closed'` when it ends);
-bootstrap `games` carries the open sessions. Requests come only from the caller's voice-owning socket in that channel
-("Join the voice channel to play"); lobby requests and moves share a limit of 40 per user per 10 s ("Slow down").
-
-**Games.** All original designs in classic genres: `bomber` (Blast Arena, 2–4), `kart` (Kart Rally, 1–8), `brawl`
-(Ring Out, 2–4), `fighter` (Dojo Duel, 2) and `cards` (Color Rush, 2–8). Every game must pass
-`checkGameContract` (`server/test/helpers/gameHarness.ts`): views serializable and ≤ 16 KB, deterministic for a
-seed, a match with bots ends on its own, people leaving never breaks it, junk moves are refused.
-
-### 5.6 Emulator plugin (play along)
+### 5.5 Emulator plugin (play along)
 
 **The host runs the game.** In a voice call, the host loads a console game file (`system: 'snes'`) from their own
 disk; their Nexo runs the emulator and publishes its picture and sound as their stream (LiveKit, like a screen
@@ -513,17 +474,10 @@ All shared types live in `shared/protocol.ts`, imported by both the server and t
 | `voice:move` | `{userId, channelId}` (admins/owner; admins can't move the owner; same channel = no-op) | `null` |
 | `voice:nudge` | `{userId}` (target in voice and muted or deafened; not yourself; once per `NUDGE_COOLDOWN_MS` = 15 s per sender → target) | `null` |
 | `sound:play` | `{soundId}` ("Sound not found"; you must be in voice: "Join a voice channel to play sounds"; once per `SOUND_COOLDOWN_MS` = 2 s per user: "Wait a moment before playing another sound"). Sends `sound:played` to the voice-owning socket of everyone in your voice channel, you included | `null` |
-| `plugins:set` | `{plugin, enabled}` (admins/owner: "Only admins can change plugins"; `plugin` not a `PluginId`: "Unknown plugin"; `enabled` not a boolean: "Invalid plugin setting"). Persisted; broadcasts `plugins:changed` when it changed. Turning `music` off ends every music session; turning `games` off closes every game session; turning `emulator` off ends every emulator session | `ServerPlugins` |
+| `plugins:set` | `{plugin, enabled}` (admins/owner: "Only admins can change plugins"; `plugin` not a `PluginId`: "Unknown plugin"; `enabled` not a boolean: "Invalid plugin setting"). Persisted; broadcasts `plugins:changed` when it changed. Turning `music` off ends every music session; turning `emulator` off ends every emulator session | `ServerPlugins` |
 | `time:now` | `{}` | `{now}` (server clock, ms epoch) |
 | `music:add` | `{channelId, tracks, next?}`: "The Music plugin is off"; a voice channel ("Voice channel not found"); you must be in it ("Join the voice channel to control its music"). `tracks`: 1..`MUSIC_MAX_ADD` = 100 ("You can add at most 100 tracks at once") valid `MusicTrackInfo` (else the whole call fails: "Invalid track"): `videoId` `/^[A-Za-z0-9_-]{11}$/`, `title` 1..200 and `artist` 0..200 UTF-16 units and `album` null or 0..200 (`''` → null) after normalizing like status text, `durationMs` an integer in 1000..`MUSIC_MAX_TRACK_MS` (3 h); `artwork` an https URL without credentials or port on `ytimg.com`, `*.ytimg.com` or `*.googleusercontent.com`, else null (never an error). Queue at most `MUSIC_MAX_QUEUE` = 200 ("The queue is full (200 tracks)"; a track that starts playing doesn't count). Appended (`next`: right after the current one); the first starts now when nothing plays. Shares the rate limit of `music:control`. Broadcasts `music:state` | `MusicState` |
 | `music:control` | `{channelId, action, positionMs?, queueId?, toIndex?}` (same checks as `music:add`; 20 `music:add`/`music:control` per user per 10 s: "Slow down"). `play`/`pause` at the current position; `seek` to `positionMs` (a finite number, clamped to [0, `durationMs` − 1000]); `skip` plays the next track (stops at the end of the queue); `previous` plays the last played track within 3 s of the current one's start, else restarts it; `remove`/`move` a queued entry by `queueId` ("That track is no longer in the queue"; `move` needs a numeric `toIndex`, clamped); `clear` empties the queue (keeps the current track); `stop` ends the session. Bad action or parameter: "Invalid music action". A no-op (e.g. pause while paused) acks the state without a broadcast | `MusicState` |
-| `games:open` | `{channelId, gameId}`: "The Games plugin is off"; a voice channel ("Voice channel not found") the caller is in from this socket ("Join the voice channel to play"); `gameId` in `GAME_IDS` ("Unknown game"). Creates the session (caller = host + first player), or (host/admins: "Only the host can do that"; not while playing: "A match is running. Stop it first") switches its game. 40 lobby requests + moves per user per 10 s ("Slow down"). Broadcasts `games:lobby` | `GameLobby` |
-| `games:join` / `games:leave` | `{channelId}` (same checks; "No game is open in this channel"). Join: lobby or finished only, "All seats are taken" unless a bot gives up its seat. Leave: "You don't have a seat"; during a match it's a forfeit | `GameLobby` |
-| `games:bots` | `{channelId, count}` (host/admins; not while playing; "This game has no computer players"; an integer ≥ 0, "Invalid number of bots"; players + bots ≤ max, "All seats are taken") | `GameLobby` |
-| `games:start` / `games:stop` | `{channelId}` (host/admins). Start: players + bots ≥ `minPlayers` and ≥ 1 player ("This game needs at least N players (bots count)"), not while playing. Stop: "No match is running"; back to the lobby without a result | `GameLobby` |
-| `games:close` | `{channelId}` (host/admins). Broadcasts the `closed` lobby | `null` |
-| `games:input` | `{channelId, matchId, buttons}` (no ack): held `GAME_PAD` bits of your seat in that running `pad` match; anything else ignored; 120 per socket per second | — |
-| `games:action` | `{channelId, matchId, action}`: one move of a running `actions` match ("No match is running", "You're not playing in this match", or the game's own refusal). Sends frames | `null` |
 | `emu:start` | `{channelId, system, title}`: "The Emulator plugin is off"; a voice channel ("Voice channel not found") the caller is in from this socket ("Join the voice channel to play"); `system` in `EMU_SYSTEMS` ("Unsupported console"); `title` 1..`EMU_TITLE_MAX` = 80 after normalizing ("Invalid game title"). Creates the session (caller = host on port 0), or (the host only, else "Someone is already hosting a game here") changes its game and unpauses it. 40 `emu:*` requests per user per 10 s ("Slow down"). Broadcasts `emu:session` | `EmuSession` |
 | `emu:port` | `{channelId, port}` (same checks; "No game is running in this channel"): `port` an integer 0..3 ("Invalid controller") that is free ("That controller is taken"), leaving your previous one; `null` gives yours up. A freed port relays `buttons: 0` to the host | `EmuSession` |
 | `emu:assign` | `{channelId, port, userId}` (host/admins: "Only the host can do that"): `userId` in that voice channel ("They're not in this voice channel") goes on `port` (off any other; whoever was there loses it); `null` frees it | `EmuSession` |
@@ -537,7 +491,7 @@ All shared types live in `shared/protocol.ts`, imported by both the server and t
 
 | Event | Payload |
 |---|---|
-| `bootstrap` | `{serverName, me, token?, users, online, channels, voice, lastMessageAt, lastMentionAt, presence, sounds, plugins, music, …}` sent on every connect (`presence`: userId → `Presence` for online users whose presence isn't the default; `sounds`: the soundboard, oldest first; `plugins`: `ServerPlugins`; `music`: the `MusicState`s with a current track or a queue; `games`: the open `GameLobby`s; `emulator`: the running `EmuSession`s) |
+| `bootstrap` | `{serverName, me, token?, users, online, channels, voice, lastMessageAt, lastMentionAt, presence, sounds, plugins, music, …}` sent on every connect (`presence`: userId → `Presence` for online users whose presence isn't the default; `sounds`: the soundboard, oldest first; `plugins`: `ServerPlugins`; `music`: the `MusicState`s with a current track or a queue; `emulator`: the running `EmuSession`s) |
 | `user:upsert` | `User` |
 | `presence` | `string[]` of online user IDs |
 | `presence:changed` | `{userId, presence}` (`DEFAULT_PRESENCE` when they went back to plain online or offline) |
@@ -553,8 +507,6 @@ All shared types live in `shared/protocol.ts`, imported by both the server and t
 | `sound:played` | `{soundId, userId, channelId}` to the voice-owning sockets in that channel only; each client plays it locally (not through anyone's microphone) unless deafened |
 | `plugins:changed` | `ServerPlugins` (an admin turned a plugin on or off) |
 | `music:state` | `MusicState` to everyone, on every change of a voice channel's session (also its empty state when it ends: `current` null, `queue` []) |
-| `games:lobby` | `GameLobby` to everyone on every lobby change of a voice channel's game session (`status: 'closed'` when it ends); not per frame |
-| `games:frame` | `GameFrame` `{channelId, matchId, tick, view}` to the voice-owning sockets in that channel, at the game's rate and after each move (per seat for games that hide information) |
 | `emu:session` | `EmuSession` to everyone on every change of a voice channel's emulator session (`status: 'closed'` when it ends) |
 | `emu:input` | `{channelId, port, buttons}` to the host's voice-owning socket only: the buttons the player on `port` holds now (`0` when the port was freed) |
 
