@@ -1,7 +1,7 @@
 {
   "name": "@nexo/server-cli",
   "private": true,
-  "version": "1.2.0-test.2",
+  "version": "1.2.0-test.3",
   "license": "MIT",
   "description": "Nexo Server CLI: the Nexo server + LiveKit in one download (docs/SPEC-SERVER-CLI.md)",
   "type": "module",
