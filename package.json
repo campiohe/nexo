@@ -1,7 +1,7 @@
 {
   "name": "nexo",
   "private": true,
-  "version": "1.2.0-test.3",
+  "version": "1.2.0-test.4",
   "license": "MIT",
   "description": "Chat, voice and game/screen sharing for friend groups",
   "workspaces": [
