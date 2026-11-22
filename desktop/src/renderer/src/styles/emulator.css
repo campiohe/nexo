@@ -1,0 +1,152 @@
+/* Emulator plugin: the emulator area on the voice stage (host canvas / host's stream, controller ports, game
+   controls), the "Your own game" picker card and the sidebar line (components/emulator/*). Builds on the games
+   area's gm- classes (styles/games.css). All classes here are prefixed `emu-`. */
+
+/* ---------- layout ---------- */
+.emu-body { flex: 1; min-height: 0; display: flex; }
+.emu-main { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.emu-side {
+  flex: none; width: 280px; overflow: hidden auto;
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 14px;
+  border-left: 1px solid var(--line);
+}
+.emu-head-host {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--text-2); font: 500 12.5px var(--font);
+}
+.emu-chip-system { background: var(--accent-soft); color: var(--accent); }
+
+/* ---------- the screen: 4:3 (the SNES picture is 256×224 on a 4:3 TV), as large as fits ---------- */
+.emu-screen {
+  flex: 1; min-height: 0; position: relative;
+  display: grid; place-items: center;
+  background: #000;
+  container-type: size;
+  overflow: hidden;
+}
+.emu-frame {
+  position: relative;
+  width: min(100cqw, 100cqh * 4 / 3);
+  height: min(100cqh, 100cqw * 3 / 4);
+  background: #000;
+}
+/* The engine's canvas (host) and the stream (everyone else) are stretched to the 4:3 frame. */
+.emu-frame > canvas,
+.emu-canvas {
+  display: block; width: 100%; height: 100%;
+  image-rendering: pixelated;
+}
+.emu-frame .emu-video { width: 100%; height: 100%; object-fit: fill !important; background: #000; }
+
+.emu-placeholder {
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+  max-width: 340px; padding: 20px; text-align: center;
+  color: #b4bccb; font: 500 13px/1.5 var(--font);
+}
+.emu-placeholder p { margin: 0; }
+.emu-placeholder svg { color: var(--accent); }
+
+.emu-paused {
+  position: absolute; inset: 0; z-index: 2;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px;
+  background: rgb(5 7 10 / 0.55);
+  color: #eef1f6; font: 800 20px var(--font); letter-spacing: 0.02em;
+  pointer-events: none;
+}
+.emu-paused button { pointer-events: auto; }
+.emu-screen.is-drop { outline: 2px dashed var(--accent); outline-offset: -6px; }
+.emu-drop {
+  position: absolute; inset: 0; z-index: 3;
+  display: grid; place-items: center;
+  background: rgb(5 7 10 / 0.6);
+  color: var(--accent); font: 700 16px var(--font);
+  pointer-events: none;
+}
+
+/* ---------- bar under the screen ---------- */
+.emu-bar {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px; flex: none;
+  min-height: 46px; padding: 7px 10px;
+  border-top: 1px solid var(--line);
+}
+.emu-live { display: inline-flex; align-items: center; gap: 6px; color: var(--text-1); font: 600 12px var(--font); }
+.emu-warn { display: inline-flex; align-items: center; gap: 8px; color: var(--warn); font: 600 12px var(--font); }
+.emu-volume { display: inline-flex; align-items: center; gap: 8px; width: 160px; padding-right: 4px; }
+.emu-volume .vx-range { min-width: 0; }
+.emu-volume-label { color: var(--text-2); font: 600 11.5px var(--font); }
+
+/* ---------- controller ports ---------- */
+.emu-ports { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.emu-port {
+  position: relative;
+  display: flex; align-items: center; gap: 8px;
+  min-height: 38px; padding: 4px 6px 4px 4px;
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  background: var(--bg-2);
+  font: 600 13px var(--font); color: var(--text-0);
+}
+.emu-port.is-free { border-style: dashed; background: transparent; }
+.emu-port.is-me { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); }
+.emu-port-num {
+  flex: none; display: inline-grid; place-items: center;
+  width: 28px; height: 22px; border-radius: 4px;
+  background: color-mix(in srgb, var(--port) 22%, transparent);
+  color: var(--port);
+  font: 800 11px var(--mono);
+}
+.emu-port-name { flex: 1; min-width: 3em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.emu-port .gm-tag { flex: none; }
+.emu-port-free { color: var(--text-2); font-weight: 500; }
+.emu-port-you { color: var(--text-2); font-weight: 500; }
+.emu-port-leave { flex: none; }
+.emu-port-btn { flex: none; height: 26px; padding: 0 9px; font-size: 12px; }
+.emu-port-menu-wrap { position: relative; flex: none; }
+.emu-port-more { width: 26px; padding: 0; font-size: 15px; line-height: 1; }
+
+.emu-menu {
+  position: absolute; right: 0; top: calc(100% + 4px); z-index: 5;
+  width: 210px; max-height: 260px; overflow: auto;
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 6px;
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--bg-1); box-shadow: var(--shadow-pop);
+}
+.emu-menu-title { margin: 2px 6px 4px; color: var(--text-2); font: 700 10.5px var(--font); letter-spacing: 0.06em; text-transform: uppercase; }
+.emu-menu-item {
+  display: flex; align-items: center; gap: 8px;
+  height: 30px; padding: 0 8px;
+  border: 0; border-radius: var(--radius-sm);
+  background: transparent; color: var(--text-0);
+  font: 600 12.5px var(--font); text-align: left;
+  cursor: pointer;
+}
+.emu-menu-item:hover, .emu-menu-item:focus-visible { background: var(--bg-3); outline: none; }
+.emu-menu-item.is-danger { color: var(--danger); }
+.emu-menu-hint { color: var(--text-2); font: 600 11px var(--mono); }
+.emu-menu-empty { margin: 4px 8px; color: var(--text-2); font: 500 12px var(--font); }
+
+/* ---------- notes and help ---------- */
+.emu-note { margin: 0; color: var(--text-2); font: 500 12px/1.45 var(--font); }
+.emu-note strong { color: var(--text-0); }
+.emu-latency { margin-top: auto; padding-top: 6px; border-top: 1px solid var(--line); }
+.emu-help-toggle {
+  align-self: flex-start;
+  padding: 0; border: 0; background: none;
+  color: var(--accent); font: 600 12px var(--font);
+  cursor: pointer;
+}
+.emu-help-toggle:hover { text-decoration: underline; }
+.emu-help-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+.emu-help .gm-help-row { flex-direction: row; align-items: center; justify-content: space-between; gap: 8px; }
+.emu-help dd { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
+.emu-help-where { color: var(--text-2); font-weight: 500; }
+
+/* ---------- picker card, sidebar line ---------- */
+.emu-card .emu-card-art { color: var(--accent); }
+.emu-card.is-drop { border-color: var(--accent); border-style: dashed; background: var(--accent-soft); }
+
+@media (max-width: 860px) {
+  .emu-body { flex-direction: column; }
+  .emu-side { width: auto; max-height: 40%; border-left: 0; border-top: 1px solid var(--line); }
+}
