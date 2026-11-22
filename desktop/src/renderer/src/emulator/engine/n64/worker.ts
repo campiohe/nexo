@@ -97,6 +97,17 @@ function errorText(e: unknown): string {
   return e instanceof Error ? e.message : String(e)
 }
 
+/** A crash: its message plus where it happened (the core keeps its function names: build.sh --profiling-funcs). */
+function crashText(e: unknown): string {
+  if (!(e instanceof Error) || !e.stack) return errorText(e)
+  const frames = e.stack
+    .split('\n')
+    .filter((l) => /^\s+at /.test(l))
+    .slice(0, 12)
+    .map((l) => l.trim().replace(/\s*\((?:blob|file|https?):[^)]*\)$/, ''))
+  return frames.length ? `${e.message} | ${frames.join(' < ')}` : e.message
+}
+
 async function init(msg: Extract<ToWorker, { type: 'init' }>): Promise<void> {
   const gl = msg.canvas.getContext('webgl2', {
     alpha: false,
@@ -218,7 +229,7 @@ function tick(): void {
     }
   } catch (e) {
     console.error('[emulator] the N64 core crashed', e)
-    crash(errorText(e))
+    crash(crashText(e))
   }
 }
 
@@ -284,7 +295,7 @@ function save(id: number): void {
     const state = mod.HEAPU8.slice(ptr, ptr + size).buffer
     post({ type: 'saved', id, state }, [state])
   } catch (e) {
-    crash(errorText(e))
+    crash(crashText(e))
     post({ type: 'failed', id, message: errorText(e) })
   } finally {
     if (!dead) mod._free(ptr)
@@ -303,7 +314,7 @@ function load(id: number, state: ArrayBuffer): void {
     clearAudio()
     post({ type: 'loaded', id })
   } catch (e) {
-    crash(errorText(e))
+    crash(crashText(e))
     post({ type: 'failed', id, message: errorText(e) })
   } finally {
     if (!dead) mod._free(ptr)
