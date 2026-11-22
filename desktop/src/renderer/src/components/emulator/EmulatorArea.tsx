@@ -1,23 +1,23 @@
-// Emulator plugin UI (docs/SPEC.md §5.6): the area that takes the voice stage's main spot while someone hosts a
+// Emulator plugin UI (docs/SPEC.md §5.5): the area that takes the voice stage's main spot while someone hosts a
 // game in your channel. The host sees the engine's canvas (no delay) with the game controls; everyone else sees
 // the host's stream (watched automatically while the area is shown). Four controller ports: take a free one to
 // play (your keyboard / gamepad go to the host through the server), the host or an admin can assign them.
 // The host's engine and its lifecycle: ./host.ts.
 import { useEffect, useLayoutEffect, useRef, useState, type DragEvent } from 'react'
-import { EMU_PORTS, type EmuSession, type User } from '@shared/protocol'
+import { EMU_PORTS, GAME_PAD, type EmuSession, type EmuSystem, type User } from '@shared/protocol'
 import { useApp } from '../../store/app'
 import { useEmulator, setEmulatorHidden } from '../../store/emulator'
 import { assignEmuPort, sendEmuInput, stopEmu, takeEmuPort } from '../../emulator/actions'
 import type { EmulatorEngine } from '../../emulator/types'
 import { startPadInput, BUTTON_KEYS } from '../../emulator/input'
+import { EMU_SYSTEM_INFO } from '../../emulator/systems'
 import { isStaff } from '../../lib/permissions'
 import { setStreamVolume, stopWatching, useVoice, watchStream } from '../../voice/session'
 import { useParticipants } from '../../voice/participants'
 import { Avatar } from '../Avatar'
 import { VideoTrackView } from '../voice/VideoTrackView'
 import {
-  acceptFor,
-  hostGameFile,
+  hostGameFiles,
   quickLoad,
   quickSave,
   resetGame,
@@ -27,7 +27,7 @@ import {
   togglePause,
   useEmuHost,
 } from './host'
-import { ConsoleIcon, dragHasFiles } from './EmulatorEntry'
+import { ConsoleIcon, dragHasFiles, GameFileInput, LoadProgress } from './EmulatorEntry'
 import '../../styles/emulator.css'
 
 /** One color per controller port (P1 red, P2 blue, P3 yellow, P4 green). */
@@ -62,9 +62,10 @@ export function EmulatorArea({ channelId }: { channelId: string }) {
     if (!dragHasFiles(e)) return
     e.preventDefault()
     setDropOver(false)
-    const file = e.dataTransfer.files[0]
-    if (isHost && file) void hostGameFile(channelId, file)
+    const files = Array.from(e.dataTransfer.files)
+    if (isHost && files.length && !loading) void hostGameFiles(channelId, files)
   }
+  const info = EMU_SYSTEM_INFO[session.system] as (typeof EMU_SYSTEM_INFO)[EmuSystem] | undefined
 
   return (
     <section className="gm-area emu-area" aria-label="Emulator">
@@ -75,12 +76,14 @@ export function EmulatorArea({ channelId }: { channelId: string }) {
         <span className="gm-head-title" title={session.title}>
           {session.title}
         </span>
-        <span className="gm-chip emu-chip-system">{session.system.toUpperCase()}</span>
+        <span className="gm-chip emu-chip-system" title={info?.name}>
+          {info?.short ?? String(session.system).toUpperCase()}
+        </span>
         {session.paused ? <span className="gm-chip gm-chip-finished">Paused</span> : <span className="gm-chip gm-chip-playing">Live</span>}
         <span className="emu-head-host">hosted by {hostName}</span>
         <span className="gm-head-spacer" />
         {isHost && (
-          <button className="gm-btn gm-btn-ghost" onClick={pickFile} disabled={!!loading} title="Load another game file">
+          <button className="gm-btn gm-btn-ghost" onClick={pickFile} disabled={!!loading} title="Load another game (any console)">
             {loading ? 'Loading…' : 'Load another game'}
           </button>
         )}
@@ -96,19 +99,7 @@ export function EmulatorArea({ channelId }: { channelId: string }) {
         <button className="gm-btn gm-btn-ghost" onClick={() => setEmulatorHidden(channelId, true)} title="Show people instead">
           Hide
         </button>
-        {isHost && (
-          <input
-            ref={fileInput}
-            type="file"
-            accept={acceptFor(session.system)}
-            hidden
-            onChange={(e) => {
-              const file = e.target.files?.[0]
-              e.target.value = ''
-              if (file) void hostGameFile(channelId, file)
-            }}
-          />
-        )}
+        {isHost && <GameFileInput inputRef={fileInput} channelId={channelId} />}
       </header>
       <div className="emu-body">
         <div className="emu-main">
@@ -146,6 +137,11 @@ export function EmulatorArea({ channelId }: { channelId: string }) {
               </div>
             )}
             {dropOver && <div className="emu-drop">Drop to load this game</div>}
+            {isHost && loading && (
+              <div className="emu-loading-over">
+                <LoadProgress loading={loading} />
+              </div>
+            )}
           </div>
           {isHost ? engine && <HostBar engine={engine} paused={session.paused} /> : <ViewerBar hostId={session.hostId} />}
         </div>
@@ -165,7 +161,7 @@ export function EmulatorArea({ channelId }: { channelId: string }) {
           <button className="emu-help-toggle" onClick={() => setHelpOpen((o) => !o)} aria-expanded={helpOpen}>
             {helpOpen ? 'Hide controls' : 'Show controls'}
           </button>
-          {helpOpen && <ControlsHelp />}
+          {helpOpen && <ControlsHelp system={session.system} />}
           <p className="emu-note emu-latency">
             {isHost
               ? "You play without delay. Friends see your stream, so their presses reach the game after a short round trip (about 0.1–0.2 s on a good connection)."
@@ -462,59 +458,66 @@ function PortMenu({
 
 // ---------- controls ----------
 
-/**
- * The SNES buttons by position (like a gamepad): Nexo's A/B/X/Y keys are the bottom / right / left / top
- * buttons, which on a SNES pad are B / A / Y / X.
- */
-const SNES_FACE: [snes: string, where: string, key: keyof typeof BUTTON_KEYS][] = [
-  ['B', 'bottom', 'A'],
-  ['A', 'right', 'B'],
-  ['Y', 'left', 'X'],
-  ['X', 'top', 'Y'],
-]
+/** Gamepad names of Nexo's buttons (Xbox-style labels; buttons go by position). */
+const PAD_LABEL: Partial<Record<keyof typeof GAME_PAD, string>> = {
+  L: 'LB',
+  R: 'RB',
+  L2: 'LT',
+  R2: 'RT',
+  L3: 'left stick click',
+  R3: 'right stick click',
+  START: 'Start / Menu',
+  SELECT: 'Back / View',
+}
 
-function ControlsHelp() {
+const isPadButton = (k: string): k is keyof typeof GAME_PAD => k in GAME_PAD
+
+/** One Nexo control → its keyboard keys and gamepad control. */
+function ControlKeys({ control, consoleControl }: { control: string; consoleControl: string }) {
+  if (control === 'D-pad') {
+    // N64: the keyboard's arrows are the control stick, so its d-pad is only on a gamepad.
+    if (/with a gamepad/i.test(consoleControl)) return <span className="emu-help-pad">d-pad</span>
+    return (
+      <>
+        <span className="emu-help-pad">d-pad ·</span> <kbd>Arrows</kbd> <kbd>WASD</kbd>
+      </>
+    )
+  }
+  // (On N64 the keyboard's arrows drive the control stick: its label says so.)
+  if (control === 'Left stick') return <span className="emu-help-pad">left stick</span>
+  if (control === 'Right stick') return <span className="emu-help-pad">right stick</span>
+  if (!isPadButton(control)) return <span className="emu-help-pad">{control}</span>
+  return (
+    <>
+      <span className="emu-help-pad">{PAD_LABEL[control] ?? control} ·</span> <kbd>{BUTTON_KEYS[control]}</kbd>
+    </>
+  )
+}
+
+/** How this console's pad is played: each console control with the gamepad button and the keyboard keys. */
+function ControlsHelp({ system }: { system: EmuSystem }) {
+  const info = EMU_SYSTEM_INFO[system] as (typeof EMU_SYSTEM_INFO)[EmuSystem] | undefined
+  if (!info) return <p className="emu-note">This console's controls aren't known to this version of Nexo.</p>
   return (
     <dl className="gm-help emu-help">
-      <div className="gm-help-row">
-        <dt>
-          <span className="gm-help-label">D-pad</span>
-        </dt>
-        <dd>
-          <kbd>Arrows</kbd> or <kbd>WASD</kbd>
-        </dd>
-      </div>
-      {SNES_FACE.map(([snes, where, key]) => (
-        <div key={snes} className="gm-help-row">
+      <p className="gm-help-pad emu-help-head">{info.name}: console button · gamepad · keyboard</p>
+      {info.controls.map(([control, consoleControl]) => (
+        <div key={`${control}:${consoleControl}`} className="gm-help-row">
           <dt>
-            <span className="gm-help-label">
-              {snes} <span className="emu-help-where">({where})</span>
-            </span>
+            <span className="gm-help-label">{consoleControl}</span>
           </dt>
           <dd>
-            <kbd>{BUTTON_KEYS[key]}</kbd>
+            <ControlKeys control={control} consoleControl={consoleControl} />
           </dd>
         </div>
       ))}
-      <div className="gm-help-row">
-        <dt>
-          <span className="gm-help-label">L / R</span>
-        </dt>
-        <dd>
-          <kbd>{BUTTON_KEYS.L}</kbd> / <kbd>{BUTTON_KEYS.R}</kbd>
-        </dd>
-      </div>
-      <div className="gm-help-row">
-        <dt>
-          <span className="gm-help-label">Start / Select</span>
-        </dt>
-        <dd>
-          <kbd>{BUTTON_KEYS.START}</kbd> / <kbd>{BUTTON_KEYS.SELECT}</kbd>
-        </dd>
-      </div>
       <p className="gm-help-pad">
-        Buttons go by position, like on the SNES pad: the bottom button is B, the right one A, the left one Y and
-        the top one X. Gamepads work too (plug one in and press a button).
+        Gamepad buttons go by position, like on an Xbox pad: A bottom, B right, X left, Y top.{' '}
+        {!info.analog
+          ? 'Gamepads work too (plug one in and press a button); the left stick works as the d-pad.'
+          : system === 'n64'
+            ? "A gamepad's sticks work as the console's: the right stick presses the C buttons. On a keyboard, the arrows / WASD move the control stick."
+            : "A gamepad's sticks work as the console's analog sticks. On a keyboard, the arrows / WASD are the d-pad: most games play fine with it, the few that need the analog sticks need a gamepad."}
       </p>
     </dl>
   )
@@ -538,17 +541,19 @@ function PadInput({
 }) {
   const port = meId ? session.ports.indexOf(meId) : -1
   const isHost = session.hostId === meId
+  // Consoles with sticks get the gamepad's sticks as axes; others use the left stick as the d-pad.
+  const analog = !!(EMU_SYSTEM_INFO[session.system] as (typeof EMU_SYSTEM_INFO)[EmuSystem] | undefined)?.analog
 
   useEffect(() => {
     if (port < 0) return
     if (isHost) {
       if (!engine) return
-      const pad = startPadInput((mask) => engine.setPad(port, mask))
-      return () => pad.stop() // sends 0 to that port
+      const pad = startPadInput((mask, axes) => engine.setPad(port, mask, axes), { analog })
+      return () => pad.stop() // sends 0 (sticks centered) to that port
     }
-    const pad = startPadInput((mask) => sendEmuInput(channelId, mask))
+    const pad = startPadInput((mask, axes) => sendEmuInput(channelId, mask, axes), { analog })
     return () => pad.stop()
-  }, [channelId, port, isHost, engine])
+  }, [channelId, port, isHost, engine, analog])
 
   return null
 }

@@ -17,11 +17,11 @@ import type {
   ServerToClientEvents,
   VoiceState,
 } from '../../shared/protocol.ts'
-import { EMU_PORTS, EMU_TITLE_MAX, GAME_PAD, GAME_PAD_MASK } from '../../shared/protocol.ts'
-import { createEmuSessions, EMU_ERRORS, EMU_LIMITS, type EmuMember } from '../src/emulator.ts'
+import { EMU_PORTS, EMU_SYSTEMS, EMU_TITLE_MAX, GAME_PAD, GAME_PAD_MASK } from '../../shared/protocol.ts'
+import { createEmuSessions, EMU_ERRORS, EMU_LIMITS, normalizeAxes, type EmuMember, type EmuRelay } from '../src/emulator.ts'
 import { start, type NexoInstance } from '../src/server.ts'
 
-type Relay = { to: string; p: { channelId: string; port: number; buttons: number } }
+type Relay = { to: string; p: EmuRelay }
 
 // ---------- session manager ----------
 
@@ -51,7 +51,9 @@ describe('emulator session manager', () => {
   })
 
   test('start: validation, host on port 0, broadcast', () => {
-    assert.equal(emu.start(CH, 'ana', 'n64', 'Mario'), EMU_ERRORS.unknownSystem)
+    for (const bad of ['nes', 'SNES', '', 42, null, undefined, ['snes']]) {
+      assert.equal(emu.start(CH, 'ana', bad, 'Mario'), EMU_ERRORS.unknownSystem)
+    }
     assert.equal(emu.start(CH, 'ana', 'snes', ''), EMU_ERRORS.invalidTitle)
     assert.equal(emu.start(CH, 'ana', 'snes', ' \n\t '), EMU_ERRORS.invalidTitle)
     assert.equal(emu.start(CH, 'ana', 'snes', 42), EMU_ERRORS.invalidTitle)
@@ -166,7 +168,7 @@ describe('emulator session manager', () => {
     emu.input(CH, 'bo', GAME_PAD.A)
     emu.input(CH, 'bo', GAME_PAD.A | GAME_PAD.SELECT)
     emu.input(CH, 'bo', 0xffff)
-    emu.input(CH, 'bo', 0x1000) // only bits outside the mask: 0
+    emu.input(CH, 'bo', 0x10000) // only bits outside the mask: 0
     assert.deepEqual(
       relays.map((r) => [r.to, r.p.port, r.p.buttons]),
       [
@@ -176,6 +178,122 @@ describe('emulator session manager', () => {
         ['s-ana', 1, 0],
       ],
     )
+  })
+
+  test('start: every system of EMU_SYSTEMS; a new game can switch the system', () => {
+    assert.deepEqual([...EMU_SYSTEMS], ['snes', 'genesis', 'psx', 'n64'])
+    for (const [i, system] of EMU_SYSTEMS.entries()) {
+      const ch = `sys-${i}`
+      emu.setMembers(new Map([[ch, [{ userId: 'ana', socketId: 's-ana' }]]]))
+      assert.equal(ok(emu.start(ch, 'ana', system, 'Game')).system, system)
+    }
+    emu.setMembers(members('ana', 'bo'))
+    ok(emu.start(CH, 'ana', 'snes', 'Mario'))
+    const s = ok(emu.start(CH, 'ana', 'n64', 'Mario'))
+    assert.equal(s.system, 'n64')
+    assert.equal(emu.start(CH, 'ana', 'dreamcast', 'Mario'), EMU_ERRORS.unknownSystem)
+    assert.equal(emu.session(CH)?.system, 'n64')
+  })
+
+  test('normalizeAxes: 4 finite numbers, rounded and clamped; junk and centered are null', () => {
+    assert.deepEqual(normalizeAxes([0, 127, -127, 5]), [0, 127, -127, 5])
+    assert.deepEqual(normalizeAxes([200, -300, 0.4, -0.6]), [127, -127, 0, -1])
+    assert.deepEqual(normalizeAxes([1e9, -1e9, 12.5, -12.5]), [127, -127, 13, -12])
+    assert.ok(!Object.is(normalizeAxes([-0.2, 3, 0, 0])![0], -0), 'no negative zero')
+    for (const bad of [
+      undefined,
+      null,
+      0,
+      'x',
+      {},
+      [],
+      [1, 2, 3],
+      [1, 2, 3, 4, 5],
+      [1, 2, 3, NaN],
+      [1, 2, Infinity, 4],
+      [1, '2', 3, 4],
+      [1, null, 3, 4],
+      { 0: 1, 1: 2, 2: 3, 3: 4, length: 4 },
+      [0, 0, 0, 0],
+      [0.3, -0.4, 0.1, 0],
+    ]) {
+      assert.equal(normalizeAxes(bad), null, JSON.stringify(bad))
+    }
+  })
+
+  test('input with axes: relayed on change (buttons or sticks), normalized, omitted when centered', () => {
+    ok(emu.start(CH, 'ana', 'n64', 'Mario 64'))
+    ok(emu.port(CH, 'bo', 1))
+    relays = []
+    emu.input(CH, 'bo', 0, [0, 0, 0, 0]) // centered = what the host already has: nothing
+    emu.input(CH, 'bo', 0, 'junk')
+    assert.equal(relays.length, 0)
+    emu.input(CH, 'bo', 0, [64, -32, 0, 0])
+    emu.input(CH, 'bo', 0, [64, -32, 0, 0]) // same: dropped
+    emu.input(CH, 'bo', 0, [64.2, -31.9, 0, 0]) // rounds to the same: dropped
+    emu.input(CH, 'bo', GAME_PAD.A, [64, -32, 0, 0]) // buttons changed
+    emu.input(CH, 'bo', GAME_PAD.A, [500, -32, 0, 9]) // clamped
+    emu.input(CH, 'bo', GAME_PAD.A, [1, 2, NaN, 4]) // junk axes = centered, the buttons still count
+    emu.input(CH, 'bo', GAME_PAD.A) // still centered: dropped
+    emu.input(CH, 'bo', 'x', [10, 10, 10, 10]) // junk buttons: the whole message is ignored
+    emu.input(CH, 'ana', 0, [10, 10, 10, 10]) // the host: ignored
+    emu.input(CH, 'cy', 0, [10, 10, 10, 10]) // no port: ignored
+    assert.deepEqual(
+      relays.map((r) => r.p),
+      [
+        { channelId: CH, port: 1, buttons: 0, axes: [64, -32, 0, 0] },
+        { channelId: CH, port: 1, buttons: GAME_PAD.A, axes: [64, -32, 0, 0] },
+        { channelId: CH, port: 1, buttons: GAME_PAD.A, axes: [127, -32, 0, 9] },
+        { channelId: CH, port: 1, buttons: GAME_PAD.A },
+      ],
+    )
+    assert.ok(relays.every((r) => r.to === 's-ana'))
+    assert.ok(!('axes' in relays[3].p), 'no axes key when centered')
+  })
+
+  test('freeing a port with a tilted stick relays buttons 0 without axes; the new holder starts centered', () => {
+    ok(emu.start(CH, 'ana', 'psx', 'Ape Escape'))
+    ok(emu.port(CH, 'bo', 1))
+    emu.input(CH, 'bo', GAME_PAD.L2, [0, 0, -90, 40])
+    relays = []
+    ok(emu.port(CH, 'bo', null))
+    assert.deepEqual(relays, [{ to: 's-ana', p: { channelId: CH, port: 1, buttons: 0 } }])
+    // cy takes it: centered is what the host has, so a centered input is not relayed again.
+    ok(emu.port(CH, 'cy', 1))
+    relays = []
+    emu.input(CH, 'cy', 0)
+    assert.equal(relays.length, 0)
+    emu.input(CH, 'cy', 0, [0, 50, 0, 0])
+    assert.deepEqual(lastRelay().p, { channelId: CH, port: 1, buttons: 0, axes: [0, 50, 0, 0] })
+    // assign over it (admin): freed without axes.
+    relays = []
+    ok(emu.assign(CH, 'ana', 1, 'di', false))
+    assert.deepEqual(relays, [{ to: 's-ana', p: { channelId: CH, port: 1, buttons: 0 } }])
+  })
+
+  test("the host's new device gets the held sticks too (and nothing for centered ports)", () => {
+    emu.setMembers(members('ana', 'bo', 'cy', 'di'))
+    ok(emu.start(CH, 'ana', 'n64', 'Mario Kart 64'))
+    ok(emu.port(CH, 'bo', 1))
+    ok(emu.port(CH, 'cy', 2))
+    ok(emu.port(CH, 'di', 3))
+    emu.input(CH, 'bo', 0, [-127, 0, 0, 0]) // stick only
+    emu.input(CH, 'cy', GAME_PAD.A) // button only
+    emu.input(CH, 'di', 0, [5, 0, 0, 0])
+    emu.input(CH, 'di', 0) // back to centered
+    relays = []
+    emu.setMembers(
+      new Map([
+        [
+          CH,
+          ['ana', 'bo', 'cy', 'di'].map((id) => ({ userId: id, socketId: id === 'ana' ? 's-ana-2' : `s-${id}` })),
+        ],
+      ]),
+    )
+    assert.deepEqual(relays, [
+      { to: 's-ana-2', p: { channelId: CH, port: 1, buttons: 0, axes: [-127, 0, 0, 0] } },
+      { to: 's-ana-2', p: { channelId: CH, port: 2, buttons: GAME_PAD.A } },
+    ])
   })
 
   test('voice changes: a player leaving frees their port; the host moving device gets the held buttons; the host leaving closes', () => {
@@ -434,6 +552,29 @@ describe('emulator over sockets', () => {
       { channelId: lounge.id, port: 1, buttons: GAME_PAD_MASK },
     ])
     assert.deepEqual([inputs.owner, inputs.bob], [[], []])
+  })
+
+  test('input with axes over sockets: normalized, relayed on change, absent when centered', async () => {
+    inputs.mia.length = 0
+    emitRaw(bob, 'emu:input', { channelId: lounge.id, buttons: 0 })
+    emitRaw(bob, 'emu:input', { channelId: lounge.id, buttons: 0, axes: [40.4, -300, 0, 0] })
+    emitRaw(bob, 'emu:input', { channelId: lounge.id, buttons: 0, axes: [40, -127, 0, 0] }) // same after normalizing
+    emitRaw(bob, 'emu:input', { channelId: lounge.id, buttons: 0, axes: 'nope' }) // junk = centered
+    const done = nextEvent(mia.socket, 'emu:input', (p) => p.buttons === GAME_PAD.R2)
+    emitRaw(bob, 'emu:input', { channelId: lounge.id, buttons: GAME_PAD.R2, axes: [0, 0, 0, 0] })
+    await done
+    await flush(owner)
+    assert.deepEqual(inputs.mia, [
+      { channelId: lounge.id, port: 1, buttons: 0 },
+      { channelId: lounge.id, port: 1, buttons: 0, axes: [40, -127, 0, 0] },
+      { channelId: lounge.id, port: 1, buttons: 0 },
+      { channelId: lounge.id, port: 1, buttons: GAME_PAD.R2 },
+    ])
+    assert.deepEqual([inputs.owner, inputs.bob], [[], []])
+    // Back to nothing held for the next tests.
+    const zero = nextEvent(mia.socket, 'emu:input', (p) => p.buttons === 0)
+    emitRaw(bob, 'emu:input', { channelId: lounge.id, buttons: 0 })
+    await zero
   })
 
   test('input: at most EMU_LIMITS.inputsPerSecond per socket', async () => {

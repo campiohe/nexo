@@ -1,273 +1,310 @@
-// The emulator engine (contract: ./types.ts). SNES: libretro's snes9x compiled to WebAssembly together with a
-// tiny libretro frontend of our own (engine/snes9x/: nexo_frontend.cpp + build.sh), bundled with the app
-// (public/emulator/snes9x/) and run on the renderer's main thread. Nothing is ever fetched from the network:
-// the engine only runs the bytes the host gave it.
+// The emulator engines (contract: ./types.ts), one per console, behind `createEmulator`: SNES (engine/snes/,
+// snes9x), Mega Drive / Genesis (engine/genesis/), PlayStation (engine/psx/) and Nintendo 64 (engine/n64/). Each
+// is bundled with the app and runs only the bytes the host gave it; nothing is fetched from the network.
 //
-// Clock: the sound card. The audio worklet (engine/audio-worklet.js) reports how much of the game's sound it has
-// played; whenever less than TARGET_QUEUED_FRAMES frames of sound are waiting, the next frame runs. So the game
-// runs exactly at the speed its sound plays (no drift, no crackle) and keeps running with the window hidden
-// (Nexo disables background throttling). If the audio clock stops (no report for AUDIO_STALE_MS, e.g. the
-// context couldn't start), frames run on a wall-clock timer instead, so the picture never freezes.
-import { EMU_PORTS, GAME_PAD } from '@shared/protocol'
+// Also the host's file handling before an engine starts: which files the picker accepts (ROM_EXTENSIONS), and
+// `detectSystem`, which tells from the picked / dropped files which console a game is for, which file is the game
+// and which are extras (a PlayStation .cue's .bin tracks, a PlayStation BIOS), with readable errors and size caps.
+import type { EmuSystem } from '@shared/protocol'
 import type { EmulatorEngine, EmulatorOptions } from './types'
 import { EmulatorError } from './types'
-import { EmulatorAudio } from './engine/audio'
-import { prepareRom } from './engine/rom'
-import { instantiateSnes9x, type Snes9xModule } from './engine/snes9x'
+import { EMU_SYSTEM_INFO } from './systems'
+import { createSnesEngine } from './engine/snes'
+import { baseName, extractZipEntry, isZipBytes, listZip, listZipBytes, type ZipEntry } from './zip'
 
-/** File extensions the host's file picker accepts per system. */
-export const ROM_EXTENSIONS: Record<EmulatorOptions['system'], string[]> = {
+const MB = 1024 * 1024
+
+/** File extensions the host's file picker accepts per system (lower case, with the dot). */
+export const ROM_EXTENSIONS: Record<EmuSystem, string[]> = {
   snes: ['.sfc', '.smc', '.swc', '.fig', '.zip'],
+  genesis: ['.md', '.gen', '.smd', '.bin', '.zip'],
+  psx: ['.cue', '.bin', '.chd', '.pbp', '.iso', '.img'],
+  n64: ['.z64', '.n64', '.v64', '.zip'],
 }
 
-const WIDTH = 256
-const HEIGHT = 224
-/** Frames of sound kept queued in the worklet (~50 ms): the host's audio latency vs. slack for main-thread hiccups. */
-const TARGET_QUEUED_FRAMES = 3
-/** Never run more than this many frames in one go (after a stall the game slows down instead of racing). */
-const MAX_FRAMES_PER_TICK = 4
-const AUDIO_STALE_MS = 120
-const TIMER_MS = 4
+/** Every extension of every system (the file picker's `accept`). */
+export const ALL_ROM_EXTENSIONS: string[] = [...new Set(Object.values(ROM_EXTENSIONS).flat())]
 
-/** GAME_PAD bit → libretro joypad bit, by position (standard gamepad → SNES): bottom = B, right = A, left = Y, top = X. */
-const PAD_MAP: readonly (readonly [number, number])[] = [
-  [GAME_PAD.A, 1 << 0], // RETRO_DEVICE_ID_JOYPAD_B
-  [GAME_PAD.X, 1 << 1], // Y
-  [GAME_PAD.SELECT, 1 << 2],
-  [GAME_PAD.START, 1 << 3],
-  [GAME_PAD.UP, 1 << 4],
-  [GAME_PAD.DOWN, 1 << 5],
-  [GAME_PAD.LEFT, 1 << 6],
-  [GAME_PAD.RIGHT, 1 << 7],
-  [GAME_PAD.B, 1 << 8], // A
-  [GAME_PAD.Y, 1 << 9], // X
-  [GAME_PAD.L, 1 << 10],
-  [GAME_PAD.R, 1 << 11],
-]
+/**
+ * Largest game per system: cartridges are small (SNES ≤ 6 MB, Mega Drive ≤ 5 MB, N64 ≤ 64 MB; room left for hacks
+ * and headers); a PlayStation disc (all its files together) up to a full 80-minute CD.
+ */
+export const MAX_GAME_BYTES: Record<EmuSystem, number> = {
+  snes: 16 * MB,
+  genesis: 16 * MB,
+  psx: 850 * MB,
+  n64: 64 * MB,
+}
+/** Largest extra file that isn't a disc track (a PlayStation BIOS is 512 KB). */
+const MAX_EXTRA_BYTES = 4 * MB
+/** A .cue sheet is a few lines of text. */
+const MAX_CUE_BYTES = 256 * 1024
+/** Size of a PlayStation BIOS image. */
+const PSX_BIOS_BYTES = 512 * 1024
+/** A lone .bin bigger than this is a disc image, not a Mega Drive cartridge. */
+const BIG_BIN_BYTES = 16 * MB
 
-function toLibretroPad(buttons: number): number {
-  let bits = 0
-  for (const [pad, retro] of PAD_MAP) if (buttons & pad) bits |= retro
-  return bits
+const CARTRIDGE_EXT: Record<string, EmuSystem> = {
+  '.sfc': 'snes',
+  '.smc': 'snes',
+  '.swc': 'snes',
+  '.fig': 'snes',
+  '.md': 'genesis',
+  '.gen': 'genesis',
+  '.smd': 'genesis',
+  '.z64': 'n64',
+  '.n64': 'n64',
+  '.v64': 'n64',
+}
+/** PlayStation disc images that are one file. */
+const DISC_EXT = new Set(['.chd', '.pbp', '.iso', '.img'])
+
+export function extensionOf(name: string): string {
+  const i = name.lastIndexOf('.')
+  return i >= 0 ? name.slice(i).toLowerCase() : ''
 }
 
-class Snes9xEngine implements EmulatorEngine {
-  readonly system = 'snes' as const
-  readonly canvas: HTMLCanvasElement
-  readonly width = WIDTH
-  readonly height = HEIGHT
-  /** Diagnostics (not part of the contract): frames run and the average time one takes, in ms. */
-  readonly stats = { frames: 0, avgRunMs: 0 }
+// ---------------------------------------------------------------------------------------------------------------
+// createEmulator
 
-  private core: Snes9xModule | null
-  private audio: EmulatorAudio | null = null
-  private readonly ctx2d: CanvasRenderingContext2D
-  private readonly image: ImageData
-  private readonly frameMs: number
-  private readonly samplesPerFrame: number
-  private nextFrameAt = 0
-  private timer: number | undefined
-  private stream: MediaStream | null = null
-  private _paused = false
-  private destroyed = false
-
-  constructor(core: Snes9xModule) {
-    this.core = core
-    this.frameMs = 1000 / core._nexo_fps()
-    this.samplesPerFrame = core._nexo_sample_rate() / core._nexo_fps()
-    this.canvas = document.createElement('canvas')
-    this.canvas.width = WIDTH
-    this.canvas.height = HEIGHT
-    const ctx2d = this.canvas.getContext('2d', { alpha: false })
-    if (!ctx2d) throw new EmulatorError("The emulator couldn't create its screen")
-    this.ctx2d = ctx2d
-    this.image = new ImageData(WIDTH, HEIGHT)
-  }
-
-  async start(): Promise<void> {
-    const core = this.core!
-    this.audio = await EmulatorAudio.create(core._nexo_sample_rate(), this.tick)
-    if (this.destroyed) return
-    // First frame right away: the canvas shows the game as soon as createEmulator resolves.
-    this.runFrame()
-    this.draw()
-    this.nextFrameAt = performance.now() + this.frameMs
-    this.timer = window.setInterval(this.tick, TIMER_MS)
-  }
-
-  get paused(): boolean {
-    return this._paused
-  }
-
-  private readonly tick = (): void => {
-    if (this._paused || this.destroyed || !this.audio) return
-    const now = performance.now()
-    let ran = 0
-    try {
-      if (now - this.audio.lastReport < AUDIO_STALE_MS) {
-        // Audio clock: top up the worklet's queue.
-        const target = this.samplesPerFrame * TARGET_QUEUED_FRAMES
-        while (this.audio.queued < target && ran < MAX_FRAMES_PER_TICK) {
-          this.runFrame()
-          ran++
-        }
-        this.nextFrameAt = now + this.frameMs
-      } else {
-        // Wall clock.
-        if (now - this.nextFrameAt > 100) this.nextFrameAt = now
-        while (now >= this.nextFrameAt && ran < MAX_FRAMES_PER_TICK) {
-          this.runFrame()
-          ran++
-          this.nextFrameAt += this.frameMs
-        }
-      }
-    } catch (e) {
-      console.error('[emulator] the core crashed', e)
-      this.pause()
-      return
-    }
-    if (ran > 0) this.draw()
-  }
-
-  private runFrame(): void {
-    const core = this.core!
-    const t0 = performance.now()
-    const frames = core._nexo_run()
-    const dt = performance.now() - t0
-    this.stats.frames++
-    this.stats.avgRunMs += (dt - this.stats.avgRunMs) * (this.stats.frames < 60 ? 1 / this.stats.frames : 1 / 60)
-    if (frames > 0 && this.audio) {
-      this.audio.push(new Int16Array(core.HEAPU8.buffer, core._nexo_audio(), frames * 2), frames)
-    }
-  }
-
-  private draw(): void {
-    const core = this.core!
-    const ptr = core._nexo_frame()
-    this.image.data.set(core.HEAPU8.subarray(ptr, ptr + WIDTH * HEIGHT * 4))
-    this.ctx2d.putImageData(this.image, 0, 0)
-  }
-
-  setPad(port: number, buttons: number): void {
-    if (this.destroyed || !Number.isInteger(port) || port < 0 || port >= EMU_PORTS) return
-    this.core!._nexo_set_pad(port, toLibretroPad(buttons | 0))
-  }
-
-  pause(): void {
-    if (this.destroyed || this._paused) return
-    this._paused = true
-    this.audio?.clear()
-  }
-
-  resume(): void {
-    if (this.destroyed || !this._paused) return
-    this._paused = false
-    this.nextFrameAt = performance.now()
-  }
-
-  reset(): void {
-    if (this.destroyed) return
-    this.core!._nexo_reset()
-  }
-
-  mediaStream(fps = 60): MediaStream {
-    if (!this.stream) {
-      const video = this.canvas.captureStream(fps).getVideoTracks()
-      const audio = this.audio ? this.audio.stream.getAudioTracks() : []
-      this.stream = new MediaStream([...video, ...audio])
-      if (this.destroyed) for (const t of this.stream.getTracks()) t.stop()
-    }
-    return this.stream
-  }
-
-  setLocalVolume(volume: number): void {
-    this.audio?.setLocalVolume(volume)
-  }
-
-  async saveState(): Promise<Uint8Array> {
-    const core = this.liveCore()
-    const size = core._nexo_state_size()
-    const ptr = size > 0 ? core._malloc(size) : 0
-    if (!ptr) throw new EmulatorError("The game couldn't be saved")
-    try {
-      if (!core._nexo_save_state(ptr, size)) throw new EmulatorError("The game couldn't be saved")
-      return core.HEAPU8.slice(ptr, ptr + size)
-    } finally {
-      core._free(ptr)
-    }
-  }
-
-  async loadState(state: Uint8Array): Promise<void> {
-    const core = this.liveCore()
-    const ptr = state.length > 0 ? core._malloc(state.length) : 0
-    if (!ptr) throw new EmulatorError("This save doesn't belong to this game")
-    try {
-      core.HEAPU8.set(state, ptr)
-      if (!core._nexo_load_state(ptr, state.length)) throw new EmulatorError("This save doesn't belong to this game")
-    } finally {
-      core._free(ptr)
-    }
-    this.audio?.clear()
-    this.draw()
-  }
-
-  private liveCore(): Snes9xModule {
-    if (this.destroyed || !this.core) throw new EmulatorError('The game has been closed')
-    return this.core
-  }
-
-  destroy(): void {
-    if (this.destroyed) return
-    this.destroyed = true
-    window.clearInterval(this.timer)
-    for (const t of this.stream?.getTracks() ?? []) t.stop()
-    this.audio?.close()
-    this.audio = null
-    try {
-      this.core?._nexo_unload()
-    } catch (e) {
-      console.warn('[emulator] unload failed', e)
-    }
-    this.core = null // the module's memory goes with it
-  }
-}
-
+/** Starts the engine of `opts.system` on the game. Rejects with an EmulatorError (readable message) on failure. */
 export async function createEmulator(opts: EmulatorOptions): Promise<EmulatorEngine> {
-  if (opts.system !== 'snes') throw new EmulatorError("This console isn't supported")
-  const rom = await prepareRom(opts.rom)
-
-  let core: Snes9xModule
-  try {
-    core = await instantiateSnes9x()
-    core._nexo_init()
-  } catch (e) {
-    console.error('[emulator] the SNES core failed to load', e)
-    throw new EmulatorError("The SNES emulator couldn't start (its core failed to load)")
-  }
-
-  let loaded = false
-  try {
-    const ptr = core._malloc(rom.length)
-    if (!ptr) throw new Error('out of memory')
-    try {
-      core.HEAPU8.set(rom, ptr)
-      loaded = core._nexo_load(ptr, rom.length) === 1
-    } finally {
-      core._free(ptr)
+  switch (opts.system) {
+    case 'snes':
+      return createSnesEngine(opts) // reads .zip itself (engine/rom.ts)
+    case 'genesis': {
+      const { createGenesisEngine } = await loadEngine('genesis', () => import('./engine/genesis'))
+      return createGenesisEngine(await unzipCartridge(opts))
     }
-  } catch (e) {
-    console.error('[emulator] loading the game crashed the core', e)
+    case 'n64': {
+      const { createN64Engine } = await loadEngine('n64', () => import('./engine/n64'))
+      return createN64Engine(await unzipCartridge(opts))
+    }
+    case 'psx': {
+      const { createPsxEngine } = await loadEngine('psx', () => import('./engine/psx'))
+      return createPsxEngine(opts)
+    }
+    default:
+      throw new EmulatorError("This console isn't supported")
   }
-  if (!loaded) throw new EmulatorError("This SNES game couldn't be loaded (the file may be corrupt)")
+}
 
-  const engine = new Snes9xEngine(core)
+async function loadEngine<T>(system: EmuSystem, load: () => Promise<T>): Promise<T> {
   try {
-    await engine.start()
+    return await load()
   } catch (e) {
-    engine.destroy()
-    if (e instanceof EmulatorError) throw e
-    console.error('[emulator] starting the game failed', e)
-    throw new EmulatorError("The emulator couldn't start its sound output")
+    console.error(`[emulator] the ${system} engine failed to load`, e)
+    throw new EmulatorError(`The ${EMU_SYSTEM_INFO[system].name} emulator couldn't start (it failed to load)`)
   }
-  return engine
+}
+
+/** A zipped Mega Drive / N64 game → the game file inside (its bytes and name); other files pass through. */
+async function unzipCartridge(opts: EmulatorOptions): Promise<EmulatorOptions> {
+  if (extensionOf(opts.fileName) !== '.zip' && !isZipBytes(opts.rom)) return opts
+  const system = opts.system
+  const entry = pickZipEntry(listZipBytes(opts.rom), system)
+  if (!entry) throw new EmulatorError(`This .zip file doesn't contain a ${EMU_SYSTEM_INFO[system].name} game`)
+  const rom = await extractZipEntry(opts.rom, entry, MAX_GAME_BYTES[system], tooBig(system))
+  return { ...opts, rom, fileName: baseName(entry.name) }
+}
+
+/** The biggest entry that is a game of `system` (a zipped Mega Drive .bin counts). */
+function pickZipEntry(entries: ZipEntry[], system: EmuSystem): ZipEntry | null {
+  const fits = entries.filter((e) => {
+    const ext = extensionOf(e.name)
+    return CARTRIDGE_EXT[ext] === system || (system === 'genesis' && ext === '.bin')
+  })
+  if (fits.length === 0) return null
+  return fits.reduce((a, b) => (b.size > a.size ? b : a))
+}
+
+const tooBig = (system: EmuSystem) =>
+  system === 'psx' ? 'This disc image is too big for a PlayStation game' : `This file is too big to be a ${EMU_SYSTEM_INFO[system].name} game`
+
+// ---------------------------------------------------------------------------------------------------------------
+// detectSystem
+
+/** What the picked files are. */
+export type GameDetection =
+  /** A game of `system`: `main` is the game file, `extras` go to the engine as EmulatorOptions.extraFiles. */
+  | { kind: 'game'; system: EmuSystem; main: File; extras: File[] }
+  /** It could be a game of any of `systems` (a .bin without a .cue): ask the host. */
+  | { kind: 'ask'; systems: EmuSystem[]; main: File; extras: File[] }
+  | { kind: 'error'; message: string }
+
+const err = (message: string): GameDetection => ({ kind: 'error', message })
+const ONE_GAME = 'Pick one game at a time'
+const CUE_WITH_BINS = 'Pick the .cue together with its .bin files'
+const UNZIP_PSX = 'Unzip PlayStation games first, then pick the .cue together with its .bin files'
+
+/**
+ * Which console the picked / dropped files are for, by their extensions (and a peek at the headers of .bin files
+ * and at the directory of a .zip; big files are never read whole here):
+ * - .sfc .smc .swc .fig → SNES; .md .gen .smd → Mega Drive; .z64 .n64 .v64 → N64; one file only.
+ * - .cue (+ the .bin / .img files it lists, which must be picked with it) → PlayStation; .chd .pbp .iso .img →
+ *   PlayStation. Other small .bin files picked with a disc are extras (a BIOS).
+ * - .bin alone: a raw CD sector, or bigger than 16 MB → PlayStation; "SEGA" at 0x100 → Mega Drive; a 512 KB file
+ *   without it is a PlayStation BIOS (an error: pick it with a game); anything else → ask.
+ * - .zip alone: by the game files inside (a .bin inside → Mega Drive); PlayStation games must be unzipped.
+ */
+export async function detectSystem(files: File[]): Promise<GameDetection> {
+  if (files.length === 0) return err('Pick a game file')
+  for (const f of files) {
+    const ext = extensionOf(f.name)
+    if (!ALL_ROM_EXTENSIONS.includes(ext)) {
+      return err(`"${f.name}" isn't a game file the emulator reads (${ALL_ROM_EXTENSIONS.join(', ')})`)
+    }
+    if (f.size === 0) return err(`"${f.name}" is empty`)
+  }
+  const byExt = (pred: (ext: string) => boolean) => files.filter((f) => pred(extensionOf(f.name)))
+  const cues = byExt((e) => e === '.cue')
+  const discs = byExt((e) => DISC_EXT.has(e))
+  const zips = byExt((e) => e === '.zip')
+  const carts = byExt((e) => e in CARTRIDGE_EXT)
+  const bins = byExt((e) => e === '.bin')
+
+  if (cues.length > 0) {
+    if (cues.length > 1 || discs.some((d) => extensionOf(d.name) !== '.img') || zips.length || carts.length) return err(ONE_GAME)
+    return detectCue(cues[0], files.filter((f) => f !== cues[0]))
+  }
+  if (discs.length > 0) {
+    if (discs.length > 1 || zips.length || carts.length) return err(ONE_GAME)
+    const main = discs[0]
+    const extras = files.filter((f) => f !== main)
+    if (extras.some((f) => f.size > MAX_EXTRA_BYTES)) return err(ONE_GAME)
+    if (main.size > MAX_GAME_BYTES.psx) return err(tooBig('psx'))
+    return { kind: 'game', system: 'psx', main, extras }
+  }
+  if (zips.length > 0) {
+    if (files.length > 1) return err('Pick the .zip file alone')
+    return detectZip(zips[0])
+  }
+  if (carts.length > 0) {
+    if (files.length > 1) return err(ONE_GAME)
+    const main = carts[0]
+    const system = CARTRIDGE_EXT[extensionOf(main.name)]
+    if (main.size > MAX_GAME_BYTES[system]) return err(tooBig(system))
+    return { kind: 'game', system, main, extras: [] }
+  }
+  return detectBins(bins)
+}
+
+async function detectCue(cue: File, others: File[]): Promise<GameDetection> {
+  if (cue.size > MAX_CUE_BYTES) return err("This .cue file isn't a disc's track list")
+  let listed: string[]
+  try {
+    listed = cueFiles(await cue.text())
+  } catch {
+    return err("This .cue file couldn't be read")
+  }
+  if (listed.length === 0) return err("This .cue file doesn't list any track files")
+  const picked = new Map(others.map((f) => [f.name.toLowerCase(), f]))
+  const missing = listed.filter((name) => !picked.has(baseName(name).toLowerCase()))
+  if (missing.length === listed.length) return err(CUE_WITH_BINS)
+  if (missing.length > 0) {
+    const names = missing.slice(0, 3).map((n) => `"${baseName(n)}"`).join(', ')
+    return err(`${CUE_WITH_BINS} (missing: ${names}${missing.length > 3 ? '…' : ''})`)
+  }
+  const tracks = new Set(listed.map((n) => picked.get(baseName(n).toLowerCase())!))
+  // Anything else picked must be small (a BIOS), not another game.
+  if (others.some((f) => !tracks.has(f) && f.size > MAX_EXTRA_BYTES)) return err(ONE_GAME)
+  let total = cue.size
+  for (const t of tracks) total += t.size
+  if (total > MAX_GAME_BYTES.psx) return err(tooBig('psx'))
+  // Tracks go to the engine under the exact names the .cue uses (the picked name may differ in case).
+  const cueName = new Map(listed.map((n) => [baseName(n).toLowerCase(), baseName(n)]))
+  const extras = others.map((f) => {
+    const name = cueName.get(f.name.toLowerCase())
+    return name && name !== f.name ? new File([f], name, { type: f.type, lastModified: f.lastModified }) : f
+  })
+  return { kind: 'game', system: 'psx', main: cue, extras }
+}
+
+/** The file names a .cue sheet lists (`FILE "Game (Track 1).bin" BINARY`, quotes optional). */
+export function cueFiles(text: string): string[] {
+  const out: string[] = []
+  for (const line of text.split(/\r?\n/)) {
+    const m = /^\s*FILE\s+(?:"([^"]+)"|(\S+))/i.exec(line)
+    const name = m?.[1] ?? m?.[2]
+    if (name && !out.includes(name)) out.push(name)
+  }
+  return out
+}
+
+async function detectZip(zip: File): Promise<GameDetection> {
+  let entries: ZipEntry[]
+  try {
+    entries = await listZip(zip)
+  } catch (e) {
+    return err(e instanceof EmulatorError ? e.message : 'This .zip file is damaged or uses an unsupported format')
+  }
+  const carts = entries.filter((e) => extensionOf(e.name) in CARTRIDGE_EXT)
+  if (carts.length > 0) {
+    const biggest = carts.reduce((a, b) => (b.size > a.size ? b : a))
+    const system = CARTRIDGE_EXT[extensionOf(biggest.name)]
+    // The SNES engine reads the zip itself and caps it; others are unzipped by createEmulator.
+    if (zip.size > MAX_GAME_BYTES[system] || biggest.size > MAX_GAME_BYTES[system]) return err(tooBig(system))
+    return { kind: 'game', system, main: zip, extras: [] }
+  }
+  const discs = entries.filter((e) => {
+    const ext = extensionOf(e.name)
+    return ext === '.cue' || DISC_EXT.has(ext)
+  })
+  if (discs.length > 0) return err(UNZIP_PSX)
+  const bins = entries.filter((e) => extensionOf(e.name) === '.bin')
+  if (bins.length > 0) {
+    const biggest = bins.reduce((a, b) => (b.size > a.size ? b : a))
+    // A zipped .bin is a Mega Drive cartridge; a disc image that size would be a PlayStation game.
+    if (biggest.size > BIG_BIN_BYTES) return err(UNZIP_PSX)
+    return { kind: 'game', system: 'genesis', main: zip, extras: [] }
+  }
+  return err("This .zip file doesn't contain a game the emulator reads")
+}
+
+type BinKind = 'disc' | 'sega' | 'bios' | 'unknown'
+
+/** Peek at a .bin's first bytes: a raw CD sector (sync pattern) is a disc; "SEGA" at 0x100 a Mega Drive ROM. */
+async function binKind(f: File): Promise<BinKind> {
+  if (f.size > BIG_BIN_BYTES) return 'disc'
+  const head = new Uint8Array(await f.slice(0, 0x110).arrayBuffer())
+  const sync = head.length >= 12 && head[0] === 0 && head[11] === 0 && head.subarray(1, 11).every((b) => b === 0xff)
+  if (sync) return 'disc'
+  if (head.length >= 0x104 && String.fromCharCode(...head.subarray(0x100, 0x104)) === 'SEGA') return 'sega'
+  if (f.size === PSX_BIOS_BYTES) return 'bios'
+  return 'unknown'
+}
+
+async function detectBins(bins: File[]): Promise<GameDetection> {
+  let kinds: BinKind[]
+  try {
+    kinds = await Promise.all(bins.map(binKind))
+  } catch {
+    return err("The file couldn't be read")
+  }
+  if (bins.length === 1) {
+    const [main] = bins
+    switch (kinds[0]) {
+      case 'disc':
+        if (main.size > MAX_GAME_BYTES.psx) return err(tooBig('psx'))
+        return { kind: 'game', system: 'psx', main, extras: [] }
+      case 'sega':
+        return { kind: 'game', system: 'genesis', main, extras: [] }
+      case 'bios':
+        return err('This looks like a PlayStation BIOS file: pick it together with the game files')
+      default:
+        return { kind: 'ask', systems: ['genesis', 'psx'], main, extras: [] }
+    }
+  }
+  // Several .bin files without a .cue: one disc image + BIOS files is fine; several tracks need their .cue.
+  const discIdx = kinds.flatMap((k, i) => (k === 'disc' ? [i] : []))
+  if (discIdx.length > 1) return err(CUE_WITH_BINS)
+  if (kinds.includes('sega')) return err(ONE_GAME)
+  if (discIdx.length === 1) {
+    const main = bins[discIdx[0]]
+    const extras = bins.filter((f) => f !== main)
+    if (extras.some((f) => f.size > MAX_EXTRA_BYTES)) return err(CUE_WITH_BINS)
+    if (main.size > MAX_GAME_BYTES.psx) return err(tooBig('psx'))
+    return { kind: 'game', system: 'psx', main, extras }
+  }
+  return err(CUE_WITH_BINS)
 }

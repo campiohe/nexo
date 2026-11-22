@@ -398,7 +398,7 @@ export interface ClientToServerEvents {
    * (a no-op, e.g. `pause` while paused, only acks the state).
    */
   /**
-   * Emulator plugin (docs/SPEC.md §5.6). Every `emu:*` request needs the `emulator` plugin on and must come from
+   * Emulator plugin (docs/SPEC.md §5.5). Every `emu:*` request needs the `emulator` plugin on and must come from
    * the socket that owns the caller's voice state, in that voice channel. `emu:start`: the caller hosts a game
    * they loaded on their own device (the file never goes through the server; only `title` and `system`) and
    * takes port 1. One session per voice channel ("Someone is already hosting a game here"); the host may call it
@@ -414,10 +414,11 @@ export interface ClientToServerEvents {
   /** Host / admins: end the session. */
   'emu:stop': (p: { channelId: string }, ack: Ack<null>) => void
   /**
-   * A player's held buttons (GAME_PAD bits), sent on every change. No ack; ignored unless you hold a port in
-   * that channel's session; rate limited. Relayed to the host's voice socket as `emu:input`.
+   * A player's held buttons (GAME_PAD bits) and, with an analog controller, its stick axes (EmuAxes), sent on every
+   * change. No ack; ignored unless you hold a port in that channel's session; rate limited. Relayed to the host's
+   * voice socket as `emu:input`. `axes` absent = sticks centered (keyboards).
    */
-  'emu:input': (p: { channelId: string; buttons: number }) => void
+  'emu:input': (p: { channelId: string; buttons: number; axes?: EmuAxes }) => void
   'music:control': (
     p: {
       channelId: string
@@ -487,10 +488,10 @@ export interface ServerToClientEvents {
   /** A voice channel's emulator session changed (to everyone; `status: 'closed'` when it ended). */
   'emu:session': (s: EmuSession) => void
   /**
-   * To the host's voice socket only: the buttons the player on `port` holds now (also `buttons: 0` when a player
-   * leaves their port). The host applies it to that controller.
+   * To the host's voice socket only: the buttons (and stick axes, when not centered) the player on `port` holds now
+   * (also `buttons: 0` without axes when a player leaves their port). The host applies it to that controller.
    */
-  'emu:input': (p: { channelId: string; port: number; buttons: number }) => void
+  'emu:input': (p: { channelId: string; port: number; buttons: number; axes?: EmuAxes }) => void
   /**
    * `userId`'s aggregate presence changed (DEFAULT_PRESENCE when they went back to plain online or went
    * offline). Also sent for yourself: it's what others see, not something to adopt as your own status.
@@ -622,7 +623,7 @@ export type PluginId = 'music' | 'emulator'
 export interface ServerPlugins {
   /** "YouTube Music": listen together in voice channels. */
   music: boolean
-  /** "Emulator": the host plays a console game file they load; friends play along over the stream (§5.6). */
+  /** "Emulator": the host plays a console game file they load; friends play along over the stream (§5.5). */
   emulator: boolean
 }
 export const DEFAULT_PLUGINS: ServerPlugins = { music: false, emulator: false }
@@ -685,7 +686,8 @@ export const MUSIC_IDLE_CLEAR_MS = 30 * 60 * 1000
 /**
  * Controller buttons (bit flags), as players send them to the emulator. Keyboard: arrows / WASD, A = Space / J / Z,
  * B = K / X, X = L / C, Y = I / V, L = Q, R = E, Start = Enter, Select = Backspace / right Shift. Gamepads: the
- * standard mapping. Positions follow the standard gamepad: A bottom, B right, X left, Y top.
+ * standard mapping. Positions follow the standard gamepad: A bottom, B right, X left, Y top; L / R = the bumpers
+ * (LB / RB), L2 / R2 = the triggers (LT / RT), L3 / R3 = clicking the sticks.
  */
 export const GAME_PAD = {
   UP: 1,
@@ -700,17 +702,32 @@ export const GAME_PAD = {
   R: 512,
   START: 1024,
   SELECT: 2048,
+  L2: 4096,
+  R2: 8192,
+  L3: 16384,
+  R3: 32768,
 } as const
-export const GAME_PAD_MASK = 4095
+export const GAME_PAD_MASK = 65535
 
-// ---- Emulator plugin: the host plays a console game, friends play along (docs/SPEC.md §5.6) ----
+/**
+ * Analog sticks of a controller: [left x, left y, right x, right y], each an integer in -127..127 (x: left → right,
+ * y: up → down, like the Gamepad API), with a small dead zone already applied (centered = 0). Systems with analog
+ * sticks (N64, PlayStation) use them; others ignore them.
+ */
+export type EmuAxes = [number, number, number, number]
+
+// ---- Emulator plugin: the host plays a console game, friends play along (docs/SPEC.md §5.5) ----
 // The host's Nexo runs the emulator on a game file loaded from their own disk (never uploaded or downloaded by
 // Nexo) and streams its picture and sound to the voice channel as their stream (LiveKit). Players send their
 // controller state through the server, which relays it to the host; the host's emulator applies it.
 
-export type EmuSystem = 'snes'
-export const EMU_SYSTEMS: readonly EmuSystem[] = ['snes']
-/** Controller ports per session (the SNES multitap has 4 usable here; port 0 is player 1). */
+/** `snes` Super Nintendo, `genesis` Mega Drive / Genesis, `psx` PlayStation, `n64` Nintendo 64. */
+export type EmuSystem = 'snes' | 'genesis' | 'psx' | 'n64'
+export const EMU_SYSTEMS: readonly EmuSystem[] = ['snes', 'genesis', 'psx', 'n64']
+/**
+ * Controller ports per session (port 0 is player 1): 4 for every system (SNES multitap, Mega Drive 4-player
+ * adapter, PlayStation multitap, N64's own 4 ports). Games that support fewer simply ignore the extra ports.
+ */
 export const EMU_PORTS = 4
 /** `title`: 1..EMU_TITLE_MAX characters after normalizing like other display text. */
 export const EMU_TITLE_MAX = 80

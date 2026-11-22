@@ -1,7 +1,9 @@
-// Emulator plugin, host side (docs/SPEC.md §5.6): the one engine this device may run, kept at module level so
-// it survives the stage re-rendering or the user looking at a text channel. It loads the game file the host
-// picked (never uploaded anywhere), announces the session (`emu:start`), streams the engine's picture and sound
-// as the host's stream (voice/session.ts) and applies the players' relayed buttons.
+// Emulator plugin, host side (docs/SPEC.md §5.5): the one engine this device may run, kept at module level so
+// it survives the stage re-rendering or the user looking at a text channel. It tells which console the picked
+// files are for (emulator/engine.ts detectSystem, asking the host when it can't tell), reads them (with progress
+// for big discs; cancellable), starts the engine, announces the session (`emu:start`), streams the engine's
+// picture and sound as the host's stream (voice/session.ts) and applies the players' relayed buttons and sticks.
+// The files never leave this device.
 //
 // Lifecycle: the engine is destroyed and the stream stopped when the host presses Stop, leaves (or switches)
 // the voice channel, the session ends or passes to someone else remotely, the plugin is turned off, the
@@ -9,7 +11,7 @@
 import { create } from 'zustand'
 import { EMU_PORTS, EMU_TITLE_MAX, GAME_PAD_MASK, type EmuSystem } from '@shared/protocol'
 import type { EmulatorEngine } from '../../emulator/types'
-import { createEmulator, ROM_EXTENSIONS } from '../../emulator/engine'
+import { ALL_ROM_EXTENSIONS, createEmulator, detectSystem, extensionOf } from '../../emulator/engine'
 import { hostEmuGame, onEmuInput, pauseEmu, stopEmu } from '../../emulator/actions'
 import { useEmulator } from '../../store/emulator'
 import { usePlugins } from '../../store/plugins'
@@ -17,18 +19,37 @@ import { useApp } from '../../store/app'
 import { startEmulatorStream, stopEmulatorStream, useVoice } from '../../voice/session'
 import { toast } from '../../lib/toast'
 
-/** Frames per second of the stream (the SNES runs at ~60). */
+/** Frames per second of the stream (every console runs at ~60 in NTSC; PAL games at 50 just repeat frames). */
 export const EMU_STREAM_FPS = 60
-/** Largest file accepted (SNES games are at most 6 MB; zipped ones less). */
-const MAX_FILE_BYTES = 32 * 1024 * 1024
 const VOLUME_KEY = 'nexo.emulator.volume'
+/** Files at least this big are read in chunks with progress (smaller ones in one go). */
+const CHUNKED_READ_BYTES = 32 * 1024 * 1024
+
+export interface EmuLoading {
+  /** The game's file name. */
+  name: string
+  /** `reading` the files from disk, then `starting` the engine. */
+  step: 'reading' | 'starting'
+  /** 0..1, or null when unknown (small files, an engine that doesn't report). */
+  progress: number | null
+}
+
+/** The picked files could be a game of several consoles: the host says which (null = cancel). */
+export interface EmuAsk {
+  channelId: string
+  systems: EmuSystem[]
+  main: File
+  extras: File[]
+}
 
 export interface EmuHostState {
   /** Voice channel the engine runs for (null: not hosting). */
   channelId: string | null
   engine: EmulatorEngine | null
-  /** Name of the file being loaded (null when not loading). */
-  loading: string | null
+  /** The game being loaded (null when not loading). */
+  loading: EmuLoading | null
+  /** Waiting for the host to say which console the picked game is for. */
+  ask: EmuAsk | null
   /** The engine is paused (mirrors engine.paused, which isn't reactive). */
   paused: boolean
   /** A quick save exists for the running game. */
@@ -50,6 +71,7 @@ export const useEmuHost = create<EmuHostState>()(() => ({
   channelId: null,
   engine: null,
   loading: null,
+  ask: null,
   paused: false,
   hasSave: false,
   volume: loadVolume(),
@@ -59,16 +81,11 @@ export const useEmuHost = create<EmuHostState>()(() => ({
 let saveSlot: Uint8Array | null = null
 /** Bumped by every load and stop, so a load that finishes late can tell it was superseded. */
 let loadSeq = 0
+/** Aborts reading the files of the load in progress. */
+let loadAbort: AbortController | null = null
 
-/** File picker `accept` for a system. */
-export function acceptFor(system: EmuSystem = 'snes'): string {
-  return ROM_EXTENSIONS[system].join(',')
-}
-
-function extensionOf(name: string): string {
-  const i = name.lastIndexOf('.')
-  return i >= 0 ? name.slice(i).toLowerCase() : ''
-}
+/** File picker `accept`: every console's game files (use with `multiple`: a .cue with its .bin files, a BIOS). */
+export const GAME_FILE_ACCEPT = ALL_ROM_EXTENSIONS.join(',')
 
 /** "Super_Game (USA) [!].sfc" → "Super Game (USA)". */
 export function titleFromFileName(name: string): string {
@@ -88,57 +105,161 @@ function effectiveVolume(): number {
 }
 
 /**
- * Host a game file in `channelId` (your voice channel): load it, start (or update) the session, stream it.
- * Loading another file while hosting replaces the game; viewers keep watching the same stream.
+ * Host the picked / dropped files in `channelId` (your voice channel): find out which console they are for (asking
+ * when it can't tell), then load and stream the game (hostGame).
  */
-export async function hostGameFile(channelId: string, file: File, system: EmuSystem = 'snes'): Promise<void> {
-  const exts = ROM_EXTENSIONS[system]
-  if (!exts.includes(extensionOf(file.name))) {
-    toast(`That isn't a game file this emulator reads (${exts.join(', ')})`, 'error')
+export async function hostGameFiles(channelId: string, files: File[]): Promise<void> {
+  if (files.length === 0 || !canHost(channelId)) return
+  if (useEmuHost.getState().loading) {
+    toast('A game is already loading', 'error')
     return
   }
-  if (file.size === 0 || file.size > MAX_FILE_BYTES) {
-    toast(file.size === 0 ? 'That file is empty' : 'That file is too big to be a game', 'error')
+  const found = await detectSystem(files)
+  if (found.kind === 'error') {
+    toast(found.message, 'error')
     return
   }
+  if (found.kind === 'ask') {
+    useEmuHost.setState({ ask: { channelId, systems: found.systems, main: found.main, extras: found.extras } })
+    return
+  }
+  await hostGame(channelId, found.system, found.main, found.extras)
+}
+
+/** The host answered "which console is this?" (null: cancelled). */
+export function answerAsk(system: EmuSystem | null): void {
+  const ask = useEmuHost.getState().ask
+  useEmuHost.setState({ ask: null })
+  if (ask && system && ask.systems.includes(system)) void hostGame(ask.channelId, system, ask.main, ask.extras)
+}
+
+function canHost(channelId: string): boolean {
   if (useVoice.getState().channelId !== channelId) {
     toast('Join the voice channel to host a game', 'error')
-    return
+    return false
   }
   const me = useApp.getState().me?.id
   const existing = useEmulator.getState().byChannel[channelId]
   if (existing && existing.hostId !== me) {
     toast('Someone is already hosting a game here', 'error')
-    return
+    return false
   }
+  return true
+}
 
+/** Cancels the load in progress (reading the files stops; an engine that still starts is thrown away). */
+export function cancelLoading(): void {
+  if (!useEmuHost.getState().loading) return
+  loadSeq++
+  loadAbort?.abort()
+  loadAbort = null
+  useEmuHost.setState({ loading: null })
+}
+
+class LoadCancelled extends Error {}
+
+/** A file's bytes, read in chunks for big files (progress in bytes; stops when `signal` aborts). */
+async function readFile(file: File, signal: AbortSignal, onBytes: (n: number) => void): Promise<Uint8Array> {
+  if (file.size < CHUNKED_READ_BYTES) {
+    const data = new Uint8Array(await file.arrayBuffer())
+    if (signal.aborted) throw new LoadCancelled()
+    onBytes(data.length)
+    return data
+  }
+  const out = new Uint8Array(file.size)
+  const reader = file.stream().getReader()
+  let filled = 0
+  try {
+    for (;;) {
+      if (signal.aborted) throw new LoadCancelled()
+      const { done, value } = await reader.read()
+      if (done) break
+      if (filled + value.length > out.length) throw new Error('The file changed while it was being read')
+      out.set(value, filled)
+      filled += value.length
+      onBytes(value.length)
+    }
+  } finally {
+    void reader.cancel().catch(() => {})
+  }
+  if (filled !== out.length) throw new Error('The file changed while it was being read')
+  return out
+}
+
+/**
+ * Host a game of `system` in `channelId`: read the files (the game + its extras), start the engine, start (or
+ * update) the session, stream it. Loading another game while hosting replaces it; viewers keep watching the same
+ * stream.
+ */
+export async function hostGame(channelId: string, system: EmuSystem, main: File, extras: File[] = []): Promise<void> {
+  if (!canHost(channelId)) return
   const seq = ++loadSeq
-  useEmuHost.setState({ loading: file.name })
+  loadAbort?.abort()
+  const abort = new AbortController()
+  loadAbort = abort
+  const loading: EmuLoading = { name: main.name, step: 'reading', progress: null }
+  useEmuHost.setState({ loading })
   const stillWanted = () =>
     seq === loadSeq && useVoice.getState().channelId === channelId && usePlugins.getState().plugins.emulator
+  const setLoading = (patch: Partial<EmuLoading>) => {
+    if (seq !== loadSeq) return
+    const cur = useEmuHost.getState().loading
+    if (!cur) return
+    const next = { ...cur, ...patch }
+    // Progress in whole percents: no re-render per chunk.
+    if (next.step === cur.step && next.progress !== null && cur.progress !== null && Math.floor(next.progress * 100) === Math.floor(cur.progress * 100)) return
+    useEmuHost.setState({ loading: next })
+  }
+  const done = () => {
+    if (seq !== loadSeq) return
+    if (loadAbort === abort) loadAbort = null
+    useEmuHost.setState({ loading: null })
+  }
 
   let engine: EmulatorEngine
   try {
-    const rom = new Uint8Array(await file.arrayBuffer())
-    engine = await createEmulator({ system, rom, fileName: file.name })
+    const total = [main, ...extras].reduce((n, f) => n + f.size, 0)
+    const chunked = total >= CHUNKED_READ_BYTES
+    let read = 0
+    const onBytes = (n: number) => {
+      read += n
+      if (chunked) setLoading({ progress: Math.min(1, read / total) })
+    }
+    if (chunked) setLoading({ progress: 0 })
+    const rom = await readFile(main, abort.signal, onBytes)
+    const extraFiles: { name: string; data: Uint8Array }[] = []
+    for (const f of extras) extraFiles.push({ name: f.name, data: await readFile(f, abort.signal, onBytes) })
+    if (!stillWanted()) throw new LoadCancelled()
+    setLoading({ step: 'starting', progress: null })
+    engine = await createEmulator({
+      system,
+      rom,
+      fileName: main.name,
+      extraFiles: extraFiles.length ? extraFiles : undefined,
+      onProgress: (f) => {
+        if (Number.isFinite(f)) setLoading({ step: 'starting', progress: Math.min(1, Math.max(0, f)) })
+      },
+    })
   } catch (err) {
-    if (seq === loadSeq) useEmuHost.setState({ loading: null })
+    done()
+    if (err instanceof LoadCancelled || seq !== loadSeq) return
     console.warn('[emulator] could not start the game', err)
     toast(err instanceof Error && err.message ? err.message : "Couldn't start that game", 'error')
     return
   }
   if (!stillWanted()) {
     engine.destroy()
-    if (seq === loadSeq) useEmuHost.setState({ loading: null })
+    done()
     return
   }
 
-  const session = await hostEmuGame(channelId, system, titleFromFileName(file.name)) // errors are toasted
+  const session = await hostEmuGame(channelId, system, titleFromFileName(main.name)) // errors are toasted
   if (!session || !stillWanted() || session.hostId !== useApp.getState().me?.id) {
     engine.destroy()
-    if (seq === loadSeq) useEmuHost.setState({ loading: null })
+    done()
     return
   }
+  if (loadAbort === abort) loadAbort = null
 
   const prev = useEmuHost.getState().engine
   saveSlot = null
@@ -173,10 +294,12 @@ export async function restreamGame(): Promise<void> {
  */
 export function stopHosting(tellServer: boolean): void {
   loadSeq++
-  const { engine, channelId, loading } = useEmuHost.getState()
-  if (!engine && !channelId && !loading) return
+  loadAbort?.abort()
+  loadAbort = null
+  const { engine, channelId, loading, ask } = useEmuHost.getState()
+  if (!engine && !channelId && !loading && !ask) return
   saveSlot = null
-  useEmuHost.setState({ channelId: null, engine: null, loading: null, paused: false, hasSave: false })
+  useEmuHost.setState({ channelId: null, engine: null, loading: null, ask: null, paused: false, hasSave: false })
   // Stream first (it reads clones of the engine's tracks), then the engine.
   void stopEmulatorStream()
   try {
@@ -247,11 +370,11 @@ export async function quickLoad(): Promise<void> {
 // ---------------------------------------------------------------------------------------------
 // Wiring (module level, once)
 
-// Players' buttons relayed by the server (only to the host).
-const offInput = onEmuInput(({ channelId, port, buttons }) => {
+// Players' buttons and sticks relayed by the server (only to the host).
+const offInput = onEmuInput(({ channelId, port, buttons, axes }) => {
   const { engine, channelId: hosting } = useEmuHost.getState()
   if (!engine || hosting !== channelId || !Number.isInteger(port) || port < 0 || port >= EMU_PORTS) return
-  engine.setPad(port, buttons & GAME_PAD_MASK)
+  engine.setPad(port, buttons & GAME_PAD_MASK, axes)
 })
 
 // The session ended or isn't ours any more (stopped by an admin, server restart, …): stop the engine.
@@ -276,8 +399,9 @@ const offSessions = useEmulator.subscribe((s, prev) => {
 // Left or switched the voice channel: the server closes the session itself.
 // (A load in progress checks the voice channel itself when it finishes.)
 const offVoice = useVoice.subscribe((v, prev) => {
-  const { channelId, engine } = useEmuHost.getState()
+  const { channelId, engine, loading, ask } = useEmuHost.getState()
   if (channelId !== null && v.channelId !== channelId) stopHosting(false)
+  else if (v.channelId !== prev.channelId && (loading || ask)) stopHosting(false) // don't keep reading a disc for nothing
   else if (v.deafened !== prev.deafened) engine?.setLocalVolume(effectiveVolume())
 })
 

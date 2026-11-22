@@ -96,7 +96,8 @@
 }
 .emu-chip-system { background: var(--accent-soft); color: var(--accent); }
 
-/* ---------- the screen: 4:3 (the SNES picture is 256×224 on a 4:3 TV), as large as fits ---------- */
+/* ---------- the screen: 4:3 like a TV for every console (SNES 256×224, Mega Drive 320×224, PlayStation / N64
+   640×480 canvases are all stretched to it), as large as fits ---------- */
 .emu-screen {
   flex: 1; min-height: 0; position: relative;
   display: grid; place-items: center;
@@ -220,6 +221,9 @@
 .emu-help .gm-help-row { flex-direction: row; align-items: center; justify-content: space-between; gap: 8px; }
 .emu-help dd { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
 .emu-help-where { color: var(--text-2); font-weight: 500; }
+.emu-help-pad { color: var(--text-2); font: 500 11.5px var(--font); white-space: nowrap; }
+.emu-help-head { margin: 0 0 2px; }
+.emu-help .gm-help-label { min-width: 0; }
 
 @media (max-width: 860px) {
   .emu-body { flex-direction: column; }
@@ -233,3 +237,49 @@
   width: 8px; height: 8px; border-radius: 50%;
   background: var(--live); box-shadow: 0 0 0 2px var(--bg-1);
 }
+
+.emu-ctl-wrap { position: relative; display: inline-flex; }
+
+/* ---------- loading a game: progress (toolbar card, or over the screen) and "which console?" ---------- */
+.emu-load {
+  display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 6px 10px;
+  width: 300px; max-width: calc(100vw - 32px); padding: 10px 10px 10px 14px;
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--bg-1); box-shadow: var(--shadow-pop);
+  color: var(--text-0);
+}
+.emu-load-text { display: flex; align-items: baseline; gap: 8px; min-width: 0; font: 600 12.5px var(--font); }
+.emu-load-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.emu-load-pct { flex: none; color: var(--text-2); font: 600 11.5px var(--mono); }
+.emu-load-cancel { grid-row: 1 / span 2; grid-column: 2; height: 28px; padding: 0 10px; }
+.emu-load-bar {
+  position: relative; overflow: hidden;
+  height: 4px; border-radius: 999px;
+  background: var(--bg-3);
+}
+.emu-load-bar > span {
+  position: absolute; inset: 0 auto 0 0; width: 0;
+  border-radius: inherit; background: var(--accent);
+  transition: width 0.15s linear;
+}
+.emu-load-bar.is-indeterminate > span { width: 35%; animation: emu-load-slide 1.1s ease-in-out infinite; }
+@keyframes emu-load-slide { from { left: -35%; } to { left: 100%; } }
+@media (prefers-reduced-motion: reduce) {
+  .emu-load-bar.is-indeterminate > span { animation: none; width: 100%; opacity: 0.5; }
+}
+/* Above the toolbar button while the emulator area isn't shown (first load). */
+.emu-load-card {
+  position: absolute; z-index: 20;
+  bottom: calc(100% + 10px); left: 50%; transform: translateX(-50%);
+}
+/* Over the game while the host loads another one. */
+.emu-loading-over {
+  position: absolute; inset: 0; z-index: 4;
+  display: grid; place-items: center;
+  background: rgb(5 7 10 / 0.55);
+}
+.emu-ask-text { margin: 0 0 14px; color: var(--text-1); font: 500 13.5px/1.5 var(--font); overflow-wrap: anywhere; }
+.emu-ask-text strong { color: var(--text-0); }
+.emu-ask-choices { display: flex; flex-wrap: wrap; gap: 8px; }
+.emu-ask-choice { flex: 1; min-width: 140px; height: 38px; font-size: 13.5px; }
+.emu-ask-hint { margin-top: 12px; }

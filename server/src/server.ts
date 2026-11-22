@@ -1290,7 +1290,8 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
     socket.on('emu:input', guard('emu:input', (p) => {
       const target = emuChannel(p, false)
       if ('error' in target || !emuInputRate.allow(socket.id, now())) return
-      emulator.input(target.channelId, userId, (p as { buttons?: unknown }).buttons)
+      const { buttons, axes } = p as { buttons?: unknown; axes?: unknown }
+      emulator.input(target.channelId, userId, buttons, axes)
     }))
 
     // --- profile ---

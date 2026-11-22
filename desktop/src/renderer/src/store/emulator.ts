@@ -4,7 +4,7 @@
 // server change / sign out (resetEmulator).
 // No imports from store/app or net/socket (net/socket imports this module; see store/sounds.ts).
 import { create } from 'zustand'
-import type { EmuSession } from '@shared/protocol'
+import type { EmuAxes, EmuSession } from '@shared/protocol'
 
 interface EmulatorStore {
   /** channelId → its running session. Closed sessions have no entry. */
@@ -76,7 +76,14 @@ export function resetEmulator(): void {
 
 // ---- host side: player input relayed by the server (`emu:input`, only sent to the host) ----
 
-export type EmuInputListener = (p: { channelId: string; port: number; buttons: number }) => void
+/** A relayed player's controller: `axes` only while a stick is off center (already validated). */
+export interface EmuRelayedInput {
+  channelId: string
+  port: number
+  buttons: number
+  axes?: EmuAxes
+}
+export type EmuInputListener = (p: EmuRelayedInput) => void
 const inputListeners = new Set<EmuInputListener>()
 
 /** Host: get every relayed `emu:input` (apply it with engine.setPad). Returns the unsubscribe. */
@@ -87,12 +94,24 @@ export function onEmuInput(cb: EmuInputListener): () => void {
   }
 }
 
+/** Stick axes from the wire: 4 finite numbers clamped to -127..127, else undefined (centered). */
+function axesFrom(raw: unknown): EmuAxes | undefined {
+  if (!Array.isArray(raw) || raw.length !== 4) return undefined
+  if (!raw.every((v) => typeof v === 'number' && Number.isFinite(v))) return undefined
+  const axes = raw.map((v: number) => Math.max(-127, Math.min(127, Math.round(v)))) as EmuAxes
+  return axes.every((v) => v === 0) ? undefined : axes
+}
+
 /** `emu:input` from the server (net/socket.ts). */
-export function handleEmuInput(p: { channelId: string; port: number; buttons: number }): void {
+export function handleEmuInput(p: { channelId: string; port: number; buttons: number; axes?: unknown }): void {
   if (!p || typeof p.port !== 'number' || typeof p.buttons !== 'number') return
+  const axes = axesFrom(p.axes)
+  const input: EmuRelayedInput = axes
+    ? { channelId: p.channelId, port: p.port, buttons: p.buttons, axes }
+    : { channelId: p.channelId, port: p.port, buttons: p.buttons }
   for (const cb of [...inputListeners]) {
     try {
-      cb(p)
+      cb(input)
     } catch (err) {
       console.error('[emulator] input listener failed', err)
     }

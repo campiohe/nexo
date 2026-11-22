@@ -1,9 +1,9 @@
 // Emulator plugin (docs/SPEC.md §5.5): one emulator session per voice channel. The host's Nexo runs the emulator
 // on a game file loaded from their own disk and streams it to the call (LiveKit); the file never reaches the
 // server. The server only keeps who hosts, the game's title, who is on which controller port and whether it is
-// paused (broadcast to everyone as `emu:session`), and relays each player's held buttons to the socket that owns
-// the host's voice state (`emu:input`). Memory only. The clock is injectable so tests can drive revisions.
-import type { EmuSession, EmuSystem } from '../../shared/protocol.ts'
+// paused (broadcast to everyone as `emu:session`), and relays each player's held buttons (and analog sticks) to the
+// socket that owns the host's voice state (`emu:input`). Memory only. The clock is injectable so tests can drive revisions.
+import type { EmuAxes, EmuSession, EmuSystem } from '../../shared/protocol.ts'
 import { EMU_PORTS, EMU_SYSTEMS, EMU_TITLE_MAX, GAME_PAD_MASK } from '../../shared/protocol.ts'
 import { normalizeDisplayText } from './text.ts'
 
@@ -31,6 +31,44 @@ export const EMU_LIMITS = {
   requestsPer10s: 40,
 } as const
 
+/** What the host's voice socket gets as `emu:input`: `axes` only when a stick is off center. */
+export interface EmuRelay {
+  channelId: string
+  port: number
+  buttons: number
+  axes?: EmuAxes
+}
+
+/** Held state of one port as last relayed to the host (`axes` null = centered). */
+interface PadState {
+  buttons: number
+  axes: EmuAxes | null
+}
+
+const AXIS_MAX = 127
+
+/**
+ * A player's `axes` → [lx, ly, rx, ry] rounded and clamped to -127..127, or null (centered) when absent, all zero
+ * or junk (not an array of exactly 4 finite numbers). Junk axes don't drop the buttons that came with them.
+ */
+export function normalizeAxes(raw: unknown): EmuAxes | null {
+  if (!Array.isArray(raw) || raw.length !== 4) return null
+  const out: number[] = []
+  for (const v of raw) {
+    if (typeof v !== 'number' || !Number.isFinite(v)) return null
+    out.push(Math.max(-AXIS_MAX, Math.min(AXIS_MAX, Math.round(v))) || 0) // || 0: no -0
+  }
+  return out.every((v) => v === 0) ? null : (out as EmuAxes)
+}
+
+const sameAxes = (a: EmuAxes | null, b: EmuAxes | null) =>
+  a === b || (!!a && !!b && a[0] === b[0] && a[1] === b[1] && a[2] === b[2] && a[3] === b[3])
+
+const relayOf = (channelId: string, port: number, pad: PadState): EmuRelay =>
+  pad.axes ? { channelId, port, buttons: pad.buttons, axes: [...pad.axes] } : { channelId, port, buttons: pad.buttons }
+
+const CENTERED: PadState = { buttons: 0, axes: null }
+
 /** Someone in a voice channel and the socket that owns their voice state. */
 export interface EmuMember {
   userId: string
@@ -40,8 +78,8 @@ export interface EmuMember {
 export interface EmuSessionsOptions {
   /** Every session change (server.ts broadcasts it as `emu:session`). */
   onSession: (s: EmuSession) => void
-  /** A player's buttons for the host's voice socket (server.ts emits `emu:input` to it). */
-  onInput: (socketId: string, p: { channelId: string; port: number; buttons: number }) => void
+  /** A player's buttons (and sticks) for the host's voice socket (server.ts emits `emu:input` to it). */
+  onInput: (socketId: string, p: EmuRelay) => void
   /** Default: Date.now (seeds the revision counter). */
   now?: () => number
 }
@@ -54,8 +92,8 @@ interface Session {
   ports: (string | null)[]
   paused: boolean
   rev: number
-  /** The buttons last relayed to the host, per port (a relay is sent only when they change). */
-  relayed: number[]
+  /** The buttons and sticks last relayed to the host, per port (a relay is sent only when they change). */
+  relayed: PadState[]
   /** The host's voice socket relays went to (another device taking over voice gets the held buttons again). */
   hostSocketId: string | null
 }
@@ -98,17 +136,17 @@ export function createEmuSessions(options: EmuSessionsOptions) {
   const memberSocket = (channelId: string, userId: string) =>
     (members.get(channelId) ?? []).find((m) => m.userId === userId)?.socketId ?? null
 
-  /** Sends `buttons` for `port` to the host's voice socket (when there is one). */
-  function relay(s: Session, port: number, buttons: number) {
-    s.relayed[port] = buttons
+  /** Sends `pad` for `port` to the host's voice socket (when there is one). */
+  function relay(s: Session, port: number, pad: PadState) {
+    s.relayed[port] = pad
     const socketId = memberSocket(s.channelId, s.hostId)
-    if (socketId) onInput(socketId, { channelId: s.channelId, port, buttons })
+    if (socketId) onInput(socketId, relayOf(s.channelId, port, pad))
   }
 
-  /** Frees `port` and tells the host it holds nothing now (a held button never sticks). */
+  /** Frees `port` and tells the host it holds nothing now (a held button or tilted stick never sticks). */
   function freePort(s: Session, port: number) {
     s.ports[port] = null
-    relay(s, port, 0)
+    relay(s, port, CENTERED)
   }
 
   const isPort = (port: unknown): port is number =>
@@ -148,7 +186,7 @@ export function createEmuSessions(options: EmuSessionsOptions) {
           ports,
           paused: false,
           rev: lastRev,
-          relayed: ports.map(() => 0),
+          relayed: ports.map(() => CENTERED),
           hostSocketId: memberSocket(channelId, userId),
         }
         sessions.set(channelId, created)
@@ -177,7 +215,7 @@ export function createEmuSessions(options: EmuSessionsOptions) {
       if (s.ports[port] !== null) return EMU_ERRORS.portTaken
       if (mine >= 0) freePort(s, mine)
       s.ports[port] = userId
-      s.relayed[port] = 0
+      s.relayed[port] = CENTERED
       return commit(s)
     },
 
@@ -198,7 +236,7 @@ export function createEmuSessions(options: EmuSessionsOptions) {
       if (previous >= 0) freePort(s, previous)
       if (s.ports[port] !== null) freePort(s, port)
       s.ports[port] = target
-      s.relayed[port] = 0
+      s.relayed[port] = CENTERED
       return commit(s)
     },
 
@@ -223,23 +261,25 @@ export function createEmuSessions(options: EmuSessionsOptions) {
     },
 
     /**
-     * `emu:input`: a player's held buttons, relayed to the host when they changed for that port. Ignored when the
-     * caller holds no port, is the host (the host's own controller is applied on their device) or sent junk.
+     * `emu:input`: a player's held buttons and sticks, relayed to the host when they changed for that port. Ignored
+     * when the caller holds no port, is the host (the host's own controller is applied on their device) or sent
+     * junk buttons; junk / centered axes count as centered (see normalizeAxes).
      */
-    input(channelId: string, userId: string, buttons: unknown): void {
+    input(channelId: string, userId: string, buttons: unknown, axes?: unknown): void {
       const s = sessions.get(channelId)
       if (!s || s.hostId === userId) return
       if (typeof buttons !== 'number' || !Number.isInteger(buttons)) return
       const port = s.ports.indexOf(userId)
       if (port < 0) return
-      const next = buttons & GAME_PAD_MASK
-      if (s.relayed[port] === next) return
+      const next: PadState = { buttons: buttons & GAME_PAD_MASK, axes: normalizeAxes(axes) }
+      const cur = s.relayed[port]
+      if (cur.buttons === next.buttons && sameAxes(cur.axes, next.axes)) return
       relay(s, port, next)
     },
 
     /**
      * Who is in which voice channel now (after every voice state change). The host leaving closes the session;
-     * a player leaving loses their port (the host is told their buttons are 0). When the host's voice moves to
+     * a player leaving loses their port (the host is told their buttons are 0, sticks centered). When the host's voice moves to
      * another device, relays go to that socket (which first gets every port's held buttons).
      */
     setMembers(next: Map<string, EmuMember[]>) {
@@ -251,10 +291,10 @@ export function createEmuSessions(options: EmuSessionsOptions) {
           continue
         }
         if (hostSocket !== s.hostSocketId) {
-          // The new device gets what the players hold now.
+          // The new device gets what the players hold now (buttons and sticks).
           s.hostSocketId = hostSocket
-          s.relayed.forEach((buttons, port) => {
-            if (buttons !== 0) onInput(hostSocket, { channelId: s.channelId, port, buttons })
+          s.relayed.forEach((pad, port) => {
+            if (pad.buttons !== 0 || pad.axes) onInput(hostSocket, relayOf(s.channelId, port, pad))
           })
         }
         let changed = false

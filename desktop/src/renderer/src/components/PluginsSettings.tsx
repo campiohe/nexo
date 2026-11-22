@@ -62,8 +62,9 @@ export function PluginsSection() {
         <span className="plugin-text">
           <span className="plugin-name">Emulator</span>
           <span className="muted small">
-            Play console games you own together. The host loads a game file from their computer; Nexo streams it to
-            the call and friends play with their own keyboard or gamepad. Nexo doesn't provide games.
+            Play SNES, Mega Drive, PlayStation and Nintendo 64 games you own together. The host loads a game file from
+            their computer; Nexo streams it to the call and friends play with their own keyboard or gamepad. Nexo
+            doesn't provide games.
           </span>
         </span>
         <input

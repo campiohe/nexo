@@ -1,0 +1,245 @@
+Nexo's patches to Mupen64Plus-Next (libretro/mupen64plus-libretro-nx @ 15bada85906593376e8fd697f1b0b3af3a20f512)
+for its WebAssembly build (../build.sh). Everything new is under NEXO_REENTRANT / NEXO=1, so the patched tree
+still builds the upstream way for other platforms.
+
+- cached_interp.c, r4300_core.c, main.c: no libco in WebAssembly. The cached interpreter returns at every VI
+  (nexo_co_yield, set by the frontend's co_switch(retro_thread)) and nexo_resume_emulation() continues it from the
+  same PC on the next retro_run(). Makefile.common: libco.c isn't built (the frontend provides co_*).
+- emulate_game_controller_via_libretro.c: the controller state (buttons + stick, already mapped to the N64 pad)
+  comes straight from the frontend (nexo_n64_keys) instead of going through a RetroPad.
+- ai_controller.c: AI_DRAM_ADDR is 24 bits wide, as on hardware (homebrew writes KSEG1 addresses there; kept as is
+  they index far outside RDRAM).
+- memory.c: the compressed memory layout (~12 MB) instead of a 512 MB block that only simplifies dynarec address
+  arithmetic.
+- Makefile: no -fcommon (WebAssembly objects have no common symbols: tentative definitions would stay undefined).
+- xxhash.h: no NEON-via-SIMDe header (it can't be included inside xxhash's extern "C"): scalar XXH3.
+- atomicops.h: no sem_timedwait without threads (only the threaded renderer, which is off, waits on it).
+
+diff --git i/GLideN64/src/Graphics/OpenGLContext/ThreadedOpenGl/atomicops.h w/GLideN64/src/Graphics/OpenGLContext/ThreadedOpenGl/atomicops.h
+index 1595ec7..829990c 100644
+--- i/GLideN64/src/Graphics/OpenGLContext/ThreadedOpenGl/atomicops.h
++++ w/GLideN64/src/Graphics/OpenGLContext/ThreadedOpenGl/atomicops.h
+@@ -530,6 +530,9 @@ namespace moodycamel
+ 
+ 			bool timed_wait(std::uint64_t usecs) AE_NO_TSAN
+ 			{
++#if defined(EMSCRIPTEN) && !defined(__EMSCRIPTEN_PTHREADS__)
++				return try_wait(); /* Nexo: no threads in wasm (the threaded renderer is off) */
++#else
+ 				struct timespec ts;
+ 				const int usecs_in_1_sec = 1000000;
+ 				const int nsecs_in_1_sec = 1000000000;
+@@ -548,6 +551,7 @@ namespace moodycamel
+ 					rc = sem_timedwait(&m_sema, &ts);
+ 				} while (rc == -1 && errno == EINTR);
+ 				return !(rc == -1 && errno == ETIMEDOUT);
++#endif
+ 			}
+ 
+ 			void signal() AE_NO_TSAN
+diff --git i/GLideN64/src/xxHash/xxhash.h w/GLideN64/src/xxHash/xxhash.h
+index 78fc2e8..4a4b2b8 100644
+--- i/GLideN64/src/xxHash/xxhash.h
++++ w/GLideN64/src/xxHash/xxhash.h
+@@ -3847,7 +3847,7 @@ XXH_PUBLIC_API XXH64_hash_t XXH64_hashFromCanonical(XXH_NOESCAPE const XXH64_can
+ #  if defined(__ARM_NEON__) || defined(__ARM_NEON) \
+    || (defined(_M_ARM) && _M_ARM >= 7) \
+    || defined(_M_ARM64) || defined(_M_ARM64EC) \
+-   || (defined(__wasm_simd128__) && XXH_HAS_INCLUDE(<arm_neon.h>)) /* WASM SIMD128 via SIMDe */
++   || (defined(__wasm_simd128__) && XXH_HAS_INCLUDE(<arm_neon.h>) && !defined(NEXO_REENTRANT)) /* WASM SIMD128 via SIMDe */
+ #    define inline __inline__  /* circumvent a clang bug */
+ #    include <arm_neon.h>
+ #    undef inline
+@@ -3975,7 +3975,7 @@ XXH_PUBLIC_API XXH64_hash_t XXH64_hashFromCanonical(XXH_NOESCAPE const XXH64_can
+ #  elif ( \
+         defined(__ARM_NEON__) || defined(__ARM_NEON) /* gcc */ \
+      || defined(_M_ARM) || defined(_M_ARM64) || defined(_M_ARM64EC) /* msvc */ \
+-     || (defined(__wasm_simd128__) && XXH_HAS_INCLUDE(<arm_neon.h>)) /* wasm simd128 via SIMDe */ \
++     || (defined(__wasm_simd128__) && XXH_HAS_INCLUDE(<arm_neon.h>) && !defined(NEXO_REENTRANT)) /* wasm simd128 via SIMDe */ \
+    ) && ( \
+         defined(_WIN32) || defined(__LITTLE_ENDIAN__) /* little endian only */ \
+     || (defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__) \
+diff --git i/Makefile w/Makefile
+index 2443f80..aca86e9 100644
+--- i/Makefile
++++ w/Makefile
+@@ -661,8 +661,10 @@ endif
+    CXXFLAGS += -fvisibility-inlines-hidden
+ endif
+ 
+-# Use -fcommon
++# Use -fcommon (not for Nexo's WebAssembly build: wasm objects have no common symbols, they'd stay undefined)
++ifneq ($(NEXO),1)
+ CPUOPTS += -fcommon
++endif
+ 
+ # set C/C++ standard to use
+ CFLAGS += -std=gnu11 -D_CRT_SECURE_NO_WARNINGS -Wno-discarded-qualifiers
+diff --git i/Makefile.common w/Makefile.common
+index 72aef3a..549682e 100644
+--- i/Makefile.common
++++ w/Makefile.common
+@@ -465,7 +465,10 @@ ifneq (,$(findstring win,$(platform)))
+ 	INCFLAGS += -I$(RSPDIR_PARALLEL)/win32/mman
+ endif
+ 
++# Nexo (WebAssembly) provides its own co_* functions: the core runs re-entrantly, see nexo_frontend.c.
++ifneq ($(NEXO),1)
+ SOURCES_C += $(LIBRETRO_COMM_DIR)/libco/libco.c
++endif
+ 
+ ifeq ($(platform), $(filter $(platform), rpi3 rpi4 libnx jetson-xavier))
+ 	SOURCES_CXX += $(VIDEODIR_GLIDEN64)/src/CRC32_ARMV8.cpp
+diff --git i/custom/mupen64plus-core/plugin/emulate_game_controller_via_libretro.c w/custom/mupen64plus-core/plugin/emulate_game_controller_via_libretro.c
+index 8a132d4..5af6fd2 100644
+--- i/custom/mupen64plus-core/plugin/emulate_game_controller_via_libretro.c
++++ w/custom/mupen64plus-core/plugin/emulate_game_controller_via_libretro.c
+@@ -308,8 +308,17 @@ static void inputGetKeys_reuse(int16_t analogX, int16_t analogY, int Control, BU
+    }
+ }
+ 
++#ifdef NEXO_REENTRANT
++/* Nexo's frontend hands over the N64 controller state itself (buttons + stick, already mapped). */
++extern unsigned nexo_n64_keys(int control);
++#endif
++
+ void inputGetKeys_default( int Control, BUTTONS *Keys )
+ {
++#ifdef NEXO_REENTRANT
++   Keys->Value = nexo_n64_keys(Control);
++   return;
++#endif
+    unsigned i;
+    bool cbuttons_mode = false;
+    int16_t ret        = 0;
+diff --git i/mupen64plus-core/src/device/memory/memory.c w/mupen64plus-core/src/device/memory/memory.c
+index 6625d19..f99c5ef 100644
+--- i/mupen64plus-core/src/device/memory/memory.c
++++ w/mupen64plus-core/src/device/memory/memory.c
+@@ -245,7 +245,11 @@ void* init_mem_base(void)
+     void* mem_base;
+ 
+     /* First try the full mem base alloc */
+-#ifdef _WIN32
++#if defined(NEXO_REENTRANT)
++    /* Nexo (WebAssembly): 512 MB of linear memory just for simpler address arithmetic isn't worth it (no
++     * dynarec here); go straight to the compressed layout (~12 MB). */
++    mem_base = NULL;
++#elif defined(_WIN32)
+     mem_base = _aligned_malloc(MB_MAX_SIZE_FULL, MB_RDRAM_DRAM_ALIGNMENT_REQUIREMENT);
+ #else
+ #ifdef HAVE_LIBNX
+diff --git i/mupen64plus-core/src/device/r4300/cached_interp.c w/mupen64plus-core/src/device/r4300/cached_interp.c
+index b46d99a..9ef091b 100644
+--- i/mupen64plus-core/src/device/r4300/cached_interp.c
++++ w/mupen64plus-core/src/device/r4300/cached_interp.c
+@@ -984,9 +984,18 @@ void invalidate_cached_code_hacktarux(struct r4300_core* r4300, uint32_t address
+     }
+ }
+ 
++#ifdef NEXO_REENTRANT
++/* Nexo (WebAssembly, no coroutines): set at every VI by the frontend's co_switch(retro_thread); the loop
++ * returns to retro_run() and nexo_resume_r4300() continues from the same PC on the next frame. */
++extern volatile int nexo_co_yield;
++#define NEXO_KEEP_RUNNING (!nexo_co_yield)
++#else
++#define NEXO_KEEP_RUNNING 1
++#endif
++
+ void run_cached_interpreter(struct r4300_core* r4300)
+ {
+-    while (!*r4300_stop(r4300))
++    while (!*r4300_stop(r4300) && NEXO_KEEP_RUNNING)
+     {
+ #ifdef COMPARE_CORE
+         if ((*r4300_pc_struct(r4300))->ops == cached_interp_FIN_BLOCK && ((*r4300_pc_struct(r4300))->addr < 0x80000000 || (*r4300_pc_struct(r4300))->addr >= 0xc0000000))
+diff --git i/mupen64plus-core/src/device/r4300/r4300_core.c w/mupen64plus-core/src/device/r4300/r4300_core.c
+index 76e9f50..9960966 100644
+--- i/mupen64plus-core/src/device/r4300/r4300_core.c
++++ w/mupen64plus-core/src/device/r4300/r4300_core.c
+@@ -124,6 +124,20 @@ void poweron_r4300(struct r4300_core* r4300)
+ }
+ 
+ 
++#ifdef NEXO_REENTRANT
++extern volatile int nexo_co_yield;
++
++/* Continues the cached interpreter where the last frame left it (see run_cached_interpreter). */
++void nexo_resume_r4300(struct r4300_core* r4300)
++{
++    run_cached_interpreter(r4300);
++    if (nexo_co_yield)
++        return;
++    free_blocks(&r4300->cached_interp);
++    DebugMessage(M64MSG_INFO, "R4300 emulator finished.");
++}
++#endif
++
+ void run_r4300(struct r4300_core* r4300)
+ {
+ #ifdef OSAL_SSE
+@@ -197,6 +211,10 @@ void run_r4300(struct r4300_core* r4300)
+         r4300->cp0.last_addr = *r4300_pc(r4300);
+ 
+         run_cached_interpreter(r4300);
++#ifdef NEXO_REENTRANT
++        if (nexo_co_yield)
++            return; /* a frame ended: nexo_resume_r4300() continues it */
++#endif
+ 
+         free_blocks(&r4300->cached_interp);
+     }
+diff --git i/mupen64plus-core/src/device/rcp/ai/ai_controller.c w/mupen64plus-core/src/device/rcp/ai/ai_controller.c
+index c494f5c..d440b90 100644
+--- i/mupen64plus-core/src/device/rcp/ai/ai_controller.c
++++ w/mupen64plus-core/src/device/rcp/ai/ai_controller.c
+@@ -207,6 +207,14 @@ void write_ai_regs(void* opaque, uint32_t address, uint32_t value, uint32_t mask
+         clear_rcp_interrupt(ai->mi, MI_INTR_AI);
+         return;
+ 
++#ifdef NEXO_REENTRANT
++    case AI_DRAM_ADDR_REG:
++        /* Nexo: the register is 24 bits wide on hardware. Homebrew (libdragon) writes KSEG1 addresses here; kept
++         * as is, they'd index far past RDRAM (out of the WebAssembly memory). */
++        masked_write(&ai->regs[reg], value & UINT32_C(0x00fffff8), mask);
++        return;
++#endif
++
+     case AI_DACRATE_REG:
+         /* lazy audio format setting */
+         if ((ai->regs[reg]) != (value & mask))
+diff --git i/mupen64plus-core/src/main/main.c w/mupen64plus-core/src/main/main.c
+index 620f4ce..a7cd67d 100644
+--- i/mupen64plus-core/src/main/main.c
++++ w/mupen64plus-core/src/main/main.c
+@@ -812,6 +812,16 @@ static void pause_loop(void)
+     }
+ }
+ 
++#ifdef NEXO_REENTRANT
++void nexo_resume_r4300(struct r4300_core* r4300);
++
++/* Nexo: runs the emulation on to the next VI (the frontend's stand-in for co_switch(game_thread)). */
++void nexo_resume_emulation(void)
++{
++    nexo_resume_r4300(&g_dev.r4300);
++}
++#endif
++
+ /* called on vertical interrupt.
+  * Allow the core to perform various things */
+ void new_vi(void)
+@@ -1729,6 +1739,13 @@ m64p_error main_run(void)
+     pif_bootrom_hle_execute(&g_dev.r4300);
+ 
+     run_device(&g_dev);
++#ifdef NEXO_REENTRANT
++    {
++        extern volatile int nexo_co_yield;
++        if (nexo_co_yield)
++            return M64ERR_SUCCESS; /* the first frame ended; the emulation goes on in nexo_resume_r4300() */
++    }
++#endif
+ 
+     /* release gb_carts */
+     for(i = 0; i < GAME_CONTROLLERS_COUNT; ++i) {

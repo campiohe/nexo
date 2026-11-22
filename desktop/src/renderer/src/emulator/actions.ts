@@ -1,6 +1,6 @@
 // Emulator plugin requests (`emu:*`) with their errors toasted, the player's input sender, and the host's
 // subscription to relayed player input (`emu:input` from the server, dispatched by net/socket.ts).
-import type { EmuSession, EmuSystem } from '@shared/protocol'
+import type { EmuAxes, EmuSession, EmuSystem } from '@shared/protocol'
 import { emit, request } from '../net/socket'
 import { applyEmuSession } from '../store/emulator'
 import { toast } from '../lib/toast'
@@ -38,9 +38,12 @@ export async function stopEmu(channelId: string): Promise<boolean> {
   }
 }
 
-/** Player: your held buttons (GAME_PAD bits), sent on every change. */
-export function sendEmuInput(channelId: string, buttons: number): void {
-  emit('emu:input', { channelId, buttons })
+/**
+ * Player: your held buttons (GAME_PAD bits) and sticks (absent = centered), sent on every change. The caller
+ * (emulator/input.ts) already sends only changes and caps stick updates at ~60 per second.
+ */
+export function sendEmuInput(channelId: string, buttons: number, axes?: EmuAxes): void {
+  emit('emu:input', axes ? { channelId, buttons, axes } : { channelId, buttons })
 }
 
 // Host side: relayed player input is in store/emulator.ts (onEmuInput / handleEmuInput), so net/socket.ts can

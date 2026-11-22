@@ -1618,20 +1618,31 @@ async function stopShareInternal(announceChange: boolean, r: Room | null = room)
 }
 
 // ---------------------------------------------------------------------------------------------
-// Emulator stream (Emulator plugin, docs/SPEC.md §5.6)
+// Emulator stream (Emulator plugin, docs/SPEC.md §5.5)
 // ---------------------------------------------------------------------------------------------
 // The host's game (emulator/engine.ts) goes out as the host's stream: Track.Source.ScreenShare named
 // 'emulator' + ScreenShareAudio, so the LIVE badge, stream tiles, "Watch" and the viewer list work as for a
 // screen share. One stream per person: starting it stops a screen share and a screen share stops it.
 //
-// The console draws 256×224. Encoding that and letting viewers scale it up blurs it (and the codec smears
-// the pixels), so frames are scaled up by an integer factor with nearest neighbor before encoding: the
-// encoder then keeps crisp pixel edges and viewers get a sharp picture at ~3× the size.
+// The engine's canvas is small (SNES 256×224, Mega Drive 320×224, PlayStation / N64 640×480). Encoding that and
+// letting viewers scale it up blurs it (and the codec smears the pixels), so frames are scaled up by an integer
+// factor with nearest neighbor before encoding: the encoder then keeps crisp pixel edges and viewers get a sharp
+// picture about 720–1080 px tall (224 → ×3 = 672, 240 → ×3 = 720, 480 → ×2 = 960; 1280×960 at most).
 
 const EMU_STREAM = { fps: 60, maxBitrate: 4_000_000, contentHint: 'motion' as const }
-/** Scale frames up to about this height (224 → ×3 = 672). Hi-res modes (448 lines) stay ×1. */
+/** Scale frames up to about this height... */
 const EMU_TARGET_HEIGHT = 720
+/** ...but never past this one (a factor that would overshoot it is lowered). */
+const EMU_MAX_HEIGHT = 1080
 const EMU_MAX_SCALE = 4
+
+/** Integer upscale factor for a frame `height` px tall: the nearest to EMU_TARGET_HEIGHT that stays ≤ EMU_MAX_HEIGHT. */
+function emulatorStreamScale(height: number): number {
+  const h = Math.max(1, height)
+  let scale = Math.max(1, Math.min(EMU_MAX_SCALE, Math.round(EMU_TARGET_HEIGHT / h)))
+  while (scale > 1 && h * scale > EMU_MAX_HEIGHT) scale--
+  return scale
+}
 
 interface EmulatorFeed {
   /** The current clone of the engine's video track (what the upscaler reads). */
@@ -1697,7 +1708,7 @@ function createUpscaler(first: MediaStreamTrack, onEnded: () => void): Upscaler 
       try {
         const fw = frame.displayWidth
         const fh = frame.displayHeight
-        const scale = Math.max(1, Math.min(EMU_MAX_SCALE, Math.floor(EMU_TARGET_HEIGHT / Math.max(1, fh))))
+        const scale = emulatorStreamScale(fh)
         // Even sizes: H.264 encoders want them.
         const ow = (fw * scale + 1) & ~1
         const oh = (fh * scale + 1) & ~1

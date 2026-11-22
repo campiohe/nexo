@@ -1,11 +1,14 @@
 // Emulator plugin entry points outside the emulator area: whether the area shows on a stage, the stage toolbar
-// button (load a game / show or hide it), the sidebar line under a voice channel and the plugin's icon.
-import { useRef, type DragEvent } from 'react'
+// button (load a game / show or hide it, with the host's loading progress and "which console?" question), the
+// sidebar line under a voice channel and the plugin's icon.
+import { useRef, type DragEvent, type RefObject } from 'react'
 import { useEmulator, setEmulatorHidden } from '../../store/emulator'
 import { usePlugins } from '../../store/plugins'
 import { useApp } from '../../store/app'
 import { useVoice } from '../../voice/session'
-import { acceptFor, hostGameFile, useEmuHost } from './host'
+import { EMU_SYSTEM_INFO } from '../../emulator/systems'
+import { Modal } from '../Modal'
+import { answerAsk, cancelLoading, GAME_FILE_ACCEPT, hostGameFiles, useEmuHost, type EmuLoading } from './host'
 import '../../styles/emulator.css'
 
 /** The emulator area takes the stage of `channelId`: plugin on, a session running there, not hidden here. */
@@ -38,6 +41,77 @@ export const ConsoleIcon = ({ size = 18 }: { size?: number }) => (
   </svg>
 )
 
+/** The file input of the game pickers: every console's files, several at once (a .cue with its .bin files, a BIOS). */
+export function GameFileInput({ inputRef, channelId }: { inputRef: RefObject<HTMLInputElement | null>; channelId: string }) {
+  return (
+    <input
+      ref={inputRef}
+      type="file"
+      accept={GAME_FILE_ACCEPT}
+      multiple
+      hidden
+      onChange={(e) => {
+        const files = Array.from(e.target.files ?? [])
+        e.target.value = ''
+        if (files.length) void hostGameFiles(channelId, files)
+      }}
+    />
+  )
+}
+
+/** "Reading Game.bin… 45%" with a bar and Cancel (the toolbar card, and the emulator screen while loading another game). */
+export function LoadProgress({ loading, className = '' }: { loading: EmuLoading; className?: string }) {
+  const pct = loading.progress === null ? null : Math.round(loading.progress * 100)
+  const label = loading.step === 'reading' ? 'Reading' : 'Starting'
+  return (
+    <div className={`emu-load ${className}`} role="status" aria-live="polite">
+      <div className="emu-load-text">
+        <span className="emu-load-name" title={loading.name}>
+          {label} {loading.name}…
+        </span>
+        {pct !== null && <span className="emu-load-pct">{pct}%</span>}
+      </div>
+      <div
+        className={`emu-load-bar ${pct === null ? 'is-indeterminate' : ''}`}
+        role="progressbar"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={pct ?? undefined}
+      >
+        <span style={pct === null ? undefined : { width: `${pct}%` }} />
+      </div>
+      <button className="gm-btn gm-btn-ghost emu-load-cancel" onClick={cancelLoading}>
+        Cancel
+      </button>
+    </div>
+  )
+}
+
+/** "Is this a Mega Drive or a PlayStation game?" when the picked file could be either (a .bin without a .cue). */
+function AskSystemDialog() {
+  const ask = useEmuHost((s) => s.ask)
+  if (!ask) return null
+  const names = ask.systems.map((id) => EMU_SYSTEM_INFO[id].name)
+  const question = names.length === 2 ? `${names[0]} or ${names[1]}` : names.join(', ')
+  return (
+    <Modal title="Which console is this game for?" onClose={() => answerAsk(null)} width={460}>
+      <p className="emu-ask-text">
+        Nexo can't tell from <strong>{ask.main.name}</strong> alone. Is it a {question} game?
+      </p>
+      <div className="emu-ask-choices">
+        {ask.systems.map((id) => (
+          <button key={id} className="gm-btn emu-ask-choice" onClick={() => answerAsk(id)}>
+            {EMU_SYSTEM_INFO[id].name}
+          </button>
+        ))}
+      </div>
+      {ask.systems.includes('psx') && (
+        <p className="emu-note emu-ask-hint">PlayStation games usually come with a .cue file: pick it together with the .bin files.</p>
+      )}
+    </Modal>
+  )
+}
+
 /** Drag-and-drop of a game file: true when the drag carries files. */
 export function dragHasFiles(e: DragEvent): boolean {
   return Array.from(e.dataTransfer?.types ?? []).includes('Files')
@@ -55,12 +129,14 @@ export function EmulatorButton({ size = 'lg' }: { size?: 'sm' | 'lg' }) {
   const loading = useEmuHost((s) => s.loading)
   const input = useRef<HTMLInputElement>(null)
   if (!on || !channelId) return null
+  // While the area is shown it shows the progress over the game itself.
+  const showLoadCard = !!loading && !shown
   const click = () => {
     if (session) setEmulatorHidden(channelId, shown)
     else if (!loading) input.current?.click()
   }
   return (
-    <>
+    <span className="emu-ctl-wrap">
       <button
         className={`vx-ctl vx-ctl-${size} emu-ctl ${shown ? 'is-on' : ''}`}
         onClick={click}
@@ -72,7 +148,7 @@ export function EmulatorButton({ size = 'lg' }: { size?: 'sm' | 'lg' }) {
               : `Show ${session.title}`
             : loading
               ? 'Loading the game…'
-              : 'Play a game: load a SNES game file you own'
+              : 'Play a game: load a SNES, Mega Drive, PlayStation or Nintendo 64 game file you own'
         }
         aria-label="Emulator"
         aria-pressed={shown}
@@ -80,18 +156,10 @@ export function EmulatorButton({ size = 'lg' }: { size?: 'sm' | 'lg' }) {
         <ConsoleIcon size={size === 'lg' ? 20 : 18} />
         {session && !shown && <span className="emu-dot" aria-hidden="true" />}
       </button>
-      <input
-        ref={input}
-        type="file"
-        accept={acceptFor('snes')}
-        hidden
-        onChange={(e) => {
-          const file = e.target.files?.[0]
-          e.target.value = ''
-          if (file) void hostGameFile(channelId, file)
-        }}
-      />
-    </>
+      <GameFileInput inputRef={input} channelId={channelId} />
+      {showLoadCard && <LoadProgress loading={loading} className="emu-load-card" />}
+      <AskSystemDialog />
+    </span>
   )
 }
 
