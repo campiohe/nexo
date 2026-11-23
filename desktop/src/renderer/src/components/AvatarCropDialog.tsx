@@ -1,17 +1,77 @@
-// Square crop for a new profile picture: drag to move, wheel/slider/keys to zoom, live round previews.
-// Animations (GIF / animated WebP / APNG) play while cropping and are saved as an animated GIF.
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react'
-import { AVATAR_ANIMATED_MAX_BYTES } from '@shared/protocol'
-import { encodeAnimatedAvatar, isAbort } from '../lib/gifAvatar'
-import { drawCrop, encodeAvatar, type CropRect, type LoadedImage } from '../lib/imageCrop'
+// Crop for a new profile picture (square, live round previews) or banner (BANNER_ASPECT, previewed at the
+// profile card's size): drag to move, wheel/slider/keys to zoom. Animations (GIF / animated WebP / APNG) play
+// while cropping and are saved as an animated GIF.
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react'
+import { BANNER_ASPECT } from '@shared/protocol'
+import { AVATAR_ANIMATED_TARGET, BANNER_ANIMATED_TARGET, encodeAnimated, isAbort } from '../lib/gifAvatar'
+import {
+  AVATAR_TARGET,
+  BANNER_TARGET,
+  drawCrop,
+  encodeStill,
+  type CropRect,
+  type EncodeTarget,
+  type LoadedImage,
+} from '../lib/imageCrop'
 import { toast } from '../lib/toast'
+import { formatList, msg, useT } from '../i18n'
+import { useApp } from '../store/app'
+import { Avatar } from './Avatar'
 import { Modal } from './Modal'
 import './avatarMedia.css'
 
-/** Viewport size in CSS px (the square that becomes the picture). */
-const VIEW = 280
 const MAX_ZOOM = 5
-const PREVIEW_SIZES = [96, 40] as const
+
+/** Profile card width in CSS px (styles/people.css .pc): banners are previewed at their real size. */
+const CARD_WIDTH = 300
+
+interface CropKind {
+  /** Viewport size in CSS px (the rectangle that becomes the image). */
+  viewW: number
+  viewH: number
+  /** Preview sizes (width × height in CSS px). */
+  previews: readonly (readonly [number, number])[]
+  still: EncodeTarget
+  animated: EncodeTarget
+  /** Message keys (msg), translated where shown. */
+  title: string
+  save: string
+  /** Shown under the viewport for animations. */
+  animNote: string
+  positionLabel: string
+  modalWidth: number
+}
+
+const KINDS: Record<'avatar' | 'banner', CropKind> = {
+  avatar: {
+    viewW: 280,
+    viewH: 280,
+    previews: [
+      [96, 96],
+      [40, 40],
+    ],
+    still: AVATAR_TARGET,
+    animated: AVATAR_ANIMATED_TARGET,
+    title: msg('Crop your picture'),
+    save: msg('Save picture'),
+    animNote: msg('Stays animated. It plays when someone hovers over you and while you talk.'),
+    positionLabel: msg('Picture position. Drag or use the arrow keys to move, + and - to zoom.'),
+    modalWidth: 520,
+  },
+  banner: {
+    // Fills the 520 px modal's body.
+    viewW: 470,
+    viewH: Math.round(470 / BANNER_ASPECT),
+    previews: [[CARD_WIDTH, Math.round(CARD_WIDTH / BANNER_ASPECT)]],
+    still: BANNER_TARGET,
+    animated: BANNER_ANIMATED_TARGET,
+    title: msg('Crop your banner'),
+    save: msg('Save banner'),
+    animNote: msg('Stays animated. It plays while your profile card is open.'),
+    positionLabel: msg('Banner position. Drag or use the arrow keys to move, + and - to zoom.'),
+    modalWidth: 520,
+  },
+}
 
 interface View {
   zoom: number
@@ -27,23 +87,35 @@ interface Props {
   onConfirm(picture: Blob): Promise<void>
 }
 
-export function AvatarCropDialog({ image, onCancel, onConfirm }: Props) {
+export function AvatarCropDialog(props: Props) {
+  return <ImageCropDialog {...props} kind="avatar" />
+}
+
+/** Crops to BANNER_ASPECT; the preview shows the banner as the profile card does, with your avatar on it. */
+export function BannerCropDialog(props: Props) {
+  return <ImageCropDialog {...props} kind="banner" />
+}
+
+function ImageCropDialog({ image, onCancel, onConfirm, kind: kindId }: Props & { kind: 'avatar' | 'banner' }) {
+  const t = useT()
+  const kind = KINDS[kindId]
+  const { viewW: VW, viewH: VH } = kind
   const { width, height } = image
-  /** Display scale at zoom 1: the short side exactly fills the viewport. */
-  const base = VIEW / Math.min(width, height)
+  /** Display scale at zoom 1: the image exactly covers the viewport. */
+  const base = Math.max(VW / width, VH / height)
 
   const clamp = (v: View): View => {
     const zoom = Math.min(MAX_ZOOM, Math.max(1, v.zoom))
     const s = base * zoom
     return {
       zoom,
-      x: Math.min(0, Math.max(VIEW - width * s, v.x)),
-      y: Math.min(0, Math.max(VIEW - height * s, v.y)),
+      x: Math.min(0, Math.max(VW - width * s, v.x)),
+      y: Math.min(0, Math.max(VH - height * s, v.y)),
     }
   }
 
   const [view, setView] = useState<View>(() =>
-    clamp({ zoom: 1, x: (VIEW - width * base) / 2, y: (VIEW - height * base) / 2 }),
+    clamp({ zoom: 1, x: (VW - width * base) / 2, y: (VH - height * base) / 2 }),
   )
   const [busy, setBusy] = useState(false)
   /** Animated pictures: encoding progress (0..100) while preparing the GIF, null otherwise. */
@@ -57,7 +129,7 @@ export function AvatarCropDialog({ image, onCancel, onConfirm }: Props) {
   const drag = useRef<{ id: number; startX: number; startY: number; from: View } | null>(null)
 
   /** Zoom to `zoom`, keeping the image point under viewport point (px, py) fixed. */
-  const zoomAt = (zoom: number, px = VIEW / 2, py = VIEW / 2) =>
+  const zoomAt = (zoom: number, px = VW / 2, py = VH / 2) =>
     setView((v) => {
       const s = base * v.zoom
       const next = Math.min(MAX_ZOOM, Math.max(1, zoom))
@@ -69,22 +141,25 @@ export function AvatarCropDialog({ image, onCancel, onConfirm }: Props) {
 
   const crop: CropRect = useMemo(() => {
     const s = base * view.zoom
-    const size = Math.min(VIEW / s, width, height)
+    const w = Math.min(VW / s, width)
+    const h = Math.min(VH / s, height)
     return {
-      x: Math.min(width - size, Math.max(0, -view.x / s)),
-      y: Math.min(height - size, Math.max(0, -view.y / s)),
-      size,
+      x: Math.min(width - w, Math.max(0, -view.x / s)),
+      y: Math.min(height - h, Math.max(0, -view.y / s)),
+      width: w,
+      height: h,
     }
-  }, [view, base, width, height])
+  }, [view, base, width, height, VW, VH])
 
   useEffect(() => {
     if (animated) return // previews are cropped <img>s that play the animation
-    PREVIEW_SIZES.forEach((size, i) => {
+    const dpr = window.devicePixelRatio || 1
+    kind.previews.forEach(([w, h], i) => {
       const canvas = previewRefs.current[i]
       // Draw at device resolution so the preview is as sharp as the real thing.
-      if (canvas) drawCrop(canvas, image.img, crop, Math.round(size * (window.devicePixelRatio || 1)))
+      if (canvas) drawCrop(canvas, image.img, crop, Math.round(w * dpr), Math.round(h * dpr))
     })
-  }, [crop, image, animated])
+  }, [crop, image, animated, kind])
 
   // Wheel zoom needs a non-passive listener to stop the modal from scrolling.
   useEffect(() => {
@@ -151,23 +226,24 @@ export function AvatarCropDialog({ image, onCancel, onConfirm }: Props) {
       if (image.animatedType) {
         setPrep({ percent: 0, simplifying: false })
         const abort = (encodeAbort.current = new AbortController())
-        const result = await encodeAnimatedAvatar(
+        const result = await encodeAnimated(
           image.file,
           image.animatedType,
           crop,
           width,
+          kind.animated,
           (p) => setPrep({ percent: Math.round(p.fraction * 100), simplifying: p.simplifying }),
           abort.signal,
         )
         encodeAbort.current = null
         setPrep(null)
         if (result.simplified.length > 0) {
-          const limit = `${Math.round(AVATAR_ANIMATED_MAX_BYTES / (1024 * 1024))} MB`
-          toast(`Animation simplified to fit ${limit}: ${result.simplified.join(', ')}`, 'info', 8000)
+          const limit = `${Math.round(kind.animated.maxBytes / (1024 * 1024))} MB`
+          toast(t('Animation simplified to fit {limit}: {changes}', { limit, changes: formatList(result.simplified) }), 'info', 8000)
         }
         picture = result.blob
       } else {
-        picture = await encodeAvatar(image.img, crop)
+        picture = await encodeStill(image.img, crop, kind.still)
       }
       await onConfirm(picture)
     } catch (err) {
@@ -190,21 +266,23 @@ export function AvatarCropDialog({ image, onCancel, onConfirm }: Props) {
   const s = base * view.zoom
   return (
     <Modal
-      title="Crop your picture"
+      title={t(kind.title)}
       onClose={cancel}
-      width={520}
-      className="crop-modal"
+      width={kind.modalWidth}
+      className={`crop-modal crop-${kindId}`}
       footer={
         <>
           <button className="btn btn-ghost" onClick={cancel} disabled={busy && !prep}>
-            Cancel
+            {t('Cancel')}
           </button>
           <button className="btn btn-primary" onClick={save} disabled={busy} data-autofocus>
             {prep
-              ? `${prep.simplifying ? 'Simplifying animation' : 'Preparing animation'}… ${prep.percent}%`
+              ? prep.simplifying
+                ? t('Simplifying animation… {percent}%', { percent: prep.percent })
+                : t('Preparing animation… {percent}%', { percent: prep.percent })
               : busy
-                ? 'Uploading…'
-                : 'Save picture'}
+                ? t('Uploading…')
+                : t(kind.save)}
           </button>
         </>
       }
@@ -214,10 +292,10 @@ export function AvatarCropDialog({ image, onCancel, onConfirm }: Props) {
           <div
             ref={viewportRef}
             className="crop-viewport"
-            style={{ width: VIEW, height: VIEW }}
+            style={{ width: VW, height: VH }}
             tabIndex={0}
             role="group"
-            aria-label="Picture position. Drag or use the arrow keys to move, + and - to zoom."
+            aria-label={t(kind.positionLabel)}
             onPointerDown={onPointerDown}
             onPointerMove={onPointerMove}
             onPointerUp={endDrag}
@@ -231,10 +309,10 @@ export function AvatarCropDialog({ image, onCancel, onConfirm }: Props) {
               draggable={false}
               style={{ width: width * s, height: height * s, transform: `translate(${view.x}px, ${view.y}px)` }}
             />
-            <div className="crop-mask" aria-hidden="true" />
+            {kindId === 'avatar' && <div className="crop-mask" aria-hidden="true" />}
           </div>
           <label className="crop-zoom">
-            <span className="field-label">Zoom</span>
+            <span className="field-label">{t('Zoom')}</span>
             <input
               type="range"
               min={1}
@@ -243,42 +321,60 @@ export function AvatarCropDialog({ image, onCancel, onConfirm }: Props) {
               value={view.zoom}
               onChange={(e) => zoomAt(Number(e.target.value))}
               disabled={busy}
-              aria-label="Zoom"
+              aria-label={t('Zoom')}
             />
           </label>
           {animated && (
             <p className="crop-anim-note">
               <span className="avatar-gif-badge">GIF</span>
-              Stays animated. It plays when someone hovers over you and while you talk.
+              {t(kind.animNote)}
             </p>
           )}
         </div>
         <div className="crop-previews">
-          <span className="field-label">Preview</span>
-          {animated
-            ? PREVIEW_SIZES.map((size) => <AnimatedPreview key={size} image={image} crop={crop} size={size} />)
-            : PREVIEW_SIZES.map((size, i) => (
-                <canvas
-                  key={size}
-                  ref={(el) => {
-                    previewRefs.current[i] = el
-                  }}
-                  className="crop-preview"
-                  style={{ width: size, height: size }}
-                  aria-hidden="true"
-                />
-              ))}
+          <span className="field-label">{t('Preview')}</span>
+          {kind.previews.map(([w, h], i) => {
+            const preview = animated ? (
+              <AnimatedPreview key={w} image={image} crop={crop} width={w} height={h} />
+            ) : (
+              <canvas
+                key={w}
+                ref={(el) => {
+                  previewRefs.current[i] = el
+                }}
+                className="crop-preview"
+                style={{ width: w, height: h }}
+                aria-hidden="true"
+              />
+            )
+            return kindId === 'banner' ? <BannerPreviewFrame key={w}>{preview}</BannerPreviewFrame> : preview
+          })}
         </div>
       </div>
     </Modal>
   )
 }
 
-/** The crop of the (playing) animation, scaled to a round `size` preview. */
-function AnimatedPreview({ image, crop, size }: { image: LoadedImage; crop: CropRect; size: number }) {
-  const k = size / crop.size
+/** The banner preview as the profile card shows it: your avatar overlapping its bottom edge. */
+function BannerPreviewFrame({ children }: { children: ReactNode }) {
+  const me = useApp((s) => s.me)
   return (
-    <span className="crop-preview crop-preview-anim" style={{ width: size, height: size }} aria-hidden="true">
+    <div className="crop-banner-frame" aria-hidden="true">
+      {children}
+      {me && (
+        <span className="crop-banner-avatar">
+          <Avatar user={me} size={80} />
+        </span>
+      )}
+    </div>
+  )
+}
+
+/** The crop of the (playing) animation, scaled to a `width`×`height` preview. */
+function AnimatedPreview({ image, crop, width, height }: { image: LoadedImage; crop: CropRect; width: number; height: number }) {
+  const k = width / crop.width
+  return (
+    <span className="crop-preview crop-preview-anim" style={{ width, height }} aria-hidden="true">
       <img
         src={image.url}
         alt=""

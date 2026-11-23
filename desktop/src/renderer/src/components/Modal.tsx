@@ -1,6 +1,7 @@
 import { useEffect, useRef, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { CloseIcon } from './icons'
+import { useT } from '../i18n'
 
 interface ModalProps {
   title: string
@@ -14,17 +15,37 @@ interface ModalProps {
 /** Open modals, innermost last: Esc only closes the top one (e.g. a crop dialog over Settings). */
 const openModals: object[] = []
 
+/**
+ * How the user last interacted: a modal opened with the mouse shouldn't land focus (and its ring) on a button.
+ * Chromium shows :focus-visible for script focus after a mouse click on another control, so CSS alone can't tell.
+ */
+let lastInput: 'keyboard' | 'pointer' = 'keyboard'
+if (typeof window !== 'undefined') {
+  window.addEventListener('pointerdown', () => (lastInput = 'pointer'), true)
+  window.addEventListener('keydown', () => (lastInput = 'keyboard'), true)
+}
+
+/** Fields that take typing: focusing them on open is useful even after a click (no ring, just the caret). */
+const isTextEntry = (el: HTMLElement) =>
+  el instanceof HTMLTextAreaElement ||
+  el instanceof HTMLSelectElement ||
+  (el instanceof HTMLInputElement && !['checkbox', 'radio', 'range', 'button', 'submit', 'reset', 'file', 'color'].includes(el.type))
+
 /** Accessible modal: Esc / backdrop click closes, focus moves inside and is restored on close. */
 export function Modal({ title, onClose, children, footer, width = 440, className }: ModalProps) {
   const panelRef = useRef<HTMLDivElement>(null)
   const closeRef = useRef(onClose)
   closeRef.current = onClose
+  const t = useT()
 
   useEffect(() => {
     const prev = document.activeElement as HTMLElement | null
     const panel = panelRef.current
     const first = panel?.querySelector<HTMLElement>('[data-autofocus], input, textarea, select, button:not(.modal-close)')
-    ;(first ?? panel)?.focus()
+    // Opened with the mouse: a plain button (e.g. Settings' first tab) stays unfocused; the dialog itself takes
+    // focus, so Esc works and Tab moves into it. data-autofocus (a confirm button, for Enter) always wins.
+    const keepOnPanel = first && lastInput === 'pointer' && !first.hasAttribute('data-autofocus') && !isTextEntry(first)
+    ;(first && !keepOnPanel ? first : panel)?.focus()
     const self = {}
     openModals.push(self)
     const onKey = (e: KeyboardEvent) => {
@@ -54,7 +75,7 @@ export function Modal({ title, onClose, children, footer, width = 440, className
       >
         <header className="modal-header">
           <h2>{title}</h2>
-          <button className="icon-btn modal-close" onClick={onClose} aria-label="Close" title="Close (Esc)">
+          <button className="icon-btn modal-close" onClick={onClose} aria-label={t('Close')} title={t('Close (Esc)')}>
             <CloseIcon size={18} />
           </button>
         </header>
@@ -75,8 +96,9 @@ interface ConfirmProps {
   onClose(): void
 }
 
-export function ConfirmDialog({ title, message, confirmLabel = 'Confirm', danger, onConfirm, onClose }: ConfirmProps) {
+export function ConfirmDialog({ title, message, confirmLabel, danger, onConfirm, onClose }: ConfirmProps) {
   const busy = useRef(false)
+  const t = useT()
   return (
     <Modal
       title={title}
@@ -85,7 +107,7 @@ export function ConfirmDialog({ title, message, confirmLabel = 'Confirm', danger
       footer={
         <>
           <button className="btn btn-ghost" onClick={onClose}>
-            Cancel
+            {t('Cancel')}
           </button>
           <button
             className={`btn ${danger ? 'btn-danger' : 'btn-primary'}`}
@@ -100,7 +122,7 @@ export function ConfirmDialog({ title, message, confirmLabel = 'Confirm', danger
               }
             }}
           >
-            {confirmLabel}
+            {confirmLabel ?? t('Confirm')}
           </button>
         </>
       }

@@ -3,11 +3,12 @@
 // message editing, message rendering and notifications.
 import type { Message, User } from '@shared/protocol'
 import { EVERYONE_TOKEN, MENTION_TOKEN_RE, hasEveryoneMention } from '@shared/protocol'
+import { msg, t } from '../i18n'
 
 type Users = Record<string, Pick<User, 'id' | 'name'>>
 
-/** Shown for a `<@id>` whose user is unknown (removed account, not loaded). */
-export const UNKNOWN_USER = 'unknown-user'
+/** Shown for a `<@id>` whose user is unknown (removed account, not loaded). A message key: show it with t(). */
+export const UNKNOWN_USER = msg('unknown-user')
 
 /** Fresh copy of MENTION_TOKEN_RE (the shared one is global, so `.exec`/`.test` on it would keep state). */
 const tokenRe = () => new RegExp(MENTION_TOKEN_RE.source, 'g')
@@ -25,7 +26,7 @@ export function contentToEditable(content: string, users: Users): string {
 
 /** Wire content -> plain readable text (notifications, previews): `<@id>` -> `@Name` or `@unknown-user`. */
 export function contentToPlain(content: string, users: Users): string {
-  return content.replace(tokenRe(), (_token, id: string) => `@${users[id]?.name ?? UNKNOWN_USER}`)
+  return content.replace(tokenRe(), (_token, id: string) => `@${users[id]?.name ?? t(UNKNOWN_USER)}`)
 }
 
 /**

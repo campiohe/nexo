@@ -26,6 +26,7 @@ import { MAX_WATCHING } from '@shared/protocol'
 import { isStreamIdentity, streamIdentity } from '@shared/stream'
 import { emit, onConnected, request } from '@renderer/net/socket'
 import { toast } from '@renderer/lib/toast'
+import { msg, t, tKnown } from '@renderer/i18n'
 import { useApp } from '@renderer/store/app'
 import type { NexoBridge, TrayAction } from '../../../preload/api'
 import { idealDevice, saveDevicePref, useDevicePrefs, type DeviceKind } from './devices'
@@ -64,6 +65,7 @@ export type VoiceStatus = 'idle' | 'connecting' | 'connected' | 'reconnecting' |
 
 export interface SharePreset {
   id: 'smooth' | 'game' | 'sharp' | 'source'
+  /** Message key (msg): show it with t(label). */
   label: string
   width: number
   height: number
@@ -149,10 +151,10 @@ export interface VoiceSessionState {
 
 /** SPEC §6.2 screen share quality presets. */
 export const SHARE_PRESETS: readonly SharePreset[] = [
-  { id: 'smooth', label: 'Smooth', width: 1280, height: 720, fps: 60, maxBitrate: 4_000_000, contentHint: 'motion' },
-  { id: 'game', label: 'Game', width: 1920, height: 1080, fps: 60, maxBitrate: 8_000_000, contentHint: 'motion' },
-  { id: 'sharp', label: 'Sharp', width: 1920, height: 1080, fps: 30, maxBitrate: 5_000_000, contentHint: 'detail' },
-  { id: 'source', label: 'Source', width: 2560, height: 1440, fps: 60, maxBitrate: 12_000_000, contentHint: 'motion' },
+  { id: 'smooth', label: msg('Smooth'), width: 1280, height: 720, fps: 60, maxBitrate: 4_000_000, contentHint: 'motion' },
+  { id: 'game', label: msg('Game // stream quality'), width: 1920, height: 1080, fps: 60, maxBitrate: 8_000_000, contentHint: 'motion' },
+  { id: 'sharp', label: msg('Sharp'), width: 1920, height: 1080, fps: 30, maxBitrate: 5_000_000, contentHint: 'detail' },
+  { id: 'source', label: msg('Source // stream quality'), width: 2560, height: 1440, fps: 60, maxBitrate: 12_000_000, contentHint: 'motion' },
 ]
 export const DEFAULT_SHARE_PRESET: SharePreset['id'] = 'game'
 
@@ -221,9 +223,10 @@ export function getLocalMicTrack(): MediaStreamTrack | null {
   return pub?.track?.mediaStreamTrack ?? null
 }
 
+/** The error's text (a known server message translated with tKnown), else `fallback` (already translated). */
 function errorMessage(e: unknown, fallback: string): string {
-  if (e instanceof Error && e.message) return e.message
-  if (typeof e === 'string' && e) return e
+  if (e instanceof Error && e.message) return tKnown(e.message)
+  if (typeof e === 'string' && e) return tKnown(e)
   return fallback
 }
 
@@ -231,13 +234,26 @@ function isUserCancel(e: unknown): boolean {
   return e instanceof DOMException && (e.name === 'NotAllowedError' || e.name === 'AbortError')
 }
 
-function mediaErrorMessage(e: unknown, what: string): string {
+// Voice errors are translated when they happen (`error` is a snapshot, shown and toasted as is).
+const MEDIA_LABEL = {
+  microphone: msg('Microphone'),
+  camera: msg('Camera'),
+  speaker: msg('Speaker'),
+  share: msg('Screen share'),
+} as const
+type MediaKind = keyof typeof MEDIA_LABEL
+
+const mediaKindOf = (kind: MediaDeviceKind | undefined): MediaKind =>
+  kind === 'videoinput' ? 'camera' : kind === 'audiooutput' ? 'speaker' : 'microphone'
+
+function mediaErrorMessage(e: unknown, kind: MediaKind): string {
+  const what = t(MEDIA_LABEL[kind])
   if (e instanceof DOMException) {
-    if (e.name === 'NotAllowedError') return `${what}: permission denied`
-    if (e.name === 'NotFoundError' || e.name === 'OverconstrainedError') return `${what}: device not found`
-    if (e.name === 'NotReadableError') return `${what}: device is in use by another app`
+    if (e.name === 'NotAllowedError') return t('{what}: permission denied', { what })
+    if (e.name === 'NotFoundError' || e.name === 'OverconstrainedError') return t('{what}: device not found', { what })
+    if (e.name === 'NotReadableError') return t('{what}: device is in use by another app', { what })
   }
-  return `${what}: ${errorMessage(e, 'failed')}`
+  return t('{what}: {error}', { what, error: errorMessage(e, t('failed')) })
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -330,7 +346,7 @@ export const useVoice = create<VoiceSessionState>()((set, get) => ({
         channelId: null,
         camera: false,
         sharing: false,
-        error: `Couldn't join voice: ${errorMessage(e, 'connection failed')}`,
+        error: t("Couldn't join voice: {error}", { error: errorMessage(e, t('connection failed')) }),
       })
     }
   },
@@ -382,7 +398,7 @@ export const useVoice = create<VoiceSessionState>()((set, get) => ({
       )
     } catch (e) {
       if (room !== r) return
-      set({ camera: false, error: mediaErrorMessage(e, 'Camera') })
+      set({ camera: false, error: mediaErrorMessage(e, 'camera') })
       r.localParticipant.setCameraEnabled(false).catch(() => {})
     }
     if (room === r) announce()
@@ -473,9 +489,10 @@ function announceLeft(): void {
 // The server forgets voice state when our socket drops; re-announce after every (re)connect.
 onConnected(() => announce())
 
-// Surface every new voice error as a toast as well (the message stays in `useVoice().error`).
+// Surface every new voice error as a toast as well (the message stays in `useVoice().error`), except when voice
+// itself failed (status 'error'): the sidebar's voice panel already shows that one until it's dismissed.
 useVoice.subscribe((s, prev) => {
-  if (s.error && s.error !== prev.error) toast(s.error, 'error')
+  if (s.error && s.error !== prev.error && s.status !== 'error') toast(s.error, 'error')
 })
 
 // ---------------------------------------------------------------------------------------------
@@ -613,23 +630,22 @@ function wireRoom(r: Room): void {
     })
     .on(RoomEvent.MediaDevicesError, (e, kind) => {
       if (room !== r) return
-      const what = kind === 'videoinput' ? 'Camera' : kind === 'audiooutput' ? 'Speaker' : 'Microphone'
-      useVoice.setState({ error: mediaErrorMessage(e, what) })
+      useVoice.setState({ error: mediaErrorMessage(e, mediaKindOf(kind)) })
     })
 }
 
 function disconnectReasonText(reason: DisconnectReason | undefined): string {
   switch (reason) {
     case DisconnectReason.DUPLICATE_IDENTITY:
-      return 'You joined voice from another device'
+      return t('You joined voice from another device')
     case DisconnectReason.PARTICIPANT_REMOVED:
-      return 'You were removed from the voice channel'
+      return t('You were removed from the voice channel')
     case DisconnectReason.ROOM_DELETED:
-      return 'The voice channel was closed'
+      return t('The voice channel was closed')
     case DisconnectReason.SERVER_SHUTDOWN:
-      return 'The voice server shut down'
+      return t('The voice server shut down')
     default:
-      return 'Lost connection to the voice server'
+      return t('Lost connection to the voice server')
   }
 }
 
@@ -1048,7 +1064,7 @@ async function publishMic(r: Room): Promise<void> {
       if (!track && t instanceof LocalAudioTrack) track = t
       else t.stop()
     }
-    if (!track) throw new Error('no audio track was captured')
+    if (!track) throw new Error(t('no audio track was captured'))
     if (room !== r) {
       track.stop()
       return
@@ -1068,7 +1084,7 @@ async function publishMic(r: Room): Promise<void> {
   } catch (e) {
     track?.stop()
     if (room !== r) return
-    useVoice.setState({ muted: true, error: mediaErrorMessage(e, 'Microphone') })
+    useVoice.setState({ muted: true, error: mediaErrorMessage(e, 'microphone') })
     announce()
   }
 }
@@ -1182,7 +1198,7 @@ async function applyNoiseMode(track: LocalAudioTrack, r: Room): Promise<void> {
     }
   } catch (e) {
     console.warn('[voice] applying noise suppression failed', e)
-    if (room === r) useVoice.setState({ error: mediaErrorMessage(e, 'Microphone') })
+    if (room === r) useVoice.setState({ error: mediaErrorMessage(e, 'microphone') })
   } finally {
     // Future captures (e.g. a republish via createTracks) start with the same processing.
     const defaults = r.options.audioCaptureDefaults
@@ -1234,8 +1250,7 @@ export async function setPreferredDevice(kind: DeviceKind, deviceId: string | nu
       await r.switchActiveDevice(kind, deviceId ?? 'default')
     }
   } catch (e) {
-    const what = kind === 'videoinput' ? 'Camera' : kind === 'audiooutput' ? 'Speaker' : 'Microphone'
-    useVoice.setState({ error: mediaErrorMessage(e, what) })
+    useVoice.setState({ error: mediaErrorMessage(e, mediaKindOf(kind)) })
   }
 }
 
@@ -1375,7 +1390,7 @@ async function startChromiumShare(r: Room, opts: StartShareOptions, preset: Shar
     if (bridge) await bridge.capture.selectSource(opts.sourceId, withAudio)
     stream = await navigator.mediaDevices.getDisplayMedia(displayMediaOptions(preset, withAudio, !bridge))
   } catch (e) {
-    useVoice.setState({ shareStarting: false, ...(isUserCancel(e) ? {} : { error: mediaErrorMessage(e, 'Screen share') }) })
+    useVoice.setState({ shareStarting: false, ...(isUserCancel(e) ? {} : { error: mediaErrorMessage(e, 'share') }) })
     return
   }
   if (room !== r) {
@@ -1392,7 +1407,7 @@ async function startChromiumShare(r: Room, opts: StartShareOptions, preset: Shar
   const videoMst = stream.getVideoTracks()[0]
   if (!videoMst) {
     stream.getTracks().forEach((t) => t.stop())
-    useVoice.setState({ shareStarting: false, error: 'Screen share: no video track was captured' })
+    useVoice.setState({ shareStarting: false, error: t('Screen share: no video track was captured') })
     return
   }
   // Encoder hint: 'motion' keeps frame rate for games, 'detail' keeps text crisp.
@@ -1412,7 +1427,7 @@ async function startChromiumShare(r: Room, opts: StartShareOptions, preset: Shar
   } catch (e) {
     if (room !== r || share?.video !== video) return // left or stopped meanwhile
     await stopShareInternal(false)
-    useVoice.setState({ shareStarting: false, error: `Screen share: ${errorMessage(e, 'publishing failed')}` })
+    useVoice.setState({ shareStarting: false, error: t('Screen share: {error}', { error: errorMessage(e, t('publishing failed')) }) })
     return
   }
   if (share?.video !== video) {
@@ -1434,7 +1449,7 @@ async function startChromiumShare(r: Room, opts: StartShareOptions, preset: Shar
     } catch (e) {
       // Keep the video going; the stream is just silent.
       console.warn('[voice] stream audio publish failed', e)
-      useVoice.setState({ error: `Stream audio: ${errorMessage(e, 'publishing failed')}` })
+      useVoice.setState({ error: t('Stream audio: {error}', { error: errorMessage(e, t('publishing failed')) }) })
       audio.stop()
       if (share?.video === video) share.audio = null
     }
@@ -1518,7 +1533,7 @@ export async function restartLastShare(): Promise<boolean> {
   await useVoice
     .getState()
     .startShare({ sourceId: src.id, presetId: last.presetId, withAudio: last.withAudio, hideNexo: last.hideNexo ?? true })
-  if (useVoice.getState().sharing) toast(`Streaming ${src.name}`, 'success')
+  if (useVoice.getState().sharing) toast(t('Streaming {name}', { name: src.name }), 'success')
   return true
 }
 
@@ -1790,9 +1805,9 @@ let emuStartSeq = 0
  */
 export async function startEmulatorStream(source: MediaStream): Promise<void> {
   const r = room
-  if (!r) throw new Error('Join the voice channel to stream the game')
+  if (!r) throw new Error(t('Join the voice channel to stream the game'))
   const srcVideo = source.getVideoTracks().find((t) => t.readyState === 'live')
-  if (!srcVideo) throw new Error('The game has no picture to stream')
+  if (!srcVideo) throw new Error(t('The game has no picture to stream'))
   const srcAudio = source.getAudioTracks().find((t) => t.readyState === 'live') ?? null
   const seq = ++emuStartSeq
 
@@ -1801,7 +1816,7 @@ export async function startEmulatorStream(source: MediaStream): Promise<void> {
     if (await swapEmulatorSource(cur, srcVideo, srcAudio)) return
   }
   if (share || nativeShareActive() || useVoice.getState().shareStarting) await stopShareInternal(false)
-  if (room !== r) throw new Error('Left the voice channel')
+  if (room !== r) throw new Error(t('Left the voice channel'))
   if (seq !== emuStartSeq) return // stopped (or restarted) meanwhile
 
   const sourceClone = srcVideo.clone()
@@ -1832,7 +1847,7 @@ export async function startEmulatorStream(source: MediaStream): Promise<void> {
   } catch (e) {
     if (room !== r || share?.video !== video) return
     await stopShareInternal(false)
-    throw new Error(`Couldn't stream the game: ${errorMessage(e, 'publishing failed')}`)
+    throw new Error(t("Couldn't stream the game: {error}", { error: errorMessage(e, t('publishing failed')) }))
   }
   if (share?.video !== video) {
     await r.localParticipant.unpublishTrack(video, true).catch(() => undefined)
@@ -1851,7 +1866,7 @@ export async function startEmulatorStream(source: MediaStream): Promise<void> {
     } catch (e) {
       // Keep the picture going; the game is just silent for viewers.
       console.warn('[voice] emulator audio publish failed', e)
-      toast(`Game sound: ${errorMessage(e, 'publishing failed')}`, 'error')
+      toast(t('Game sound: {error}', { error: errorMessage(e, t('publishing failed')) }), 'error')
       audio.stop()
       if (share?.video === video) share.audio = null
     }

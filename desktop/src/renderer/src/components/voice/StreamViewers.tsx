@@ -4,6 +4,7 @@ import { memo } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import type { VoiceState } from '@shared/protocol'
 import { useApp } from '@renderer/store/app'
+import { formatList, useT } from '@renderer/i18n'
 import { Avatar } from '@renderer/components/Avatar'
 import { EyeIcon } from './icons'
 
@@ -40,13 +41,16 @@ interface Props {
 }
 
 export const StreamViewers = memo(function StreamViewers({ streamerId, variant, showEmpty }: Props) {
+  const t = useT()
   const ids = useStreamViewers(streamerId)
   const users = useApp((s) => s.users)
   if (ids.length === 0) {
-    return variant === 'card' && showEmpty ? <span className="vx-viewers is-card is-empty">No one is watching yet</span> : null
+    return variant === 'card' && showEmpty ? (
+      <span className="vx-viewers is-card is-empty">{t('No one is watching yet')}</span>
+    ) : null
   }
-  const names = ids.map((id) => users[id]?.name ?? 'Someone')
-  const label = `${ids.length} watching: ${names.join(', ')}`
+  const names = ids.map((id) => users[id]?.name ?? t('Someone'))
+  const label = t('{count} watching: {names}', { count: ids.length, names: formatList(names) })
   const faces = ids.slice(0, MAX_FACES)
   const size = variant === 'card' ? 22 : 18
   return (

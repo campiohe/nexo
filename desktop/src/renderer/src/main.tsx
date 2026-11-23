@@ -1,7 +1,10 @@
-// First: sets <html data-theme / data-density> from the saved choice before anything paints (lib/appearance.ts).
+// First: sets <html data-theme / data-density> from the saved choice before anything paints (lib/appearance.ts),
+// and <html lang> from the language choice (lib/locale.ts, which also tells main the language for the tray menu).
 import { installAppearance } from './lib/appearance'
+import './lib/locale'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
+import '@fontsource-variable/figtree'
 import './styles/tokens.css'
 import './styles/app.css'
 import './styles/chat.css'

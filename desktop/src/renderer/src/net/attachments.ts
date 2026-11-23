@@ -8,10 +8,12 @@ import { useApp } from '../store/app'
 import { settings } from '../store/settings'
 import { prepareImage } from '../lib/imageEncode'
 import { errorMessage, toast } from '../lib/toast'
+import { msg, t } from '../i18n'
 
 const UPLOAD_TIMEOUT_MS = 5 * 60_000
 const PROBE_TIMEOUT_MS = 5000
-export const UNSUPPORTED_SERVER = "This server doesn't support images yet. Ask the host to update."
+/** A message key: thrown and shown as t(UNSUPPORTED_SERVER). */
+export const UNSUPPORTED_SERVER = msg("This server doesn't support images yet. Ask the host to update.")
 
 /** `${serverUrl}/attachments/<id>`: public, cached forever (the id names immutable content). */
 export function attachmentUrl(serverUrl: string | null | undefined, id: string): string | null {
@@ -42,9 +44,9 @@ async function lacksImageSupport(serverUrl: string): Promise<boolean> {
 /** POST the image with upload progress (fetch can't report it, so this uses XHR). */
 async function upload(blob: Blob, onProgress: (fraction: number) => void, signal: AbortSignal): Promise<Attachment> {
   const serverUrl = useApp.getState().serverUrl
-  if (!serverUrl) throw new Error('Not connected to a server')
+  if (!serverUrl) throw new Error(t('Not connected to a server'))
   const token = await settings.getToken(serverUrl)
-  if (!token) throw new Error("This device isn't signed in to the server")
+  if (!token) throw new Error(t("This device isn't signed in to the server"))
 
   const xhr = new XMLHttpRequest()
   const done = new Promise<void>((resolve, reject) => {
@@ -53,7 +55,7 @@ async function upload(blob: Blob, onProgress: (fraction: number) => void, signal
     }
     xhr.onload = () => resolve()
     xhr.onerror = () => reject(new Error('network'))
-    xhr.ontimeout = () => reject(new Error('The upload took too long'))
+    xhr.ontimeout = () => reject(new Error(t('The upload took too long')))
     xhr.onabort = () => reject(new DOMException('Upload cancelled', 'AbortError'))
   })
   signal.addEventListener('abort', () => xhr.abort(), { once: true })
@@ -68,7 +70,7 @@ async function upload(blob: Blob, onProgress: (fraction: number) => void, signal
     await done
   } catch (err) {
     if (err instanceof Error && err.message === 'network') {
-      throw new Error((await lacksImageSupport(serverUrl)) ? UNSUPPORTED_SERVER : `Can't reach the server at ${serverUrl}`)
+      throw new Error((await lacksImageSupport(serverUrl)) ? t(UNSUPPORTED_SERVER) : t("Can't reach the server at {url}", { url: serverUrl }))
     }
     throw err
   }
@@ -82,11 +84,11 @@ async function upload(blob: Blob, onProgress: (fraction: number) => void, signal
   if (xhr.status < 200 || xhr.status >= 300) {
     const error = data && typeof data === 'object' && 'error' in data && typeof data.error === 'string' ? data.error : null
     if (error) throw new Error(error)
-    if (xhr.status === 404) throw new Error(UNSUPPORTED_SERVER)
-    throw new Error(`The server rejected the image (HTTP ${xhr.status})`)
+    if (xhr.status === 404) throw new Error(t(UNSUPPORTED_SERVER))
+    throw new Error(t('The server rejected the image (HTTP {status})', { status: String(xhr.status) }))
   }
   const attachment = data && typeof data === 'object' && 'attachment' in data ? (data.attachment as Attachment) : null
-  if (!attachment || typeof attachment.id !== 'string') throw new Error('Invalid response from the server')
+  if (!attachment || typeof attachment.id !== 'string') throw new Error(t('Invalid response from the server'))
   return attachment
 }
 
@@ -164,7 +166,14 @@ function start(channelId: string, key: string) {
       if (abort.signal.aborted) return
       const message = errorMessage(err)
       patch(channelId, key, { status: 'error', error: message })
-      toast(message === UNSUPPORTED_SERVER ? message : `Couldn't upload ${job.file.name || 'the image'}: ${message}`, 'error')
+      toast(
+        message === t(UNSUPPORTED_SERVER)
+          ? message
+          : job.file.name
+            ? t("Couldn't upload {name}: {error}", { name: job.file.name, error: message })
+            : t("Couldn't upload the image: {error}", { error: message }),
+        'error',
+      )
     }
   })()
 }
@@ -174,7 +183,9 @@ export function addImages(channelId: string, files: File[]) {
   if (files.length === 0) return
   const current = listFor(channelId)
   const room = MAX_ATTACHMENTS_PER_MESSAGE - current.length
-  if (room <= 0 || files.length > room) toast(`You can attach up to ${MAX_ATTACHMENTS_PER_MESSAGE} images per message`, 'error')
+  if (room <= 0 || files.length > room) {
+    toast(t('You can attach up to {count} images per message', { count: MAX_ATTACHMENTS_PER_MESSAGE }), 'error')
+  }
   const accepted = files.slice(0, Math.max(0, room))
   if (accepted.length === 0) return
   const added: PendingImage[] = accepted.map((file) => {
@@ -182,7 +193,7 @@ export function addImages(channelId: string, files: File[]) {
     jobs.set(key, { file, abort: new AbortController(), promise: Promise.resolve() })
     return {
       key,
-      name: file.name || 'image',
+      name: file.name || t('image'),
       previewUrl: URL.createObjectURL(file),
       status: 'uploading',
       progress: 0,

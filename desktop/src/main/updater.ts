@@ -13,6 +13,7 @@
 import { app, BrowserWindow, ipcMain, autoUpdater as nativeUpdater, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron'
 import { autoUpdater, type ProgressInfo, type UpdateInfo } from 'electron-updater'
 import { IPC, type UpdateState } from '../preload/api'
+import { onLanguageChange, tm } from './i18n'
 import { platform } from './platform'
 import { isAppUrl } from './security'
 
@@ -41,9 +42,9 @@ const testBuild = new RegExp(`^\\d+\\.\\d+\\.\\d+-${TEST_CHANNEL}(?:[.+]|$)`).te
 let state: UpdateState = { status: 'idle', currentVersion: app.getVersion(), canAutoInstall: false, ...(testBuild ? { testBuild } : {}) }
 
 function unsupportedReason(): string | null {
-  if (!app.isPackaged) return 'Updates are disabled in development builds.'
+  if (!app.isPackaged) return tm('Updates are disabled in development builds.')
   if (platform === 'linux' && !process.env.APPIMAGE) {
-    return 'Automatic updates only work in the AppImage. Download new versions from the releases page.'
+    return tm('Automatic updates only work in the AppImage. Download new versions from the releases page.')
   }
   return null
 }
@@ -75,21 +76,21 @@ function describeError(err: unknown): string {
   const e = (err ?? {}) as { code?: unknown; statusCode?: unknown; message?: unknown }
   const code = typeof e.code === 'string' ? e.code : ''
   const message = typeof e.message === 'string' ? e.message : String(err)
-  if (code === 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND') return 'The latest release has no update information yet.'
+  if (code === 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND') return tm('The latest release has no update information yet.')
   if (code === 'ERR_UPDATER_NO_PUBLISHED_VERSIONS' || code === 'ERR_UPDATER_LATEST_VERSION_NOT_FOUND') {
-    return 'No release found on GitHub.'
+    return tm('No release found on GitHub.')
   }
   if (e.statusCode === 403 || e.statusCode === 429 || /\b(403|429)\b/.test(message.split('\n')[0])) {
-    return 'GitHub is rate-limiting update checks. Try again later.'
+    return tm('GitHub is rate-limiting update checks. Try again later.')
   }
   if (
     /net::ERR_(INTERNET_DISCONNECTED|NAME_NOT_RESOLVED|NETWORK_CHANGED|CONNECTION_|TIMED_OUT|ADDRESS_UNREACHABLE|PROXY_)/.test(message) ||
     /\b(ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT)\b/.test(message)
   ) {
-    return "Couldn't reach GitHub. Check your internet connection."
+    return tm("Couldn't reach GitHub. Check your internet connection.")
   }
   const line = message.split('\n')[0].trim()
-  return line.length > 160 ? `${line.slice(0, 159)}…` : line || 'Update check failed.'
+  return line.length > 160 ? `${line.slice(0, 159)}…` : line || tm('Update check failed.')
 }
 
 function onError(err: unknown): void {
@@ -213,6 +214,11 @@ export function installUpdater(d: UpdaterDeps): void {
   if (reason) {
     log.info(`disabled: ${reason}`)
     setState({ ...base(), status: 'unsupported', reason })
+    // The reason is shown in Settings → App: follow the app language.
+    onLanguageChange(() => {
+      const next = unsupportedReason()
+      if (state.status === 'unsupported' && next) setState({ ...state, reason: next })
+    })
     return
   }
 

@@ -56,7 +56,7 @@ export interface BackupResult {
 /**
  * Writes a consistent copy of nexo.db with `VACUUM INTO` (safe while the server runs: it reads a snapshot).
  * `file` defaults to `<data>/backups/<defaultBackupName()>`; relative paths resolve against the current
- * directory. Refuses to overwrite. Note: pictures (attachments/, avatars/) are files next to the DB, not in it.
+ * directory. Refuses to overwrite. Note: pictures (attachments/, avatars/, banners/) are files next to the DB, not in it.
  */
 export function backupDatabase(dataDir: string, file?: string, now = new Date()): BackupResult {
   const target = file ? path.resolve(file) : path.join(dataLayout(dataDir).backupsDir, defaultBackupName(now))

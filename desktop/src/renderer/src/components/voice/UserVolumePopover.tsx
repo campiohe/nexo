@@ -10,6 +10,7 @@ import { createPortal } from 'react-dom'
 import { useApp } from '@renderer/store/app'
 import { canMoveMember } from '@renderer/lib/permissions'
 import { toast } from '@renderer/lib/toast'
+import { useT } from '@renderer/i18n'
 import { setUserMuted, setUserVolume, useUserVolume } from '../../voice/session'
 import { USER_VOLUME_MAX } from '../../voice/userVolumes'
 import { useParticipants } from '../../voice/participants'
@@ -31,13 +32,14 @@ export { UserVolumePopover as VoiceUserCard }
 const MARGIN = 8
 
 export function UserVolumePopover({ userId, anchor, onClose }: UserVolumePopoverProps) {
+  const t = useT()
   const ref = useRef<HTMLDivElement>(null)
   const closeRef = useRef(onClose)
   closeRef.current = onClose
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null)
   const userName = useApp((s) => s.users[userId]?.name)
   const participantName = useParticipants((s) => s.list.find((p) => p.identity === userId)?.name)
-  const name = userName ?? participantName ?? 'User'
+  const name = userName ?? participantName ?? t('User')
   const { volume, muted } = useUserVolume(userId)
   const pct = Math.round(volume * 100)
   const isSelf = useApp((s) => s.me?.id === userId)
@@ -126,7 +128,7 @@ export function UserVolumePopover({ userId, anchor, onClose }: UserVolumePopover
       ref={ref}
       className="vx-uv"
       role="dialog"
-      aria-label={isSelf ? `Options for ${name}` : `Volume for ${name}`}
+      aria-label={isSelf ? t('Options for {name}', { name }) : t('Volume for {name}', { name })}
       style={pos ? { left: pos.left, top: pos.top } : { left: anchor.x, top: anchor.y, visibility: 'hidden' }}
       onContextMenu={(e) => e.preventDefault()}
     >
@@ -134,7 +136,7 @@ export function UserVolumePopover({ userId, anchor, onClose }: UserVolumePopover
         <span className="vx-uv-name" title={name}>
           {name}
         </span>
-        {!isSelf && <span className={`vx-uv-pct ${muted ? 'is-muted' : ''}`}>{muted ? 'Muted' : `${pct}%`}</span>}
+        {!isSelf && <span className={`vx-uv-pct ${muted ? 'is-muted' : ''}`}>{muted ? t('Muted // user volume') : `${pct}%`}</span>}
       </div>
       {!isSelf && (
         <>
@@ -151,7 +153,7 @@ export function UserVolumePopover({ userId, anchor, onClose }: UserVolumePopover
               value={pct}
               disabled={muted}
               onChange={(e) => setUserVolume(userId, Number(e.target.value) / 100)}
-              aria-label={`Volume for ${name}`}
+              aria-label={t('Volume for {name}', { name })}
               aria-valuetext={`${pct}%`}
               style={{ ['--fill' as string]: `${(pct / (USER_VOLUME_MAX * 100)) * 100}%` }}
             />
@@ -159,16 +161,16 @@ export function UserVolumePopover({ userId, anchor, onClose }: UserVolumePopover
               className="vx-btn vx-btn-sm vx-uv-reset"
               onClick={() => setUserVolume(userId, 1)}
               disabled={pct === 100}
-              title="Reset to 100%"
+              title={t('Reset to 100%')}
             >
               100%
             </button>
           </div>
-          {volume > 1 && !muted && <p className="vx-uv-hint">Above 100% boosts their voice; it may distort.</p>}
+          {volume > 1 && !muted && <p className="vx-uv-hint">{t('Above 100% boosts their voice; it may distort.')}</p>}
           <label className="vx-uv-toggle">
             <input type="checkbox" checked={muted} onChange={(e) => setUserMuted(userId, e.target.checked)} />
             <span className="vx-uv-switch" aria-hidden="true" />
-            <span>Mute for me</span>
+            <span>{t('Mute for me')}</span>
           </label>
         </>
       )}
@@ -177,13 +179,13 @@ export function UserVolumePopover({ userId, anchor, onClose }: UserVolumePopover
           {canNudge && (
             <button className="vx-uv-action" onClick={() => void wakeUp()} disabled={pending !== null}>
               <BellIcon size={15} />
-              <span>{pending === 'nudge' ? 'Waking up…' : 'Wake up'}</span>
+              <span>{pending === 'nudge' ? t('Waking up…') : t('Wake up')}</span>
             </button>
           )}
           {moveTargets.length > 0 && (
             <>
               <span className="vx-uv-label" id={`vx-uv-move-${userId}`}>
-                Move to
+                {t('Move to')}
               </span>
               <ul className="vx-uv-channels" aria-labelledby={`vx-uv-move-${userId}`}>
                 {moveTargets.map((c) => (

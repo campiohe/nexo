@@ -17,6 +17,7 @@ import { playVoiceSound } from '../voice/sounds'
 import { avatarUrl } from './avatar'
 import { initials, inkOn } from './colors'
 import { contentToPlain, mentionsUser } from './mentions'
+import { t } from '../i18n'
 
 // ── Preferences ───────────────────────────────────────────────────────────────────────────────────────
 
@@ -131,7 +132,7 @@ export function notifyMessage(m: Message): void {
 function messageText(m: Message, users: Record<string, User>): string {
   const text = contentToPlain(m.content, users).replace(/\s+/g, ' ').trim()
   const images = m.attachments?.length ?? 0
-  const imageTag = images === 0 ? '' : images === 1 ? '[image]' : `[${images} images]`
+  const imageTag = images === 0 ? '' : t('{count, plural, one {[image]} other {[# images]}}', { count: images })
   const full = [text, imageTag].filter(Boolean).join(' ')
   return full.length > BODY_MAX ? `${full.slice(0, BODY_MAX - 1).trimEnd()}…` : full
 }
@@ -146,7 +147,7 @@ async function showNow(channelId: string): Promise<void> {
   const channel = channels.find((c) => c.id === channelId)
   if (!channel) return
   const author = users[p.latest.userId]
-  const name = author?.name ?? 'Someone'
+  const name = author?.name ?? t('Someone')
   const text = messageText(p.latest, users)
   const { count, mentions } = p
   const icon = author ? await avatarIcon(author) : null
@@ -156,8 +157,13 @@ async function showNow(channelId: string): Promise<void> {
     channelId,
     title:
       count === 1
-        ? `${name} in #${channel.name}`
-        : `${count} ${mentions === count ? 'mentions' : 'new messages'} in #${channel.name}`,
+        ? t('{name} in {channel}', { name, channel: `#${channel.name}` })
+        : mentions === count
+          ? t('{count, plural, one {# mention in {channel}} other {# mentions in {channel}}}', { count, channel: `#${channel.name}` })
+          : t('{count, plural, one {# new message in {channel}} other {# new messages in {channel}}}', {
+              count,
+              channel: `#${channel.name}`,
+            }),
     body: count === 1 ? text : `${name}: ${text}`,
     icon,
   })
@@ -257,11 +263,15 @@ function syncBadge(): void {
   const { count, exact } = totalUnreadMentions(useUnread.getState())
   // From a bootstrap only "at least one" is known per channel: "@" then, like the channel badge.
   const label = count === 0 ? '' : !exact && count === 1 ? '@' : count > 9 ? '9+' : String(count)
-  const key = `${count}|${label}`
+  const key = `${count}|${label}|${t.language}`
   if (key === lastBadge) return
   lastBadge = key
   const description =
-    count === 0 ? '' : `${exact ? '' : 'At least '}${count} unread mention${count === 1 ? '' : 's'}`
+    count === 0
+      ? ''
+      : exact
+        ? t('{count, plural, one {# unread mention} other {# unread mentions}}', { count })
+        : t('{count, plural, one {At least # unread mention} other {At least # unread mentions}}', { count })
   bridge.setBadge({ mentions: count, overlay: count > 0 ? drawOverlay(label) : null, description })
 }
 

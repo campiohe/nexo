@@ -5,7 +5,8 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { saveNoiseMode, saveSoundboardPrefs, saveSoundEffects, useDevicePrefs, type DeviceKind } from '../../voice/devices'
 import { MusicSettingsSection } from './MusicSettings'
 import { effectiveNoiseMode, NOISE_MODES, noiseConstraints, RnnoiseGraph, useNoiseStatus } from '../../voice/noise'
-import { actionLabel, findConflict } from '../../lib/keybinds'
+import { actionLabel, findConflict, type HotkeyAction } from '../../lib/keybinds'
+import { msg, useT, type Translate } from '../../i18n'
 import { allKeybinds, PTT_RELEASE_DELAY_MAX, setInputPrefs, useInputPrefs, type InputMode } from '../../voice/prefs'
 import { cancelCapture, captureBinding, usePtt } from '../../voice/ptt'
 import { getLocalMicTrack, setPreferredDevice, useMicTrackRev, useVoice } from '../../voice/session'
@@ -42,13 +43,17 @@ async function listDevices(): Promise<MediaDeviceInfo[]> {
   return devices
 }
 
-function deviceLabel(d: MediaDeviceInfo, index: number): string {
+function deviceLabel(t: Translate, d: MediaDeviceInfo, index: number): string {
   if (d.label) return d.label
-  const kind = d.kind === 'audioinput' ? 'Microphone' : d.kind === 'audiooutput' ? 'Speaker' : 'Camera'
-  return `${kind} ${index + 1}`
+  // n as a string: a plain ordinal, not a formatted number.
+  return t('{kind, select, audioinput {Microphone {n}} audiooutput {Speaker {n}} other {Camera {n}}}', {
+    kind: d.kind,
+    n: String(index + 1),
+  })
 }
 
 export function DeviceSettings() {
+  const t = useT()
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([])
   const [loaded, setLoaded] = useState(false)
   const prefs = useDevicePrefs()
@@ -77,7 +82,7 @@ export function DeviceSettings() {
     <div className="vx-devices">
       <DeviceSelect
         icon={<MicIcon size={16} />}
-        label="Microphone"
+        label={t('Microphone')}
         kind="audioinput"
         devices={ofKind('audioinput')}
         value={prefs.audioinput}
@@ -89,12 +94,12 @@ export function DeviceSettings() {
 
       <DeviceSelect
         icon={<SpeakerIcon size={16} />}
-        label="Speaker"
+        label={t('Speaker')}
         kind="audiooutput"
         devices={ofKind('audiooutput')}
         value={prefs.audiooutput}
         loaded={loaded}
-        disabledReason={supportsSinkId ? undefined : 'Output selection is not supported here; the system default is used.'}
+        disabledReason={supportsSinkId ? undefined : t('Not supported here. The system default is used.')}
       />
       <SpeakerTest deviceId={prefs.audiooutput} />
       <SoundEffectsToggle />
@@ -103,7 +108,7 @@ export function DeviceSettings() {
 
       <DeviceSelect
         icon={<CameraIcon size={16} />}
-        label="Camera"
+        label={t('Camera')}
         kind="videoinput"
         devices={ofKind('videoinput')}
         value={prefs.videoinput}
@@ -124,6 +129,7 @@ interface DeviceSelectProps {
 }
 
 function DeviceSelect({ icon, label, kind, devices, value, loaded, disabledReason }: DeviceSelectProps) {
+  const t = useT()
   const id = `vx-dev-${kind}`
   // A saved device that's currently unplugged stays visible so the choice isn't silently lost.
   const missing = value && !devices.some((d) => d.deviceId === value)
@@ -139,17 +145,21 @@ function DeviceSelect({ icon, label, kind, devices, value, loaded, disabledReaso
         disabled={!!disabledReason}
         onChange={(e) => void setPreferredDevice(kind, e.target.value || null)}
       >
-        <option value="">System default</option>
+        <option value="">{t('System default')}</option>
         {devices.map((d, i) => (
           <option key={d.deviceId} value={d.deviceId}>
-            {deviceLabel(d, i)}
+            {deviceLabel(t, d, i)}
           </option>
         ))}
-        {missing && <option value={value}>Unavailable device</option>}
+        {missing && <option value={value}>{t('Unavailable device')}</option>}
       </select>
       {disabledReason && <p className="vx-field-hint">{disabledReason}</p>}
       {!disabledReason && loaded && devices.length === 0 && (
-        <p className="vx-field-hint">No {label.toLowerCase()} found.</p>
+        <p className="vx-field-hint">
+          {t('{kind, select, audioinput {No microphone found.} audiooutput {No speaker found.} other {No camera found.}}', {
+            kind,
+          })}
+        </p>
       )}
     </div>
   )
@@ -157,13 +167,14 @@ function DeviceSelect({ icon, label, kind, devices, value, loaded, disabledReaso
 
 /** Off / Standard / Enhanced (RNNoise). Applies live to the call's mic and to the mic test below. */
 function NoiseSuppressionSection() {
+  const t = useT()
   const mode = useDevicePrefs((s) => s.noiseMode)
   const failed = useNoiseStatus((s) => s.enhanced === 'failed')
   const active = NOISE_MODES.find((m) => m.id === mode) ?? NOISE_MODES[2]
   return (
     <div className="vx-field">
       <span className="vx-field-label" id="vx-noise-label">
-        Noise suppression
+        {t('Noise suppression')}
       </span>
       <div className="vx-seg" role="radiogroup" aria-labelledby="vx-noise-label">
         {NOISE_MODES.map((m) => (
@@ -175,15 +186,15 @@ function NoiseSuppressionSection() {
             className={`vx-seg-btn ${mode === m.id ? 'is-active' : ''}`}
             onClick={() => saveNoiseMode(m.id)}
           >
-            {m.label}
+            {t(m.label)}
           </button>
         ))}
       </div>
-      <p className="vx-field-hint">{active.hint}</p>
+      <p className="vx-field-hint">{t(active.hint)}</p>
       {failed && mode === 'enhanced' && (
         <p className="vx-warn-box" role="status">
           <AlertIcon size={15} />
-          <span>Enhanced couldn’t start on this computer, so Standard is used. Restart Nexo to try again.</span>
+          <span>{t('Enhanced couldn’t start on this computer, so Standard is used. Restart Nexo to try again.')}</span>
         </p>
       )}
     </div>
@@ -196,6 +207,7 @@ function NoiseSuppressionSection() {
  * captures the mic with the same processing chain as the call (noise mode constraints + RNNoise).
  */
 function MicMeter({ deviceId, outputId }: { deviceId: string | null; outputId: string | null }) {
+  const t = useT()
   const barRef = useRef<HTMLDivElement>(null)
   const inVoice = useVoice((s) => s.status === 'connected' || s.status === 'reconnecting')
   const muted = useVoice((s) => s.muted || s.deafened)
@@ -206,6 +218,7 @@ function MicMeter({ deviceId, outputId }: { deviceId: string | null; outputId: s
   const enhancedFailed = useNoiseStatus((s) => s.enhanced === 'failed')
   const micRev = useMicTrackRev((s) => s.rev)
   const [listening, setListening] = useState(false)
+  /** Message key (msg): translated when shown. */
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -229,7 +242,12 @@ function MicMeter({ deviceId, outputId }: { deviceId: string | null; outputId: s
             },
           })
         } catch (e) {
-          if (!cancelled) setError(e instanceof DOMException && e.name === 'NotAllowedError' ? 'Microphone permission denied' : 'Could not open the microphone')
+          if (!cancelled)
+            setError(
+              e instanceof DOMException && e.name === 'NotAllowedError'
+                ? msg('Microphone permission denied')
+                : msg('Could not open the microphone'),
+            )
           return
         }
         if (cancelled) {
@@ -307,7 +325,7 @@ function MicMeter({ deviceId, outputId }: { deviceId: string | null; outputId: s
 
   return (
     <div className="vx-meter-wrap">
-      <div className="vx-meter" role="meter" aria-label="Microphone level">
+      <div className="vx-meter" role="meter" aria-label={t('Microphone level')}>
         <div className="vx-meter-fill" ref={barRef} />
       </div>
       <div className="vx-keybind-row">
@@ -317,10 +335,10 @@ function MicMeter({ deviceId, outputId }: { deviceId: string | null; outputId: s
           aria-pressed={listening}
           onClick={() => setListening((v) => !v)}
         >
-          {listening ? 'Stop listening' : 'Hear yourself'}
+          {listening ? t('Stop listening') : t('Hear yourself')}
         </button>
         <p className="vx-field-hint">
-          {error ?? (listening ? 'Use headphones to avoid feedback.' : 'Speak to test your microphone.')}
+          {error ? t(error) : listening ? t('Use headphones to avoid feedback.') : t('Speak to test your microphone.')}
         </p>
       </div>
     </div>
@@ -329,6 +347,7 @@ function MicMeter({ deviceId, outputId }: { deviceId: string | null; outputId: s
 
 /** Short two-tone chime through the selected output device. */
 function SpeakerTest({ deviceId }: { deviceId: string | null }) {
+  const t = useT()
   const [playing, setPlaying] = useState(false)
   const play = async () => {
     if (playing) return
@@ -367,7 +386,7 @@ function SpeakerTest({ deviceId }: { deviceId: string | null }) {
   }
   return (
     <button className="vx-btn vx-btn-sm vx-speaker-test" onClick={() => void play()} disabled={playing}>
-      {playing ? 'Playing…' : 'Play test sound'}
+      {playing ? t('Playing…') : t('Play test sound')}
     </button>
   )
 }
@@ -377,15 +396,14 @@ function SpeakerTest({ deviceId }: { deviceId: string | null }) {
  * played on the speaker above.
  */
 function SoundEffectsToggle() {
+  const t = useT()
   const on = useDevicePrefs((s) => s.soundEffects)
   return (
     <label className="toggle-row">
       <span className="toggle-text">
-        <span>Sound effects</span>
+        <span>{t('Sound effects')}</span>
         <span className="muted small">
-          Short sounds when you mute, unmute, deafen or undeafen (also from keybinds while a game has focus), when
-          someone joins or leaves your voice channel, when someone wakes you up while you're muted or deafened,
-          and when someone asks to sign in on a new device. Only you hear them.
+          {t('Mute, deafen, joins, leaves, wake-ups and sign-in requests. Only you hear them.')}
         </span>
       </span>
       <input
@@ -405,6 +423,7 @@ function SoundEffectsToggle() {
 
 /** Soundboard clips played in your voice channel (voice/soundboard.ts): on / off and their own volume. */
 function SoundboardSection() {
+  const t = useT()
   const on = useDevicePrefs((s) => s.soundboard)
   const volume = useDevicePrefs((s) => s.soundboardVolume)
   const pct = Math.round(volume * 100)
@@ -412,11 +431,8 @@ function SoundboardSection() {
     <>
       <label className="toggle-row">
         <span className="toggle-text">
-          <span>Play soundboard sounds</span>
-          <span className="muted small">
-            Hear the soundboard clips people play in your voice channel. Not while you're deafened, and never from
-            people you muted for yourself.
-          </span>
+          <span>{t('Play soundboard sounds')}</span>
+          <span className="muted small">{t('Not while deafened, and never from people you muted.')}</span>
         </span>
         <input
           type="checkbox"
@@ -428,7 +444,7 @@ function SoundboardSection() {
       </label>
       <div className="vx-field">
         <label className="vx-field-label" htmlFor="vx-soundboard-volume">
-          Soundboard volume
+          {t('Soundboard volume')}
         </label>
         <div className="vx-range-row">
           <input
@@ -450,20 +466,23 @@ function SoundboardSection() {
   )
 }
 
+// Labels are message keys (msg): translated where shown.
 const MODES: { id: InputMode; label: string }[] = [
-  { id: 'voice', label: 'Voice activity' },
-  { id: 'ptt', label: 'Push to talk' },
+  { id: 'voice', label: msg('Voice activity') },
+  { id: 'ptt', label: msg('Push to talk') },
 ]
 
 /** Voice activity vs push to talk, the PTT keybind and its release delay. */
 function InputModeSection() {
+  const t = useT()
   const mode = useInputPrefs((s) => s.inputMode)
   const binding = useInputPrefs((s) => s.pttBinding)
   const delay = useInputPrefs((s) => s.pttReleaseDelayMs)
   const status = usePtt((s) => s.status)
   const capturing = usePtt((s) => s.capturing)
   const held = usePtt((s) => s.open)
-  const [conflict, setConflict] = useState<string | null>(null)
+  /** The PTT key that was refused, and the action already using it (translated when shown). */
+  const [conflict, setConflict] = useState<{ combo: string; usedBy: HotkeyAction } | null>(null)
 
   // Leaving the settings mid-recording cancels it.
   useEffect(() => () => {
@@ -480,7 +499,7 @@ function InputModeSection() {
     if (!b) return
     const other = findConflict(allKeybinds(), 'ptt', b)
     if (other) {
-      setConflict(`${b.label} is already used by ${actionLabel(other)}. Change it in Settings → Keybinds first.`)
+      setConflict({ combo: b.label, usedBy: other })
       return
     }
     setInputPrefs({ pttBinding: b })
@@ -488,14 +507,16 @@ function InputModeSection() {
 
   const warning =
     mode === 'ptt' && binding && status && !status.active
-      ? (status.reason ?? 'Global push to talk is not running.') + ' Push to talk still works while Nexo is focused.'
+      ? t('{reason} Push to talk still works while Nexo is focused.', {
+          reason: status.reason ?? t('Global push to talk is not running.'),
+        })
       : null
 
   return (
     <div className="vx-input-mode">
       <div className="vx-field">
         <span className="vx-field-label" id="vx-input-mode-label">
-          Input mode
+          {t('Input mode')}
         </span>
         <div className="vx-seg" role="radiogroup" aria-labelledby="vx-input-mode-label">
           {MODES.map((m) => (
@@ -507,46 +528,49 @@ function InputModeSection() {
               className={`vx-seg-btn ${mode === m.id ? 'is-active' : ''}`}
               onClick={() => setInputPrefs({ inputMode: m.id })}
             >
-              {m.label}
+              {t(m.label)}
             </button>
           ))}
         </div>
         <p className="vx-field-hint">
           {mode === 'ptt'
-            ? 'Your mic is only sent while you hold the key, even when another app (like a game) has focus.'
-            : 'Your mic is sent whenever you are unmuted.'}
+            ? t('Your mic is only sent while you hold the key, even in a game.')
+            : t('Your mic is sent whenever you are unmuted.')}
         </p>
       </div>
 
       {mode === 'ptt' && (
         <>
           <div className="vx-field">
-            <span className="vx-field-label">Push to talk key</span>
+            <span className="vx-field-label">{t('Push to talk key')}</span>
             <div className="vx-keybind-row">
               <button
                 type="button"
                 className={`vx-keybind ${capturing ? 'is-recording' : binding ? '' : 'is-empty'}`}
                 onClick={() => void record()}
-                aria-label={capturing ? 'Recording: press a key or mouse button, Esc to cancel' : 'Change push to talk key'}
+                aria-label={capturing ? t('Recording: press a key or mouse button, Esc to cancel') : t('Change push to talk key')}
               >
-                {capturing ? 'Press any key or mouse button…' : (binding?.label ?? 'Click to set a key')}
+                {capturing ? t('Press any key or mouse button…') : (binding?.label ?? t('Click to set a key'))}
               </button>
-              {held && !capturing && <span className="vx-ptt-badge is-live">TALKING</span>}
+              {held && !capturing && <span className="vx-ptt-badge is-live">{t('TALKING')}</span>}
             </div>
             <p className="vx-field-hint">
               {capturing
-                ? 'Esc cancels. Left and right click can’t be used.'
+                ? t('Esc cancels. Left and right click can’t be used.')
                 : conflict
-                  ? conflict
+                  ? t('{combo} is already used by {action}. Change it in Settings → Keybinds first.', {
+                      combo: conflict.combo,
+                      action: t(actionLabel(conflict.usedBy)),
+                    })
                   : binding
-                    ? 'Click to change. Mouse side buttons work too.'
-                    : 'Choose the key or mouse button to hold while talking.'}
+                    ? t('Click to change. Mouse side buttons work too.')
+                    : t('Choose the key or mouse button to hold while talking.')}
             </p>
           </div>
 
           <div className="vx-field">
             <label className="vx-field-label" htmlFor="vx-ptt-delay">
-              Release delay
+              {t('Release delay')}
             </label>
             <div className="vx-range-row">
               <input
@@ -562,7 +586,9 @@ function InputModeSection() {
               />
               <span className="vx-range-value">{delay} ms</span>
             </div>
-            <p className="vx-field-hint">Keeps the mic open briefly after you let go, so word endings aren’t cut off.</p>
+            <p className="vx-field-hint">
+              {t('Keeps the mic open briefly after you let go, so word endings aren’t cut off.')}
+            </p>
           </div>
 
           {warning && (

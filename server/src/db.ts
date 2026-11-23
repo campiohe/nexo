@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto'
 import type { Sound, SoundType } from '../../shared/protocol.ts'
 import type { Attachment, Channel, ChannelType, Message, Reaction, ReplyPreview, Role, User } from '../../shared/protocol.ts'
 import { MAX_REACTIONS_PER_MESSAGE, MESSAGE_PAGE_SIZE, REPLY_PREVIEW_LENGTH } from '../../shared/protocol.ts'
-import type { SearchResult } from '../../shared/protocol.ts'
+import type { BannerPreset, SearchResult } from '../../shared/protocol.ts'
 import type { ServerPlugins } from '../../shared/protocol.ts'
 import { DEFAULT_PLUGINS } from '../../shared/protocol.ts'
 import { MAX_PINS_PER_CHANNEL, MENTION_TOKEN_RE, SEARCH_PAGE_SIZE } from '../../shared/protocol.ts'
@@ -26,7 +26,12 @@ const SCHEMA = `
     -- v0.7 (added by migrate() to older databases): custom status text (NULL = none), and whether the
     -- profile picture is an animated GIF.
     status_text     TEXT NULL,
-    avatar_animated INTEGER NOT NULL DEFAULT 0
+    avatar_animated INTEGER NOT NULL DEFAULT 0,
+    -- v1.3 (added by migrate() to older databases): profile banner. banner = the uploaded image's version token
+    -- (NULL = none), banner_animated = it's a GIF, banner_preset = built-in banner shown without an upload.
+    banner          TEXT NULL,
+    banner_animated INTEGER NOT NULL DEFAULT 0,
+    banner_preset   TEXT NOT NULL DEFAULT 'solid'
   );
 
   CREATE TABLE IF NOT EXISTS channels (
@@ -167,10 +172,15 @@ export interface ReactionsUpdate {
 }
 
 /** A row of the user query (userCols in openDb). */
-interface UserRow extends Omit<User, 'avatarAnimated'> {
+interface UserRow extends Omit<User, 'avatarAnimated' | 'bannerAnimated'> {
   avatarAnimated: number
+  bannerAnimated: number
 }
-const toUser = ({ avatarAnimated, ...u }: UserRow): User => ({ ...u, avatarAnimated: avatarAnimated === 1 })
+const toUser = ({ avatarAnimated, bannerAnimated, ...u }: UserRow): User => ({
+  ...u,
+  avatarAnimated: avatarAnimated === 1,
+  bannerAnimated: bannerAnimated === 1,
+})
 const toUserOpt = (row: unknown): User | undefined => (row ? toUser(row as UserRow) : undefined)
 const toUsers = (rows: unknown[]): User[] => (rows as UserRow[]).map(toUser)
 
@@ -235,6 +245,14 @@ function migrate(db: DatabaseSync): void {
     if (!userCols.has('status_text')) db.exec('ALTER TABLE users ADD COLUMN status_text TEXT NULL')
     if (!userCols.has('avatar_animated')) {
       db.exec('ALTER TABLE users ADD COLUMN avatar_animated INTEGER NOT NULL DEFAULT 0')
+    }
+    // v1.3: profile banners (uploaded image, or a built-in preset).
+    if (!userCols.has('banner')) db.exec('ALTER TABLE users ADD COLUMN banner TEXT NULL')
+    if (!userCols.has('banner_animated')) {
+      db.exec('ALTER TABLE users ADD COLUMN banner_animated INTEGER NOT NULL DEFAULT 0')
+    }
+    if (!userCols.has('banner_preset')) {
+      db.exec("ALTER TABLE users ADD COLUMN banner_preset TEXT NOT NULL DEFAULT 'solid'")
     }
     // v0.6: edits, replies and @everyone (message_mentions and reactions are new tables, created by SCHEMA).
     if (!msgCols.has('edited_at')) db.exec('ALTER TABLE messages ADD COLUMN edited_at INTEGER NULL')
@@ -342,9 +360,10 @@ export function openDb(dataDir: string) {
   db.exec(SCHEMA)
   migrate(db)
 
-  const userCols = 'id, name, color, avatar, role, status_text AS statusText, avatar_animated AS avatarAnimated'
-  const userColsU =
-    'u.id, u.name, u.color, u.avatar, u.role, u.status_text AS statusText, u.avatar_animated AS avatarAnimated'
+  const userCols = `id, name, color, avatar, role, status_text AS statusText, avatar_animated AS avatarAnimated,
+    banner, banner_animated AS bannerAnimated, banner_preset AS bannerPreset`
+  const userColsU = `u.id, u.name, u.color, u.avatar, u.role, u.status_text AS statusText,
+    u.avatar_animated AS avatarAnimated, u.banner, u.banner_animated AS bannerAnimated, u.banner_preset AS bannerPreset`
   const chanCols = 'id, name, type, position'
   // A message row with its reply preview (r = the replied message, NULL when there is none or it was deleted).
   const msgCols = `m.id, m.channel_id AS channelId, m.user_id AS userId, m.content, m.created_at AS createdAt,
@@ -371,6 +390,8 @@ export function openDb(dataDir: string) {
     userSetColor: db.prepare('UPDATE users SET color = ? WHERE id = ?'),
     userSetStatusText: db.prepare('UPDATE users SET status_text = ? WHERE id = ?'),
     userSetAvatar: db.prepare('UPDATE users SET avatar = ?, avatar_animated = ? WHERE id = ?'),
+    userSetBanner: db.prepare('UPDATE users SET banner = ?, banner_animated = ? WHERE id = ?'),
+    userSetBannerPreset: db.prepare('UPDATE users SET banner_preset = ? WHERE id = ?'),
     userSetRole: db.prepare('UPDATE users SET role = ? WHERE id = ?'),
     userOwner: db.prepare(`SELECT ${userCols} FROM users WHERE role = 'owner' ORDER BY created_at LIMIT 1`),
     userDelete: db.prepare('DELETE FROM users WHERE id = ?'),
@@ -741,10 +762,14 @@ export function openDb(dataDir: string) {
      * Changes the given profile fields in one transaction (`statusText` null clears it; the caller validates
      * and normalizes). Undefined if there's no such account.
      */
-    updateProfile(id: string, patch: { color?: string; statusText?: string | null }): User | undefined {
+    updateProfile(
+      id: string,
+      patch: { color?: string; statusText?: string | null; bannerPreset?: BannerPreset },
+    ): User | undefined {
       return transaction(() => {
         if (patch.color !== undefined) q.userSetColor.run(patch.color, id)
         if (patch.statusText !== undefined) q.userSetStatusText.run(patch.statusText, id)
+        if (patch.bannerPreset !== undefined) q.userSetBannerPreset.run(patch.bannerPreset, id)
         return users.get(id)
       })
     },
@@ -752,6 +777,11 @@ export function openDb(dataDir: string) {
     /** `avatar` is the picture's version token, or null to clear it (which also clears `animated`). */
     setAvatar(id: string, avatar: string | null, animated = false): User | undefined {
       q.userSetAvatar.run(avatar, avatar !== null && animated ? 1 : 0, id)
+      return users.get(id)
+    },
+    /** `banner` is the uploaded banner's version token, or null to clear it (which also clears `animated`). */
+    setBanner(id: string, banner: string | null, animated = false): User | undefined {
+      q.userSetBanner.run(banner, banner !== null && animated ? 1 : 0, id)
       return users.get(id)
     },
   }

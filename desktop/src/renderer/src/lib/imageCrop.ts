@@ -1,8 +1,10 @@
-// Client-side profile picture processing: decode a picked file, crop a square, resize to AVATAR_SIZE and
-// encode it small enough for the server (AVATAR_MAX_BYTES). Everything happens in a canvas; nothing leaves
+// Client-side profile picture / banner processing: decode a picked file, crop a square (picture) or a
+// BANNER_ASPECT rectangle (banner), resize to AVATAR_SIZE / BANNER_WIDTH×BANNER_HEIGHT and encode it small
+// enough for the server (AVATAR_MAX_BYTES / BANNER_MAX_BYTES). Everything happens in a canvas; nothing leaves
 // the machine except the final image.
-import { AVATAR_MAX_BYTES, AVATAR_SIZE } from '@shared/protocol'
+import { AVATAR_MAX_BYTES, AVATAR_SIZE, BANNER_HEIGHT, BANNER_MAX_BYTES, BANNER_WIDTH } from '@shared/protocol'
 import { animatedTypeOf } from './gifAvatar'
+import { t } from '../i18n'
 
 export const AVATAR_INPUT_TYPES = ['image/png', 'image/apng', 'image/jpeg', 'image/webp', 'image/gif'] as const
 /** Refuse absurdly large source files before decoding them. */
@@ -28,9 +30,9 @@ export interface LoadedImage {
 /** Decode a user-picked image file (`img` animates for animations). EXIF orientation is applied by Chromium. */
 export async function loadImageFile(file: File): Promise<LoadedImage> {
   if (!(AVATAR_INPUT_TYPES as readonly string[]).includes(file.type)) {
-    throw new Error('Pick a PNG, JPEG, WebP or GIF image')
+    throw new Error(t('Pick a PNG, JPEG, WebP or GIF image'))
   }
-  if (file.size > AVATAR_INPUT_MAX_BYTES) throw new Error('That image is too large (max 25 MB)')
+  if (file.size > AVATAR_INPUT_MAX_BYTES) throw new Error(t('That image is too large (max 25 MB)'))
   const url = URL.createObjectURL(file)
   const img = new Image()
   img.decoding = 'async'
@@ -39,35 +41,51 @@ export async function loadImageFile(file: File): Promise<LoadedImage> {
     await img.decode()
   } catch {
     URL.revokeObjectURL(url)
-    throw new Error("Couldn't read that image")
+    throw new Error(t("Couldn't read that image"))
   }
   const width = img.naturalWidth
   const height = img.naturalHeight
   if (!width || !height || width * height > MAX_SOURCE_PIXELS) {
     URL.revokeObjectURL(url)
-    throw new Error(width && height ? 'That image has too many pixels' : "Couldn't read that image")
+    throw new Error(width && height ? t('That image has too many pixels') : t("Couldn't read that image"))
   }
   const animatedType = await animatedTypeOf(file).catch(() => null)
   return { img, width, height, url, release: () => URL.revokeObjectURL(url), file, animatedType }
 }
 
-/** A square region of the source image, in source pixels. */
+/** A region of the source image, in source pixels (square for pictures, BANNER_ASPECT for banners). */
 export interface CropRect {
   x: number
   y: number
-  size: number
+  width: number
+  height: number
 }
 
-/** Draw `crop` of `img` into a square canvas of `size` px. */
-export function drawCrop(canvas: HTMLCanvasElement, img: CanvasImageSource, crop: CropRect, size: number): void {
-  if (canvas.width !== size) canvas.width = size
-  if (canvas.height !== size) canvas.height = size
+/** What an encoded picture / banner must be: output size in pixels and the server's byte limit. */
+export interface EncodeTarget {
+  width: number
+  height: number
+  maxBytes: number
+}
+export const AVATAR_TARGET: EncodeTarget = { width: AVATAR_SIZE, height: AVATAR_SIZE, maxBytes: AVATAR_MAX_BYTES }
+export const BANNER_TARGET: EncodeTarget = { width: BANNER_WIDTH, height: BANNER_HEIGHT, maxBytes: BANNER_MAX_BYTES }
+
+/** Draw `crop` of `img` into a canvas of `width`×`height` px (square when `height` is omitted). */
+export function drawCrop(
+  canvas: HTMLCanvasElement,
+  img: CanvasImageSource,
+  crop: CropRect,
+  width: number,
+  height = width,
+): void {
+  if (canvas.width !== width) canvas.width = width
+  if (canvas.height !== height) canvas.height = height
   const ctx = canvas.getContext('2d')
   if (!ctx) return
-  ctx.clearRect(0, 0, size, size)
+  ctx.clearRect(0, 0, width, height)
   ctx.imageSmoothingEnabled = true
   ctx.imageSmoothingQuality = 'high'
-  ctx.drawImage(img, crop.x, crop.y, crop.size, crop.size, 0, 0, size, size)
+  ctx.drawImage(img, crop.x, crop.y, crop.width, crop.height, 0, 0, width, height)
 }
 
 function toBlob(canvas: HTMLCanvasElement, type: string, quality: number): Promise<Blob | null> {
@@ -75,12 +93,12 @@ function toBlob(canvas: HTMLCanvasElement, type: string, quality: number): Promi
 }
 
 /**
- * Render the crop at AVATAR_SIZE and encode it: WebP at 0.85, then lower qualities, then JPEG,
- * until it fits AVATAR_MAX_BYTES. The returned blob's `type` is the Content-Type to upload with.
+ * Render the crop at the target's size and encode it: WebP at 0.85, then lower qualities, then JPEG,
+ * until it fits the target's maxBytes. The returned blob's `type` is the Content-Type to upload with.
  */
-export async function encodeAvatar(img: CanvasImageSource, crop: CropRect): Promise<Blob> {
+export async function encodeStill(img: CanvasImageSource, crop: CropRect, target: EncodeTarget): Promise<Blob> {
   const canvas = document.createElement('canvas')
-  drawCrop(canvas, img, crop, AVATAR_SIZE)
+  drawCrop(canvas, img, crop, target.width, target.height)
 
   const attempts: [string, number][] = [
     ['image/webp', 0.85],
@@ -93,7 +111,7 @@ export async function encodeAvatar(img: CanvasImageSource, crop: CropRect): Prom
   for (const [type, quality] of attempts) {
     const blob = await toBlob(canvas, type, quality)
     // An unsupported type silently falls back to PNG; skip it and try the next format.
-    if (blob && blob.type === type && blob.size > 0 && blob.size <= AVATAR_MAX_BYTES) return blob
+    if (blob && blob.type === type && blob.size > 0 && blob.size <= target.maxBytes) return blob
   }
-  throw new Error("Couldn't make that picture small enough to upload")
+  throw new Error(t("Couldn't make that image small enough to upload"))
 }

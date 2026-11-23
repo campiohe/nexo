@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Sound } from '@shared/protocol'
 import { MAX_SOUNDS, SOUND_COOLDOWN_MS } from '@shared/protocol'
 import { useApp } from '../../store/app'
+import { useT } from '../../i18n'
 import { useSounds } from '../../store/sounds'
 import { anchorOf, type AnchorRect } from '../../store/ui'
 import { isStaff } from '../../lib/permissions'
@@ -32,6 +33,7 @@ const POPOVER_W = 344
 const SEARCH_FROM = 12
 
 export function SoundboardButton({ size = 'sm' }: { size?: 'sm' | 'lg' }) {
+  const t = useT()
   const supported = useSounds((s) => s.supported)
   const from = size === 'lg' ? 'stage' : 'panel'
   const open = useSoundboardUi((s) => s.popover?.from === from)
@@ -45,8 +47,8 @@ export function SoundboardButton({ size = 'sm' }: { size?: 'sm' | 'lg' }) {
           const mid = (r.left + r.right) / 2
           toggleSoundboard({ ...r, left: mid - POPOVER_W / 2, right: mid + POPOVER_W / 2 }, from)
         }}
-        title="Soundboard"
-        aria-label="Soundboard"
+        title={t('Soundboard')}
+        aria-label={t('Soundboard')}
         aria-haspopup="dialog"
         aria-expanded={open}
       >
@@ -59,6 +61,7 @@ export function SoundboardButton({ size = 'sm' }: { size?: 'sm' | 'lg' }) {
 
 /** "Alex played 📯 Airhorn", briefly, above the stage's soundboard button. */
 function SoundFeed() {
+  const t = useT()
   const feed = useSoundboardUi((s) => s.feed)
   const users = useApp((s) => s.users)
   // Labels resolved when shown (the sound may be renamed / deleted later; the line is short-lived).
@@ -68,7 +71,12 @@ function SoundFeed() {
     <span className="sb-feed" role="status" aria-live="polite">
       {feed.map((f) => (
         <span key={f.key} className="sb-feed-item">
-          <strong>{users[f.userId]?.name ?? 'Someone'}</strong> played <em>{soundLabel(f.soundId)}</em>
+          {t.rich('<b>{name}</b> played <i>{sound}</i>', {
+            name: users[f.userId]?.name ?? t('Someone'),
+            sound: soundLabel(f.soundId),
+            b: (c) => <strong>{c}</strong>,
+            i: (c) => <em>{c}</em>,
+          })}
         </span>
       ))}
     </span>
@@ -77,6 +85,7 @@ function SoundFeed() {
 
 /** Popover, upload dialog and delete confirmation. Render once. */
 export function SoundboardHost() {
+  const t = useT()
   const popover = useSoundboardUi((s) => s.popover)
   const uploadOpen = useSoundboardUi((s) => s.uploadOpen)
   const confirm = useSoundboardUi((s) => s.confirmDelete)
@@ -102,9 +111,9 @@ export function SoundboardHost() {
       )}
       {confirm && (
         <ConfirmDialog
-          title={`Delete “${confirm.name}”?`}
-          message={<>It's removed from the soundboard for everyone. This can't be undone.</>}
-          confirmLabel="Delete sound"
+          title={t('Delete “{name}”?', { name: confirm.name })}
+          message={<>{t("It's removed from the soundboard for everyone. This can't be undone.")}</>}
+          confirmLabel={t('Delete sound')}
           danger
           onClose={() => {
             useSoundboardUi.setState({ confirmDelete: null })
@@ -144,6 +153,7 @@ function useCoolingDown(): { cooling: boolean; start: number } {
 }
 
 function SoundboardPopover({ anchor }: { anchor: AnchorRect }) {
+  const t = useT()
   const sounds = useSounds((s) => s.sounds)
   const me = useApp((s) => s.me)
   const connected = useVoice((s) => s.status === 'connected')
@@ -165,7 +175,7 @@ function SoundboardPopover({ anchor }: { anchor: AnchorRect }) {
 
   const full = sounds.length >= MAX_SOUNDS
   const canDelete = (s: Sound) => !!me && (s.uploaderId === me.id || isStaff(me))
-  const disabledWhy = !connected ? 'Connect to voice to play sounds' : null
+  const disabledWhy = !connected ? t('Connect to voice to play sounds') : null
 
   const openUpload = () => {
     closeSoundboard()
@@ -173,10 +183,10 @@ function SoundboardPopover({ anchor }: { anchor: AnchorRect }) {
   }
 
   return (
-    <Floating anchor={anchor} side="top" onClose={closeSoundboard} className="sb" label="Soundboard">
+    <Floating anchor={anchor} side="top" onClose={closeSoundboard} className="sb" label={t('Soundboard')}>
       <header className="sb-head">
-        <span className="sb-title">Soundboard</span>
-        <span className="sb-count" title={`${sounds.length} of ${MAX_SOUNDS} sounds`}>
+        <span className="sb-title">{t('Soundboard')}</span>
+        <span className="sb-count" title={t('{count} of {max} sounds', { count: sounds.length, max: MAX_SOUNDS })}>
           {sounds.length}/{MAX_SOUNDS}
         </span>
       </header>
@@ -198,8 +208,8 @@ function SoundboardPopover({ anchor }: { anchor: AnchorRect }) {
             }}
             // Escape clears the search first (Floating leaves it to the input while there's text).
             data-own-escape={query ? '' : undefined}
-            placeholder="Search sounds"
-            aria-label="Search sounds"
+            placeholder={t('Search sounds')}
+            aria-label={t('Search sounds')}
             spellCheck={false}
           />
         </label>
@@ -207,10 +217,10 @@ function SoundboardPopover({ anchor }: { anchor: AnchorRect }) {
       {sounds.length === 0 ? (
         <div className="sb-empty">
           <SoundboardIcon size={26} />
-          <span>No sounds yet. Add the first one!</span>
+          <span>{t('No sounds yet. Add the first one!')}</span>
         </div>
       ) : shown.length === 0 ? (
-        <div className="sb-empty is-search">No sounds match “{query.trim()}”</div>
+        <div className="sb-empty is-search">{t('No sounds match “{query}”', { query: query.trim() })}</div>
       ) : (
         <div className="sb-grid" role="list">
           {shown.map((s) => (
@@ -223,7 +233,7 @@ function SoundboardPopover({ anchor }: { anchor: AnchorRect }) {
                 className="sb-play"
                 onClick={() => void playSound(s.id)}
                 disabled={!connected || cooling || !!pending}
-                title={disabledWhy ?? (cooling ? 'Wait a moment…' : `Play “${s.name}” to the channel`)}
+                title={disabledWhy ?? (cooling ? t('Wait a moment…') : t('Play “{name}” to the channel', { name: s.name }))}
               >
                 <span className="sb-emoji" aria-hidden="true">
                   {s.emoji ?? <SoundboardIcon size={18} />}
@@ -234,8 +244,12 @@ function SoundboardPopover({ anchor }: { anchor: AnchorRect }) {
               <button
                 className={`sb-mini sb-preview ${previewing === s.id ? 'is-active' : ''}`}
                 onClick={() => previewSound(s.id)}
-                title={previewing === s.id ? 'Stop preview' : 'Preview (only you hear it)'}
-                aria-label={previewing === s.id ? `Stop preview of ${s.name}` : `Preview ${s.name} (only you hear it)`}
+                title={previewing === s.id ? t('Stop preview') : t('Preview (only you hear it)')}
+                aria-label={
+                  previewing === s.id
+                    ? t('Stop preview of {name}', { name: s.name })
+                    : t('Preview {name} (only you hear it)', { name: s.name })
+                }
               >
                 {previewing === s.id ? <StopIcon size={11} /> : <PlayIcon size={11} />}
               </button>
@@ -246,8 +260,8 @@ function SoundboardPopover({ anchor }: { anchor: AnchorRect }) {
                     closeSoundboard()
                     useSoundboardUi.setState({ confirmDelete: s })
                   }}
-                  title="Delete sound"
-                  aria-label={`Delete ${s.name}`}
+                  title={t('Delete sound')}
+                  aria-label={t('Delete {name}', { name: s.name })}
                 >
                   <TrashIcon size={11} />
                 </button>
@@ -257,14 +271,14 @@ function SoundboardPopover({ anchor }: { anchor: AnchorRect }) {
         </div>
       )}
       <footer className="sb-foot">
-        <span className="sb-hint">{disabledWhy ?? 'Everyone in your voice channel hears these.'}</span>
+        <span className="sb-hint">{disabledWhy ?? t('Everyone in your voice channel hears these.')}</span>
         <button
           className="vx-btn vx-btn-sm"
           onClick={openUpload}
           disabled={full}
-          title={full ? `The soundboard is full (${MAX_SOUNDS} sounds)` : 'Add a sound'}
+          title={full ? t('The soundboard is full ({max} sounds)', { max: MAX_SOUNDS }) : t('Add a sound')}
         >
-          <PlusIcon size={14} /> Add sound
+          <PlusIcon size={14} /> {t('Add sound')}
         </button>
       </footer>
     </Floating>

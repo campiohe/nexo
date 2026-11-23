@@ -5,13 +5,15 @@ import type { Message } from '@shared/protocol'
 import { useApp } from '../store/app'
 import { useChatPanels } from '../store/chatPanels'
 import { canUnpinMessage } from '../lib/permissions'
-import { formatFull } from '../lib/time'
+import { formatFull, useClock } from '../lib/time'
 import { toast } from '../lib/toast'
+import { tKnown, useT } from '../i18n'
 import { PanelMessage } from './PanelMessage'
 import { PinIcon } from './chatIcons'
 import { CloseIcon } from './icons'
 
 export function PinsPanel() {
+  const t = useT()
   const channel = useApp((s) => s.channels.find((c) => c.id === s.selectedChannelId && c.type === 'text') ?? null)
   const pins = useChatPanels((s) => s.pins)
   const pinsChannelId = useChatPanels((s) => s.pinsChannelId)
@@ -26,17 +28,17 @@ export function PinsPanel() {
   const shown = pinsChannelId === channelId ? pins : []
 
   return (
-    <aside className="side-panel" aria-label="Pinned messages">
+    <aside className="side-panel" aria-label={t('Pinned messages')}>
       <header className="side-panel-head">
         <PinIcon size={16} />
-        <h2 className="side-panel-title">Pinned messages</h2>
+        <h2 className="side-panel-title">{t('Pinned messages')}</h2>
         {channel && <span className="side-panel-sub">#{channel.name}</span>}
         <span className="grow" />
         <button
           className="icon-btn"
           onClick={() => useChatPanels.getState().openPanel(null)}
-          aria-label="Close pinned messages"
-          title="Close (Esc)"
+          aria-label={t('Close pinned messages')}
+          title={t('Close (Esc)')}
         >
           <CloseIcon size={16} />
         </button>
@@ -44,7 +46,7 @@ export function PinsPanel() {
       <div className="side-panel-scroll">
         {!channel ? (
           <div className="side-panel-empty">
-            <p className="muted">Pins live in text channels.</p>
+            <p className="muted">{t('Pins live in text channels.')}</p>
           </div>
         ) : (
           <>
@@ -53,19 +55,19 @@ export function PinsPanel() {
             ))}
             {error && (
               <div className="side-panel-empty is-error" role="alert">
-                {error}
+                {tKnown(error)}
               </div>
             )}
             {loading && shown.length === 0 && (
               <div className="history-loader">
-                <span className="spinner" /> Loading pins…
+                <span className="spinner" /> {t('Loading pins…')}
               </div>
             )}
             {!loading && !error && shown.length === 0 && (
               <div className="side-panel-empty">
                 <PinIcon size={28} />
-                <p>This channel doesn't have any pinned messages yet.</p>
-                <p className="muted small">Hover a message and use the pin button to keep it here.</p>
+                <p>{t("This channel doesn't have any pinned messages yet.")}</p>
+                <p className="muted small">{t('Hover a message and use the pin button to keep it here.')}</p>
               </div>
             )}
           </>
@@ -76,13 +78,15 @@ export function PinsPanel() {
 }
 
 function PinnedItem({ msg }: { msg: Message }) {
+  const t = useT()
   const canUnpin = useApp((s) => canUnpinMessage(s.me, msg))
   const pinner = useApp((s) => (msg.pinned ? s.users[msg.pinned.by]?.name : undefined))
+  const clock = useClock()
   return (
     <div className="pinned-item">
       {msg.pinned && (
-        <div className="pinned-by" title={formatFull(msg.pinned.at)}>
-          <PinIcon size={11} /> Pinned by {pinner ?? 'a deleted user'}
+        <div className="pinned-by" title={formatFull(msg.pinned.at, clock)}>
+          <PinIcon size={11} /> {t('Pinned by {name}', { name: pinner ?? t('a deleted user') })}
         </div>
       )}
       <PanelMessage
@@ -99,7 +103,7 @@ function PinnedItem({ msg }: { msg: Message }) {
                   .catch((err) => toast(err, 'error'))
               }
             >
-              Unpin
+              {t('Unpin')}
             </button>
           ) : undefined
         }

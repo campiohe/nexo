@@ -5,6 +5,7 @@ import { UNKNOWN_USER } from '../lib/mentions'
 import { parseContent, type Block, type Inline } from '../lib/messageTokens'
 import { highlightRanges } from '../lib/highlight'
 import { toast } from '../lib/toast'
+import { useT } from '../i18n'
 import { attachmentUrl } from '../net/attachments'
 import { useApp } from '../store/app'
 import '../styles/mentions.css'
@@ -110,11 +111,7 @@ function renderInline(nodes: Inline[], key: string, hl?: readonly string[]): Rea
       case 'mention':
         return <MentionPill key={k} userId={n.userId} />
       case 'everyone':
-        return (
-          <span key={k} className="mention is-everyone" title="Notifies everyone">
-            @everyone
-          </span>
-        )
+        return <EveryonePill key={k} />
       case 'code':
         return (
           <code key={k} className="md-code">
@@ -139,8 +136,18 @@ function renderInline(nodes: Inline[], key: string, hl?: readonly string[]): Rea
   })
 }
 
+function EveryonePill() {
+  const t = useT()
+  return (
+    <span className="mention is-everyone" title={t('Notifies everyone')}>
+      @everyone
+    </span>
+  )
+}
+
 /** Hidden until clicked (or Enter / Space when focused); links and mentions inside don't react until then. */
 function Spoiler({ children }: { children: ReactNode }) {
+  const t = useT()
   const [shown, setShown] = useState(false)
   if (shown) return <span className="md-spoiler is-shown">{children}</span>
   const reveal = (e: MouseEvent | KeyboardEvent) => {
@@ -153,8 +160,8 @@ function Spoiler({ children }: { children: ReactNode }) {
       className="md-spoiler"
       role="button"
       tabIndex={0}
-      aria-label="Spoiler, press to reveal"
-      title="Spoiler: click to reveal"
+      aria-label={t('Spoiler, press to reveal')}
+      title={t('Spoiler: click to reveal')}
       // Capture: a hidden link or mention must not be clicked through the cover.
       onClickCapture={reveal}
       onAuxClickCapture={(e) => e.preventDefault()}
@@ -171,6 +178,7 @@ function Spoiler({ children }: { children: ReactNode }) {
 
 /** A fenced code block: monospace, scrolls sideways, language tag and a Copy button on hover. */
 function CodeBlock({ lang, text, hl }: { lang: string; text: string; hl?: readonly string[] }) {
+  const t = useT()
   const [copied, setCopied] = useState(false)
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined)
   useEffect(() => () => clearTimeout(timer.current), [])
@@ -181,18 +189,18 @@ function CodeBlock({ lang, text, hl }: { lang: string; text: string; hl?: readon
       clearTimeout(timer.current)
       timer.current = setTimeout(() => setCopied(false), 1500)
     } catch {
-      toast("Couldn't copy to the clipboard", 'error')
+      toast(t("Couldn't copy to the clipboard"), 'error')
     }
   }
   return (
     <div className="md-codeblock">
-      <pre tabIndex={0} aria-label={lang ? `${lang} code` : 'Code'}>
+      <pre tabIndex={0} aria-label={lang ? t('{lang} code', { lang }) : t('Code')}>
         <code>{marked(text, hl, 'c')}</code>
       </pre>
       <div className="md-codeblock-bar">
         {lang && <span className="md-codeblock-lang">{lang}</span>}
-        <button className={`md-codeblock-copy ${copied ? 'is-done' : ''}`} onClick={() => void copy()} aria-label="Copy code">
-          {copied ? 'Copied' : 'Copy'}
+        <button className={`md-codeblock-copy ${copied ? 'is-done' : ''}`} onClick={() => void copy()} aria-label={t('Copy code')}>
+          {copied ? t('Copied') : t('Copy')}
         </button>
       </div>
     </div>
@@ -201,9 +209,10 @@ function CodeBlock({ lang, text, hl }: { lang: string; text: string; hl?: readon
 
 /** "@Name" in the user's colour (live: follows renames and colour changes); brighter when it's you. */
 function MentionPill({ userId }: { userId: string }) {
+  const t = useT()
   const user = useApp((s) => s.users[userId])
   const isMe = useApp((s) => s.me?.id === userId)
-  if (!user) return <span className="mention is-unknown">@{UNKNOWN_USER}</span>
+  if (!user) return <span className="mention is-unknown">@{t(UNKNOWN_USER)}</span>
   return (
     <span
       className={`mention ${isMe ? 'is-me' : ''}`}
@@ -260,6 +269,7 @@ function MessageImage({
   size: { width: number; height: number }
   onOpen(att: Attachment): void
 }) {
+  const t = useT()
   const [broken, setBroken] = useState(false)
   return (
     <button
@@ -267,13 +277,13 @@ function MessageImage({
       // Width plus aspect-ratio (not a fixed height) so narrow windows scale the box down instead of cropping.
       style={{ width: size.width, aspectRatio: `${att.width} / ${att.height}` }}
       onClick={() => !broken && onOpen(att)}
-      aria-label={`Open image (${att.width}×${att.height})`}
-      title={broken ? "This image couldn't be loaded" : 'Click to enlarge'}
+      aria-label={t('Open image ({width}×{height})', { width: att.width, height: att.height })}
+      title={broken ? t("This image couldn't be loaded") : t('Click to enlarge')}
     >
       {url && !broken ? (
         <img src={url} alt="" loading="lazy" decoding="async" draggable={false} onError={() => setBroken(true)} />
       ) : (
-        <span className="message-image-missing">Image unavailable</span>
+        <span className="message-image-missing">{t('Image unavailable')}</span>
       )}
     </button>
   )

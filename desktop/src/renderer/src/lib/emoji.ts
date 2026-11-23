@@ -4,6 +4,7 @@
 // Every emoji offered here passes EMOJI_RE (what the server accepts for reactions).
 import { EMOJI_RE } from '@shared/protocol'
 import { EMOJI_DATA } from './emojiData'
+import { msg } from '../i18n/core'
 
 export interface Emoji {
   /** The emoji, fully qualified (with the emoji variation selector where it's needed). */
@@ -17,6 +18,7 @@ export interface Emoji {
 
 export interface EmojiCategory {
   id: string
+  /** A message key: show it with t(). */
   label: string
   icon: string
   emojis: Emoji[]
@@ -48,7 +50,15 @@ export function qualify(raw: string): string {
 
 /** Skin tones: 0 = default (yellow), 1..5 = light .. dark (U+1F3FB..U+1F3FF). */
 export const SKIN_TONES = ['', '\u{1F3FB}', '\u{1F3FC}', '\u{1F3FD}', '\u{1F3FE}', '\u{1F3FF}'] as const
-export const SKIN_TONE_LABELS = ['Default', 'Light', 'Medium-light', 'Medium', 'Medium-dark', 'Dark']
+/** Message keys: show them with t(). */
+export const SKIN_TONE_LABELS = [
+  msg('Default // skin tone'),
+  msg('Light // skin tone'),
+  msg('Medium-light // skin tone'),
+  msg('Medium // skin tone'),
+  msg('Medium-dark // skin tone'),
+  msg('Dark // skin tone'),
+]
 
 /** `e` with skin tone `tone` (after its first code point, replacing a variation selector). */
 export function withTone(e: Emoji, tone: number): string {

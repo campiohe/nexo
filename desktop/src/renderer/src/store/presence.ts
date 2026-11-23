@@ -11,6 +11,7 @@ import { create } from 'zustand'
 import type { Activity, Presence, PresenceStatus } from '@shared/protocol'
 import { DEFAULT_PRESENCE } from '@shared/protocol'
 import { useApp } from './app'
+import { msg } from '../i18n'
 
 const KEY_STATUS = 'nexo.presence.status'
 
@@ -139,8 +140,9 @@ function ownPresence(status: PresenceStatus, activity: Activity | null): Presenc
   return ownCache
 }
 
+/** Message keys (msg): show them with t(STATUS_LABEL[status]). */
 export const STATUS_LABEL: Record<PresenceStatus, string> = {
-  online: 'Online',
-  idle: 'Idle',
-  dnd: 'Do not disturb',
+  online: msg('Online'),
+  idle: msg('Idle'),
+  dnd: msg('Do not disturb'),
 }

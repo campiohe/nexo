@@ -5,6 +5,7 @@ import { Modal } from './Modal'
 import { openChannel } from './Sidebar'
 import { HashIcon, SpeakerIcon } from './icons'
 import { isUnread, useUnread } from '../store/unread'
+import { useT } from '../i18n'
 
 /** Ctrl+K channel switcher. */
 export function QuickSwitcher() {
@@ -18,6 +19,7 @@ function SwitcherInner() {
   const [query, setQuery] = useState('')
   const [index, setIndex] = useState(0)
   const close = () => useUi.getState().openSwitcher(false)
+  const t = useT()
 
   const results = useMemo(() => {
     const q = query.trim().toLowerCase().replace(/^#/, '')
@@ -48,7 +50,7 @@ function SwitcherInner() {
   }
 
   return (
-    <Modal title="Jump to a channel" onClose={close} width={460} className="switcher">
+    <Modal title={t('Jump to a channel')} onClose={close} width={460} className="switcher">
       <input
         className="input"
         data-autofocus
@@ -58,8 +60,8 @@ function SwitcherInner() {
           setIndex(0)
         }}
         onKeyDown={onKey}
-        placeholder="Search channels…"
-        aria-label="Search channels"
+        placeholder={t('Search channels…')}
+        aria-label={t('Search channels')}
       />
       <ul className="switcher-list" role="listbox">
         {results.map((c, i) => (
@@ -74,11 +76,11 @@ function SwitcherInner() {
               {c.type === 'text' ? <HashIcon size={16} /> : <SpeakerIcon size={16} />}
               <span>{c.name}</span>
               {c.type === 'text' && <UnreadDot channelId={c.id} />}
-              <span className="switcher-kind">{c.type === 'text' ? 'Text' : 'Voice — joins'}</span>
+              <span className="switcher-kind">{c.type === 'text' ? t('Text') : t('Voice — joins')}</span>
             </button>
           </li>
         ))}
-        {results.length === 0 && <li className="switcher-empty muted">No channels match “{query}”.</li>}
+        {results.length === 0 && <li className="switcher-empty muted">{t('No channels match “{query}”.', { query })}</li>}
       </ul>
     </Modal>
   )
@@ -86,6 +88,7 @@ function SwitcherInner() {
 
 function UnreadDot({ channelId }: { channelId: string }) {
   const unread = useUnread((s) => isUnread(s, channelId))
+  const t = useT()
   if (!unread) return null
-  return <span className="unread-dot" title="Unread messages" aria-label="Unread messages" role="img" />
+  return <span className="unread-dot" title={t('Unread messages')} aria-label={t('Unread messages')} role="img" />
 }

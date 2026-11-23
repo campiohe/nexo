@@ -15,6 +15,7 @@ import type { Activity, PresenceStatus, User } from '@shared/protocol'
 import { emit, isConnected, onConnected, request } from '../net/socket'
 import { useApp } from '../store/app'
 import { ownStatus, resetPresence, useAutoIdle, usePresenceStore } from '../store/presence'
+import { t } from '../i18n'
 import { useVoice } from '../voice/session'
 
 /** What the server last got from this device (null = nothing yet). */
@@ -52,7 +53,7 @@ function send(full: boolean): void {
 export async function updateStatusText(text: string | null): Promise<User> {
   const value = text?.trim() ? text.trim() : null
   const user = await request('profile:update', { statusText: value })
-  if (user.statusText === undefined) throw new Error("This server doesn't support custom status yet")
+  if (user.statusText === undefined) throw new Error(t("This server doesn't support custom status yet"))
   useApp.setState((s) => ({ me: s.me?.id === user.id ? user : s.me, users: { ...s.users, [user.id]: user } }))
   return user
 }

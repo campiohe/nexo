@@ -1,10 +1,8 @@
 import { useEffect } from 'react'
 import { useApp } from '../store/app'
 import { useUi } from '../store/ui'
-import { useVoice } from '../voice/session'
 import { VoiceStage } from './voice/VoiceStage'
 import { PipLayer } from './voice/PipPlayer'
-import { toast } from '../lib/toast'
 import { canManageChannels } from '../lib/permissions'
 import { Sidebar } from './Sidebar'
 import { TextChannel } from './TextChannel'
@@ -19,6 +17,7 @@ import { PinsPanel } from './PinsPanel'
 import { useChatPanels } from '../store/chatPanels'
 import { domKeyMatches, isTypingTarget } from '../lib/keybinds'
 import { useKeybinds } from '../voice/prefs'
+import { useT } from '../i18n'
 import '../styles/panels.css'
 
 export function MainLayout() {
@@ -72,8 +71,8 @@ function Center() {
   const toggleMembers = useUi((s) => s.toggleMembers)
   const panel = useChatPanels((s) => s.panel)
   const membersShown = membersOpen && !panel
-  const inThisVoice = useVoice((s) => !!channel && s.channelId === channel.id)
   const canManage = useApp((s) => canManageChannels(s.me))
+  const t = useT()
 
   useEffect(() => {
     document.title = channel ? `${channel.type === 'text' ? '#' : ''}${channel.name} · ${serverName}` : serverName
@@ -86,19 +85,6 @@ function Center() {
           <>
             {channel.type === 'text' ? <HashIcon size={20} className="center-icon" /> : <SpeakerIcon size={20} className="center-icon" />}
             <h1 className="center-title">{channel.name}</h1>
-            {channel.type === 'voice' && !inThisVoice && (
-              <button
-                className="btn btn-primary btn-sm"
-                onClick={() =>
-                  useVoice
-                    .getState()
-                    .join(channel.id)
-                    .catch((err) => toast(err, 'error'))
-                }
-              >
-                Join voice
-              </button>
-            )}
           </>
         )}
         <span className="grow" />
@@ -107,8 +93,8 @@ function Center() {
             className={`icon-btn ${panel === 'pins' ? 'is-active' : ''}`}
             onClick={() => useChatPanels.getState().openPanel(panel === 'pins' ? null : 'pins')}
             aria-pressed={panel === 'pins'}
-            aria-label="Pinned messages"
-            title="Pinned messages"
+            aria-label={t('Pinned messages')}
+            title={t('Pinned messages')}
           >
             <PinIcon size={18} />
           </button>
@@ -125,20 +111,17 @@ function Center() {
             }
           }}
           aria-pressed={membersShown}
-          aria-label="Toggle member list"
-          title={membersShown ? 'Hide members' : 'Show members'}
+          aria-label={t('Toggle member list')}
+          title={membersShown ? t('Hide members') : t('Show members')}
         >
           <UsersIcon size={18} />
         </button>
         <SearchBox />
-        <kbd className="kbd-hint" title="Jump to a channel">
-          Ctrl K
-        </kbd>
       </header>
       {connection !== 'connected' && (
         <div className="connection-banner" role="status">
           <span className="spinner" />
-          {connection === 'error' ? 'Connection problem — retrying…' : 'Reconnecting…'}
+          {connection === 'error' ? t('Connection problem. Retrying…') : t('Reconnecting…')}
         </div>
       )}
       <AccessRequestBanners />
@@ -146,9 +129,9 @@ function Center() {
       <div className="center-body">
         {!channel ? (
           <div className="empty-state">
-            <h2>No channel selected</h2>
+            <h2>{t('No channel selected')}</h2>
             <p className="muted">
-              {canManage ? 'Create a channel with the + button in the sidebar.' : 'There are no channels yet. Ask an admin to create one.'}
+              {canManage ? t('Create a channel with the + button in the sidebar.') : t('There are no channels yet. Ask an admin to create one.')}
             </p>
           </div>
         ) : channel.type === 'text' ? (

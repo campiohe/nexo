@@ -8,12 +8,16 @@ import {
   type ActivitySettings,
   type AppearanceState,
   type ThemeChoice,
+  type WindowChrome,
   type ZoomEvent,
   type CaptureSource,
   type ChatNotification,
   type DetectedActivity,
   type GlobalHotkeyAction,
   type HotkeyBindings,
+  type Language,
+  LANGUAGES,
+  type SystemLocale,
   type HotkeyEvent,
   type HotkeyStatus,
   type KeybindCapture,
@@ -44,6 +48,18 @@ function arg(name: string): string | undefined {
 const platformArg = arg('platform')
 const platform: NexoBridge['platform'] =
   platformArg === 'win32' || platformArg === 'darwin' || platformArg === 'linux' ? platformArg : 'linux'
+
+/** A BCP 47 tag like "pt-BR" or "zh-Hant-TW" (main already normalized it); anything else is dropped. */
+const LOCALE_TAG = /^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{1,8}){0,4}$/
+
+function systemLocale(): SystemLocale {
+  const languages = (arg('languages') ?? '')
+    .split(',')
+    .filter((l) => LOCALE_TAG.test(l))
+    .slice(0, 16)
+  const region = arg('region') ?? ''
+  return { languages, region: LOCALE_TAG.test(region) ? region : null }
+}
 
 const TRAY_ACTIONS: readonly TrayAction[] = ['toggle-mute', 'toggle-deafen', 'leave-voice']
 
@@ -288,9 +304,17 @@ const bridge: NexoBridge = {
 
   appearance: {
     getState: (): Promise<AppearanceState> => ipcRenderer.invoke(IPC.appearanceGet),
-    setTheme: (theme: ThemeChoice, background: string): void => ipcRenderer.send(IPC.appearanceSetTheme, theme, background),
+    setTheme: (theme: ThemeChoice, chrome: WindowChrome): void => ipcRenderer.send(IPC.appearanceSetTheme, theme, chrome),
     setZoom: (factor: number): Promise<number> => ipcRenderer.invoke(IPC.appearanceSetZoom, factor),
     onZoom: (cb: (e: ZoomEvent) => void): (() => void) => subscribe(IPC.appearanceZoom, isZoomEvent, cb),
+    setAppIcon: (png: string | null): Promise<void> => ipcRenderer.invoke(IPC.appearanceSetAppIcon, png),
+  },
+
+  locale: {
+    system: systemLocale(),
+    setLanguage: (language: Language): void => {
+      if (LANGUAGES.includes(language)) ipcRenderer.send(IPC.localeSetLanguage, language)
+    },
   },
 
   updates: {

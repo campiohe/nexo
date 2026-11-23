@@ -35,11 +35,46 @@ export const isDev = !app.isPackaged && !!process.env.ELECTRON_RENDERER_URL
  */
 export const devMode = !app.isPackaged || process.argv.includes('--nexo-dev')
 
-/** Arguments appended to the renderer's process.argv; parsed by src/preload/index.ts. */
+const LOCALE_TAG = /^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{1,8}){0,4}$/
+
+/** BCP 47 form of an OS locale string ("en_US.UTF-8" → "en-US"); null for anything else ("C", "POSIX", ""). */
+function localeTag(raw: string): string | null {
+  const tag = raw.split(/[.@]/)[0]!.replace(/_/g, '-')
+  return LOCALE_TAG.test(tag) ? tag : null
+}
+
+/** The OS's preferred UI languages, most preferred first (BCP 47). */
+export function systemLanguages(): string[] {
+  try {
+    return app
+      .getPreferredSystemLanguages()
+      .map(localeTag)
+      .filter((l): l is string => l !== null)
+      .slice(0, 16)
+  } catch {
+    return []
+  }
+}
+
+/**
+ * The regional format (e.g. "pt-BR" on an English Windows set to Brazil): the renderer's "Automatic" clock follows
+ * it. Only valid after app 'ready'.
+ */
+export function systemRegion(): string | null {
+  try {
+    return localeTag(app.getSystemLocale())
+  } catch {
+    return null
+  }
+}
+
+/** Arguments appended to the renderer's process.argv; parsed by src/preload/index.ts. Call after app 'ready'. */
 export function preloadArguments(): string[] {
   return [
     `--nexo-platform=${platform}`,
     `--nexo-system-audio=${supportsSystemAudio ? 1 : 0}`,
     `--nexo-system-picker=${usesSystemPicker ? 1 : 0}`,
+    `--nexo-languages=${systemLanguages().join(',')}`,
+    `--nexo-region=${systemRegion() ?? ''}`,
   ]
 }

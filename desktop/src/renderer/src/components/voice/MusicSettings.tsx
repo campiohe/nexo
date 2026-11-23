@@ -1,7 +1,9 @@
 // Settings → Audio & video → Music: this device's music plugin preferences (voice/musicPrefs.ts).
 import { saveMusicPrefs, useMusicPrefs } from '../../voice/musicPrefs'
+import { useT } from '../../i18n'
 
 export function MusicSettingsSection() {
+  const t = useT()
   const enabled = useMusicPrefs((s) => s.musicEnabled)
   const volume = useMusicPrefs((s) => s.musicVolume)
   const duck = useMusicPrefs((s) => s.musicDuck)
@@ -10,10 +12,11 @@ export function MusicSettingsSection() {
     <>
       <label className="toggle-row">
         <span className="toggle-text">
-          <span>Play music on this device</span>
+          <span>{t('Play music on this device')}</span>
           <span className="muted small">
-            Hear the YouTube Music played in your voice channel (when the server's Music plugin is on). Turn it off to
-            keep the music silent here; you can still see and control what's playing.
+            {t(
+              "Hear the YouTube Music played in your voice channel (when the server's Music plugin is on). Turn it off to keep the music silent here; you can still see and control what's playing.",
+            )}
           </span>
         </span>
         <input
@@ -26,7 +29,7 @@ export function MusicSettingsSection() {
       </label>
       <div className="vx-field">
         <label className="vx-field-label" htmlFor="vx-music-volume">
-          Music volume
+          {t('Music volume')}
         </label>
         <div className="vx-range-row">
           <input
@@ -46,8 +49,8 @@ export function MusicSettingsSection() {
       </div>
       <label className="toggle-row">
         <span className="toggle-text">
-          <span>Lower music while people talk</span>
-          <span className="muted small">Turns the music down while anyone in the channel is speaking.</span>
+          <span>{t('Lower music while people talk')}</span>
+          <span className="muted small">{t('Turns the music down while anyone in the channel is speaking.')}</span>
         </span>
         <input
           type="checkbox"

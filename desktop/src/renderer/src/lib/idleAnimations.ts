@@ -6,6 +6,8 @@
 // The window keeps rendering when covered, because backgroundThrottling is off for voice (main/index.ts), so that
 // core was taken from the game for as long as you played. While a game has focus, Nexo doesn't: pause them all.
 
+import { useSyncExternalStore } from 'react'
+
 export function installIdleAnimationPause(): void {
   const root = document.documentElement
   const sync = (): void => {
@@ -15,4 +17,25 @@ export function installIdleAnimationPause(): void {
   window.addEventListener('blur', sync)
   document.addEventListener('visibilitychange', sync)
   sync()
+}
+
+const windowActive = () => typeof document !== 'undefined' && document.hasFocus() && document.visibilityState !== 'hidden'
+
+function subscribeWindowActive(listener: () => void): () => void {
+  window.addEventListener('focus', listener)
+  window.addEventListener('blur', listener)
+  document.addEventListener('visibilitychange', listener)
+  return () => {
+    window.removeEventListener('focus', listener)
+    window.removeEventListener('blur', listener)
+    document.removeEventListener('visibilitychange', listener)
+  }
+}
+
+/**
+ * Whether the Nexo window has focus (the opposite of html.is-inactive). For animations CSS can't pause, such as
+ * an animated GIF in an <img>: show its still frame while this is false.
+ */
+export function useWindowActive(): boolean {
+  return useSyncExternalStore(subscribeWindowActive, windowActive)
 }

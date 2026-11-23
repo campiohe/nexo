@@ -191,7 +191,7 @@ export async function runCommand(cmd: Command, deps: CliDeps): Promise<number> {
         const dataDir = dataDirFor(cmd, deps)
         const r = backupDatabase(dataDir, cmd.file)
         out(`Database saved to ${r.file} (${(r.bytes / 1024 / 1024).toFixed(1)} MB).`)
-        out(`Pictures are files, not in the database: copy the "attachments" and "avatars" folders in ${dataDir} too.`)
+        out(`Pictures are files, not in the database: copy the "attachments", "avatars" and "banners" folders in ${dataDir} too.`)
         return 0
       }
       case 'rename-user': {

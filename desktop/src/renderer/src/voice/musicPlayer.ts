@@ -27,12 +27,16 @@ import { useMusicPrefs } from './musicPrefs'
 import { onClockChange, resetMusicClock, serverNow, startMusicClock, stopMusicClock, whenClockReady } from './musicClock'
 import { driftDecision, expectedPositionMs, HARD_SEEK_MS, nextSeekLead } from './musicSync'
 import { musicEngine, musicErrorText, resetMusicPanel, type MusicErrorCode } from './musicActions'
+import { msg } from '../i18n'
 
 // ---------------------------------------------------------------------------------------------
 // UI-facing state
 
 export interface MusicPlayerUi {
-  /** This device can't play the current track (queueId `key`): shown in the now-playing bar. */
+  /**
+   * This device can't play the current track (queueId `key`): shown in the now-playing bar as "Can't play this
+   * here: {reason}". `text` is the reason, in English (a message key): the bar translates it with tKnown().
+   */
   notice: { key: string; text: string } | null
   /** play() was refused (no user gesture yet): the bar shows "Click to start music". */
   blocked: boolean
@@ -220,9 +224,9 @@ function onPlaying(): void {
   nextCheckAt = graceUntil
 }
 
-function fail(key: string, text: string): void {
+function fail(key: string, reason: string): void {
   failedKey = key
-  setUi({ notice: { key, text: `Can't play this here: ${text}` }, buffering: false })
+  setUi({ notice: { key, text: reason }, buffering: false })
 }
 
 function onMediaError(): void {
@@ -236,7 +240,7 @@ function onMediaError(): void {
   console.warn('[music] playback error', code, a.error?.message)
   unload()
   loadedKey = key // still "this track", so reconcile doesn't retry it in a loop
-  fail(key, code === MediaError.MEDIA_ERR_NETWORK ? musicErrorText('network') : "the song couldn't be loaded.")
+  fail(key, code === MediaError.MEDIA_ERR_NETWORK ? musicErrorText('network') : msg("the song couldn't be loaded."))
   // The engine explains its failures in the response (JSON MusicEngineError): refine the notice when it does.
   void diagnose(url).then((c) => {
     if (c && seq + 1 === loadSeq && failedKey === key) fail(key, musicErrorText(c))

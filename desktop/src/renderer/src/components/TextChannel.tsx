@@ -5,6 +5,7 @@ import { MessageList } from './MessageList'
 import { TypingLine } from './TypingLine'
 import { Composer, pickImageFiles } from './Composer'
 import { markRead, useUnread } from '../store/unread'
+import { useT } from '../i18n'
 
 /** Only file drags (not dragged text or links) show the drop zone. */
 const hasFiles = (e: DragEvent) => e.dataTransfer.types.includes('Files')
@@ -33,6 +34,7 @@ function useMarkReadWhileViewing(channelId: string) {
 }
 
 export function TextChannel({ channelId, channelName }: { channelId: string; channelName: string }) {
+  const t = useT()
   useMarkReadWhileViewing(channelId)
   const [dragging, setDragging] = useState(false)
   // dragenter/dragleave fire for every child element crossed; count them to know when the drag really left.
@@ -75,10 +77,8 @@ export function TextChannel({ channelId, channelName }: { channelId: string; cha
       {dragging && (
         <div className="drop-overlay" aria-hidden="true">
           <div className="drop-overlay-card">
-            <strong>Drop images to send</strong>
-            <span>
-              to #{channelName} · up to {MAX_ATTACHMENTS_PER_MESSAGE} per message
-            </span>
+            <strong>{t('Drop images to send')}</strong>
+            <span>{t('to #{channel} · up to {count} per message', { channel: channelName, count: MAX_ATTACHMENTS_PER_MESSAGE })}</span>
           </div>
         </div>
       )}

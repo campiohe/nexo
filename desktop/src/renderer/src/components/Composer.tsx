@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEv
 import { ATTACHMENT_TYPES, MAX_ATTACHMENTS_PER_MESSAGE, MAX_MESSAGE_LENGTH, type User } from '@shared/protocol'
 import { useApp } from '../store/app'
 import { useCompose } from '../store/compose'
-import { editableToContent, EVERYONE_TOKEN, findMentionQuery, nameMatches } from '../lib/mentions'
+import { editableToContent, EVERYONE_TOKEN, findMentionQuery, nameMatches, UNKNOWN_USER } from '../lib/mentions'
 import { emit } from '../net/socket'
 import {
   addImages,
@@ -14,6 +14,7 @@ import {
   type PendingImage,
 } from '../net/attachments'
 import { toast } from '../lib/toast'
+import { t, useT, type Translate } from '../i18n'
 import {
   findShortcodeQuery,
   noteRecentEmoji,
@@ -76,7 +77,7 @@ export function pickImageFiles(files: FileList | File[] | null | undefined): Fil
   const all = [...(files ?? [])]
   // Types are re-checked from the bytes before upload; an empty type (some clipboard sources) gets that chance.
   const images = all.filter((f) => f.type === '' || f.type.startsWith('image/'))
-  if (images.length < all.length) toast('Only images (PNG, JPEG, WebP, GIF) can be attached', 'error')
+  if (images.length < all.length) toast(t('Only images (PNG, JPEG, WebP, GIF) can be attached'), 'error')
   return images
 }
 
@@ -110,6 +111,7 @@ function isAppShortcut(e: globalThis.KeyboardEvent): boolean {
 }
 
 export function Composer({ channelId, channelName }: { channelId: string; channelName: string }) {
+  const t = useT()
   const sendMessage = useApp((s) => s.sendMessage)
   const connected = useApp((s) => s.connection === 'connected')
   const users = useApp((s) => s.users)
@@ -244,25 +246,25 @@ export function Composer({ channelId, channelName }: { channelId: string; channe
   function toggleFormat(marker: string) {
     const el = ref.current
     if (!el || el.readOnly) return
-    const { selectionStart: s, selectionEnd: t, value: v } = el
-    const sel = v.slice(s, t)
+    const { selectionStart: s, selectionEnd: e, value: v } = el
+    const sel = v.slice(s, e)
     if (marker === '`' && sel.includes('\n')) {
-      replaceRange(s, t, `\`\`\`\n${sel}\n\`\`\``, [s + 4, t + 4])
+      replaceRange(s, e, `\`\`\`\n${sel}\n\`\`\``, [s + 4, e + 4])
       return
     }
     const n = marker.length
-    let wrapped = v.slice(s - n, s) === marker && v.slice(t, t + n) === marker
+    let wrapped = v.slice(s - n, s) === marker && v.slice(e, e + n) === marker
     if (marker[0] === '*') {
       // `**x**` is bold, not italic inside italic: count the asterisks on both sides.
       let b = 0
       let a = 0
       while (v[s - 1 - b] === '*') b++
-      while (v[t + a] === '*') a++
+      while (v[e + a] === '*') a++
       const run = Math.min(a, b)
       wrapped = marker === '*' ? run % 2 === 1 : run >= 2
     }
-    if (wrapped && s >= n) replaceRange(s - n, t + n, sel, [s - n, t - n])
-    else replaceRange(s, t, marker + sel + marker, [s + n, t + n])
+    if (wrapped && s >= n) replaceRange(s - n, e + n, sel, [s - n, e - n])
+    else replaceRange(s, e, marker + sel + marker, [s + n, e + n])
   }
 
   /** A word-ending key right after a complete `:joy:` turns it into 😂 first (the key still types). */
@@ -304,7 +306,7 @@ export function Composer({ channelId, channelName }: { channelId: string; channe
     const text = value.trim()
     if ((!text && images.length === 0) || tooLong || sendingRef.current) return
     if (!connected) {
-      toast('Not connected — your message is still in the box.', 'error')
+      toast(t('Not connected. Your message is still in the box.'), 'error')
       return
     }
     sendingRef.current = true
@@ -318,7 +320,7 @@ export function Composer({ channelId, channelName }: { channelId: string; channe
           setWaiting(false)
         }
         if (ready.some((i) => i.status === 'error')) {
-          toast('An image failed to upload. Retry or remove it, then send again.', 'error')
+          toast(t('An image failed to upload. Retry or remove it, then send again.'), 'error')
           return
         }
         if (!text && ready.length === 0) return // everything was removed while waiting
@@ -426,7 +428,7 @@ export function Composer({ channelId, channelName }: { channelId: string; channe
       e.preventDefault()
       addImages(channelId, images)
     } else if (!e.clipboardData.types.includes('text/plain')) {
-      toast('Only images (PNG, JPEG, WebP, GIF) can be attached', 'error')
+      toast(t('Only images (PNG, JPEG, WebP, GIF) can be attached'), 'error')
     }
   }
 
@@ -437,34 +439,40 @@ export function Composer({ channelId, channelName }: { channelId: string; channe
       {popupOpen && (
         <AutocompletePopup
           id={listId}
-          title={auto.kind === 'mention' ? 'Members' : <>Emoji matching <span className="ac-query">:{auto.query}</span></>}
-          label={auto.kind === 'mention' ? 'Mention someone' : 'Insert an emoji'}
+          title={
+            auto.kind === 'mention'
+              ? t('Members')
+              : t.rich('Emoji matching <q>:{query}</q>', { query: auto.query, q: (c) => <span className="ac-query">{c}</span> })
+          }
+          label={auto.kind === 'mention' ? t('Mention someone') : t('Insert an emoji')}
           items={suggestions}
           active={activeIndex}
           itemKey={suggestionKey}
-          renderItem={renderSuggestion}
+          renderItem={(s) => renderSuggestion(s, t)}
           onHover={setActive}
           onPick={pick}
         />
       )}
-      {pickerAnchor && <EmojiPicker anchor={pickerAnchor} onPick={insertEmoji} onClose={closePicker} label="Insert an emoji" />}
+      {pickerAnchor && <EmojiPicker anchor={pickerAnchor} onPick={insertEmoji} onClose={closePicker} label={t('Insert an emoji')} />}
       <div className={`composer ${tooLong ? 'is-invalid' : ''} ${images.length ? 'has-images' : ''} ${replyId ? 'has-reply' : ''}`}>
         {replyId && replyTarget && (
           <div className="composer-reply">
             <ReplyIcon size={14} />
             <span className="composer-reply-text">
-              Replying to{' '}
-              <strong style={replyAuthor ? { color: replyAuthor.color } : undefined}>{replyAuthor?.name ?? 'unknown-user'}</strong>
+              {t.rich('Replying to <b>{name}</b>', {
+                name: replyAuthor?.name ?? t(UNKNOWN_USER),
+                b: (c) => <strong style={replyAuthor ? { color: replyAuthor.color } : undefined}>{c}</strong>,
+              })}
             </span>
-            <button className="icon-btn composer-reply-close" onClick={cancelReply} aria-label="Cancel reply" title="Cancel reply (Esc)">
+            <button className="icon-btn composer-reply-close" onClick={cancelReply} aria-label={t('Cancel reply')} title={t('Cancel reply (Esc)')}>
               <CloseIcon size={14} />
             </button>
           </div>
         )}
         {images.length > 0 && (
-          <ul className="composer-images" aria-label="Images to send">
+          <ul className="composer-images" aria-label={t('Images to send')}>
             {images.map((img) => (
-              <PendingThumb key={img.key} img={img} channelId={channelId} />
+              <PendingThumb key={img.key} img={img} channelId={channelId} t={t} />
             ))}
           </ul>
         )}
@@ -473,11 +481,11 @@ export function Composer({ channelId, channelName }: { channelId: string; channe
             className="icon-btn composer-attach"
             onClick={() => fileRef.current?.click()}
             disabled={images.length >= MAX_ATTACHMENTS_PER_MESSAGE}
-            aria-label="Attach images"
+            aria-label={t('Attach images')}
             title={
               images.length >= MAX_ATTACHMENTS_PER_MESSAGE
-                ? `Up to ${MAX_ATTACHMENTS_PER_MESSAGE} images per message`
-                : 'Attach images (or paste / drop them)'
+                ? t('Up to {count} images per message', { count: MAX_ATTACHMENTS_PER_MESSAGE })
+                : t('Attach images (or paste / drop them)')
             }
           >
             <AttachIcon />
@@ -506,10 +514,10 @@ export function Composer({ channelId, channelName }: { channelId: string; channe
             onPaste={onPaste}
             // The text that goes out with the images is the text at the moment Send was pressed.
             readOnly={waiting}
-            placeholder={replyId ? `Reply in #${channelName}` : `Message #${channelName}`}
+            placeholder={replyId ? t('Reply in #{channel}', { channel: channelName }) : t('Message #{channel}', { channel: channelName })}
             rows={1}
             spellCheck
-            aria-label={`Message #${channelName}`}
+            aria-label={t('Message #{channel}', { channel: channelName })}
             role="combobox"
             aria-expanded={popupOpen}
             aria-controls={popupOpen ? listId : undefined}
@@ -525,15 +533,15 @@ export function Composer({ channelId, channelName }: { channelId: string; channe
               setPickerAnchor((cur) => (cur ? null : btn))
             }}
             disabled={waiting}
-            aria-label="Emoji"
+            aria-label={t('Emoji')}
             aria-haspopup="dialog"
             aria-expanded={!!pickerAnchor}
-            title="Emoji (or type :name)"
+            title={t('Emoji (or type :name)')}
           >
             <SmileIcon />
           </button>
           {length >= COUNTER_FROM && (
-            <span className={`composer-counter ${tooLong ? 'is-over' : ''}`} title={`${MAX_MESSAGE_LENGTH} characters max`}>
+            <span className={`composer-counter ${tooLong ? 'is-over' : ''}`} title={t('{count} characters max', { count: MAX_MESSAGE_LENGTH })}>
               {MAX_MESSAGE_LENGTH - length}
             </span>
           )}
@@ -541,13 +549,13 @@ export function Composer({ channelId, channelName }: { channelId: string; channe
             className="icon-btn composer-send"
             onClick={() => void send()}
             disabled={!canSend}
-            aria-label="Send message"
+            aria-label={t('Send message')}
             title={
               waiting
-                ? 'Sending when the images finish uploading…'
+                ? t('Sending when the images finish uploading…')
                 : failed
-                  ? 'An image failed to upload: retry or remove it'
-                  : 'Send (Enter) · New line (Shift+Enter)'
+                  ? t('An image failed to upload: retry or remove it')
+                  : t('Send (Enter) · New line (Shift+Enter)')
             }
           >
             {waiting ? <span className="spinner" /> : <SendIcon size={18} />}
@@ -562,7 +570,7 @@ function suggestionKey(s: Suggestion): string {
   return s.kind === 'user' ? s.user.id : s.kind === 'emoji' ? `:${s.code}` : '@everyone'
 }
 
-function renderSuggestion(s: Suggestion) {
+function renderSuggestion(s: Suggestion, t: Translate) {
   switch (s.kind) {
     case 'user':
       return (
@@ -571,7 +579,7 @@ function renderSuggestion(s: Suggestion) {
           <span className="mention-option-name" style={{ color: s.user.color }}>
             {s.user.name}
           </span>
-          {!s.online && <span className="mention-option-hint">offline</span>}
+          {!s.online && <span className="mention-option-hint">{t('offline // mention suggestion')}</span>}
         </>
       )
     case 'everyone':
@@ -581,7 +589,7 @@ function renderSuggestion(s: Suggestion) {
             @
           </span>
           <span className="mention-option-name">@everyone</span>
-          <span className="mention-option-hint">Notify everyone</span>
+          <span className="mention-option-hint">{t('Notify everyone')}</span>
         </>
       )
     case 'emoji':
@@ -596,7 +604,7 @@ function renderSuggestion(s: Suggestion) {
   }
 }
 
-function PendingThumb({ img, channelId }: { img: PendingImage; channelId: string }) {
+function PendingThumb({ img, channelId, t }: { img: PendingImage; channelId: string; t: Translate }) {
   const pct = Math.round(img.progress * 100)
   return (
     <li className={`composer-thumb is-${img.status}`} title={img.error ?? img.name}>
@@ -605,7 +613,7 @@ function PendingThumb({ img, channelId }: { img: PendingImage; channelId: string
         <div
           className="composer-thumb-progress"
           role="progressbar"
-          aria-label={`Uploading ${img.name}`}
+          aria-label={t('Uploading {name}', { name: img.name })}
           aria-valuenow={pct}
           aria-valuemin={0}
           aria-valuemax={100}
@@ -615,7 +623,7 @@ function PendingThumb({ img, channelId }: { img: PendingImage; channelId: string
       )}
       {img.status === 'error' && (
         <div className="composer-thumb-error">
-          <button className="icon-btn" onClick={() => retryImage(channelId, img.key)} aria-label={`Retry uploading ${img.name}`} title={`${img.error} — retry`}>
+          <button className="icon-btn" onClick={() => retryImage(channelId, img.key)} aria-label={t('Retry uploading {name}', { name: img.name })} title={t('Retry: {error}', { error: img.error ?? '' })}>
             <RetryIcon />
           </button>
         </div>
@@ -623,8 +631,8 @@ function PendingThumb({ img, channelId }: { img: PendingImage; channelId: string
       <button
         className="composer-thumb-remove"
         onClick={() => removeImage(channelId, img.key)}
-        aria-label={`Remove ${img.name}`}
-        title="Remove"
+        aria-label={t('Remove {name}', { name: img.name })}
+        title={t('Remove')}
       >
         <CloseIcon size={12} />
       </button>

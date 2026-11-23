@@ -11,27 +11,30 @@ import {
   type KeybindMods,
   type NexoBridge,
 } from '../../../preload/api'
+import { msg } from '../i18n/core'
 
 export type InAppAction = 'quickSwitcher' | 'openSettings'
 export type HotkeyAction = GlobalHotkeyAction | InAppAction
 
 export interface HotkeyActionInfo {
   id: HotkeyAction
+  /** Message key: show it with t(label). */
   label: string
   /** global: system-wide hook (works in games); app: only while Nexo is focused. */
   scope: 'global' | 'app'
 }
 
 export const HOTKEY_ACTIONS: readonly HotkeyActionInfo[] = [
-  { id: 'ptt', label: 'Push to talk', scope: 'global' },
-  { id: 'toggleMute', label: 'Toggle mute', scope: 'global' },
-  { id: 'toggleDeafen', label: 'Toggle deafen', scope: 'global' },
-  { id: 'toggleShare', label: 'Toggle screen share', scope: 'global' },
-  { id: 'leaveVoice', label: 'Leave voice', scope: 'global' },
-  { id: 'quickSwitcher', label: 'Quick switcher', scope: 'app' },
-  { id: 'openSettings', label: 'Open settings', scope: 'app' },
+  { id: 'ptt', label: msg('Push to talk'), scope: 'global' },
+  { id: 'toggleMute', label: msg('Toggle mute'), scope: 'global' },
+  { id: 'toggleDeafen', label: msg('Toggle deafen'), scope: 'global' },
+  { id: 'toggleShare', label: msg('Toggle screen share'), scope: 'global' },
+  { id: 'leaveVoice', label: msg('Leave voice'), scope: 'global' },
+  { id: 'quickSwitcher', label: msg('Quick switcher'), scope: 'app' },
+  { id: 'openSettings', label: msg('Open settings'), scope: 'app' },
 ]
 
+/** The action's name as a message key: show it with t(actionLabel(id)). */
 export const actionLabel = (id: HotkeyAction): string => HOTKEY_ACTIONS.find((a) => a.id === id)?.label ?? id
 
 export function currentPlatform(): NexoBridge['platform'] {

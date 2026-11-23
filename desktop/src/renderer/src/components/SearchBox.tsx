@@ -6,6 +6,7 @@ import { SEARCH_QUERY_MAX } from '@shared/protocol'
 import { useApp } from '../store/app'
 import { useChatPanels } from '../store/chatPanels'
 import { toast } from '../lib/toast'
+import { msg, useT, type Translate } from '../i18n'
 import {
   findTextChannelByName,
   findUserByName,
@@ -25,16 +26,17 @@ const MAX_SUGGESTIONS = 8
 type Suggestion =
   | { kind: 'user'; user: User }
   | { kind: 'channel'; channel: Channel }
+  /** `label` is the filter keyword (never translated), `hint` a message key. */
   | { kind: 'option'; insert: string; label: string; hint: string }
 
 const OPTIONS: Suggestion[] = [
-  { kind: 'option', insert: 'from:', label: 'from:', hint: 'user' },
-  { kind: 'option', insert: 'in:#', label: 'in:', hint: 'channel' },
+  { kind: 'option', insert: 'from:', label: 'from:', hint: msg('user // search filter') },
+  { kind: 'option', insert: 'in:#', label: 'in:', hint: msg('channel // search filter') },
 ]
 
 const suggestionKey = (s: Suggestion) => (s.kind === 'user' ? `u${s.user.id}` : s.kind === 'channel' ? `c${s.channel.id}` : `o${s.insert}`)
 
-function renderSuggestion(s: Suggestion) {
+function renderSuggestion(s: Suggestion, t: Translate) {
   if (s.kind === 'user')
     return (
       <>
@@ -52,12 +54,13 @@ function renderSuggestion(s: Suggestion) {
   return (
     <>
       <span className="mention-option-name search-option-key">{s.label}</span>
-      <span className="search-option-hint">{s.hint}</span>
+      <span className="search-option-hint">{t(s.hint)}</span>
     </>
   )
 }
 
 export function SearchBox() {
+  const t = useT()
   const users = useApp((s) => s.users)
   const channels = useApp((s) => s.channels)
   const panelOpen = useChatPanels((s) => s.panel === 'search')
@@ -117,7 +120,7 @@ export function SearchBox() {
     if (p.from !== null) {
       const u = findUserByName(app.users, p.from)
       if (!u) {
-        toast(p.from ? `No member named "${p.from}"` : 'Type a name after from:', 'error')
+        toast(p.from ? t('No member named "{name}"', { name: p.from }) : t('Type a name after from:'), 'error')
         return
       }
       authorId = u.id
@@ -125,17 +128,17 @@ export function SearchBox() {
     if (p.in !== null) {
       const c = findTextChannelByName(app.channels, p.in)
       if (!c) {
-        toast(p.in ? `No text channel named #${p.in}` : 'Type a channel after in:', 'error')
+        toast(p.in ? t('No text channel named #{channel}', { channel: p.in }) : t('Type a channel after in:'), 'error')
         return
       }
       channelId = c.id
     }
     if (!p.text && !authorId) {
-      toast(channelId ? 'Add some words or a from: filter to search' : 'Type something to search for', 'info')
+      toast(channelId ? t('Add some words or a from: filter to search') : t('Type something to search for'), 'info')
       return
     }
     if (p.text.length > SEARCH_QUERY_MAX) {
-      toast(`Search is limited to ${SEARCH_QUERY_MAX} characters`, 'error')
+      toast(t('Search is limited to {count} characters', { count: SEARCH_QUERY_MAX }), 'error')
       return
     }
     const panels = useChatPanels.getState()
@@ -189,8 +192,8 @@ export function SearchBox() {
         className="search-input"
         type="text"
         value={value}
-        placeholder="Search"
-        aria-label="Search messages"
+        placeholder={t('Search')}
+        aria-label={t('Search messages')}
         aria-autocomplete="list"
         aria-controls={popupOpen ? listId : undefined}
         aria-activedescendant={popupOpen ? `${listId}-${activeIndex}` : undefined}
@@ -206,7 +209,7 @@ export function SearchBox() {
         onKeyDown={onKeyDown}
       />
       {value ? (
-        <button type="button" className="search-box-icon is-clear" onClick={clear} aria-label="Clear search" title="Clear search">
+        <button type="button" className="search-box-icon is-clear" onClick={clear} aria-label={t('Clear search')} title={t('Clear search')}>
           <CloseIcon size={14} />
         </button>
       ) : (
@@ -217,12 +220,12 @@ export function SearchBox() {
       {popupOpen && (
         <AutocompletePopup
           id={listId}
-          title={token?.kind === 'from' ? 'From user' : token?.kind === 'in' ? 'In channel' : 'Search options'}
-          label="Search suggestions"
+          title={token?.kind === 'from' ? t('From user') : token?.kind === 'in' ? t('In channel') : t('Search options')}
+          label={t('Search suggestions')}
           items={suggestions}
           active={activeIndex}
           itemKey={suggestionKey}
-          renderItem={renderSuggestion}
+          renderItem={(s) => renderSuggestion(s, t)}
           onHover={setActive}
           onPick={pick}
         />

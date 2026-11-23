@@ -9,6 +9,7 @@ import { create } from 'zustand'
 import type { Room } from 'livekit-client'
 import { request } from '@renderer/net/socket'
 import { toast } from '@renderer/lib/toast'
+import { msg, t, tKnown } from '@renderer/i18n'
 import type {
   CaptureEngine,
   NativeShareCapabilities,
@@ -159,11 +160,12 @@ export function refreshNativeEngine(): void {
 /** Shown once per app session: a share with audio went to Chromium because the helper can't capture it. */
 let audioFallbackToasted = false
 
-/** Why a native share can't stream audio here, or null when it can. */
+/** Why a native share can't stream audio here (a message key: show it with t()), or null when it can. */
 export function nativeAudioUnsupportedReason(caps: NativeShareCapabilities | null): string | null {
   if (!caps?.available || caps.features?.processLoopback === true) return null
-  if (caps.osBuild !== undefined && caps.osBuild < PROCESS_LOOPBACK_MIN_BUILD) return 'Stream audio needs Windows 10 version 2004 or newer'
-  return "This capture helper can't stream audio"
+  if (caps.osBuild !== undefined && caps.osBuild < PROCESS_LOOPBACK_MIN_BUILD)
+    return msg('Stream audio needs Windows 10 version 2004 or newer')
+  return msg("This capture helper can't stream audio")
 }
 
 /**
@@ -188,7 +190,7 @@ export async function nativeCapabilitiesFor(opts: StartShareOptions): Promise<Na
     console.info(`[native-share] ${noAudio}: using the Chromium engine for this share`)
     if (!audioFallbackToasted) {
       audioFallbackToasted = true
-      toast(`${noAudio} with native capture — using Chromium capture for streams with audio`, 'info')
+      toast(t('{reason} with native capture — using Chromium capture for streams with audio', { reason: t(noAudio) }), 'info')
     }
     return null
   }
@@ -314,7 +316,7 @@ export async function startNativeShare(
   } catch (e) {
     if (active !== session) return
     // An older server has no voice:streamToken (the request times out): stream with Chromium instead.
-    const message = `no stream token (${e instanceof Error && e.message ? e.message : 'request failed'})`
+    const message = t('no stream token ({error})', { error: e instanceof Error && e.message ? tKnown(e.message) : t('request failed') })
     return fail(session, { code: 'internal', message, fallback: true })
   }
   await stopping
@@ -361,7 +363,7 @@ export async function startNativeShare(
     session.liveTimer = window.setTimeout(() => {
       if (active === session && !session.live) {
         // A helper stuck before `live` is an engine problem: give Chromium a go.
-        void fail(session, { code: 'internal', message: 'the stream did not go live', fallback: true })
+        void fail(session, { code: 'internal', message: t('the stream did not go live'), fallback: true })
       }
     }, LIVE_TIMEOUT_MS)
   }
@@ -422,7 +424,10 @@ function handleEvent(s: NativeSession, ev: NativeShareEvent): void {
         console.warn('[native-share] stream audio failed', ev.error)
         if (!useNativeShare.getState().audioFailed) {
           useNativeShare.setState({ audioFailed: true })
-          toast(`Stream audio stopped: ${ev.error.message}. Viewers still see your stream, without sound.`, 'error')
+          toast(
+            t('Stream audio stopped: {error}. Viewers still see your stream, without sound.', { error: ev.error.message }),
+            'error',
+          )
         }
         break
       }
@@ -438,12 +443,16 @@ function handleEvent(s: NativeSession, ev: NativeShareEvent): void {
       }
       if (ev.reason === 'source-closed') {
         finish(s, true)
-        toast('The shared window was closed, so the stream ended.', 'info')
+        toast(t('The shared window was closed, so the stream ended.'), 'info')
         break
       }
       if (ev.reason === 'device-lost') {
         // The helper already rebuilt its GPU device in place and gave up: Chromium captures differently.
-        void fail(s, { code: 'capture-failed', message: 'the graphics device was lost (driver reset or GPU change)', fallback: true })
+        void fail(s, {
+          code: 'capture-failed',
+          message: t('the graphics device was lost (driver reset or GPU change)'),
+          fallback: true,
+        })
         break
       }
       // error / crashed: explained by the `error` sent right before.
@@ -452,14 +461,14 @@ function handleEvent(s: NativeSession, ev: NativeShareEvent): void {
         break
       }
       finish(s, true)
-      report(s, `Screen share ended: ${endReasonText(ev.reason)}`)
+      report(s, t('Screen share ended: {reason}', { reason: endReasonText(ev.reason) }))
       break
     }
   }
 }
 
 function endReasonText(reason: NativeShareEndReason): string {
-  return reason === 'crashed' ? 'the capture helper stopped unexpectedly' : 'the capture failed'
+  return reason === 'crashed' ? t('the capture helper stopped unexpectedly') : t('the capture failed')
 }
 
 function goLive(s: NativeSession): void {
@@ -554,11 +563,11 @@ async function afterFailure(s: NativeSession, err: NativeShareError): Promise<vo
   if (!h || !r || r !== s.room) return // left voice meanwhile
   const v = h.voice.getState()
   if (!err.fallback || v.sharing || v.shareStarting || active) {
-    if (!v.sharing && !active) report(s, `Screen share: ${err.message}`)
+    if (!v.sharing && !active) report(s, t('Screen share: {error}', { error: err.message }))
     return
   }
   console.warn('[native-share] falling back to Chromium capture', err)
-  toast(`Native capture failed: ${err.message} — using Chromium capture`, 'info')
+  toast(t('Native capture failed: {error} — using Chromium capture', { error: err.message }), 'info')
   // Main may have turned native off for the session (e.g. the helper crashed twice): ask it again before
   // the next share instead of trusting the capabilities cached at join.
   invalidateCapabilities()

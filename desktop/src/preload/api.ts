@@ -362,10 +362,21 @@ export interface PresenceBridgeState {
   settings: ActivitySettings
 }
 
-/** Settings → Appearance → Theme. 'system' follows the OS light/dark setting live. */
-export type ThemeChoice = 'system' | 'dark' | 'light'
+/**
+ * Settings → Appearance → Theme. 'system' follows the OS light/dark setting live; 'midnight' is a dark palette with
+ * true-black surfaces (main treats it as dark).
+ */
+export type ThemeChoice = 'system' | 'dark' | 'midnight' | 'light'
 
-export const THEME_CHOICES: readonly ThemeChoice[] = ['system', 'dark', 'light']
+export const THEME_CHOICES: readonly ThemeChoice[] = ['system', 'dark', 'midnight', 'light']
+
+/** Colors of the window frame, read from the page's tokens: what main paints before / around the page. */
+export interface WindowChrome {
+  /** #rrggbb: the window background and the title bar (--bg-0). */
+  background: string
+  /** #rrggbb: the Windows caption buttons' glyphs (--text-1). */
+  symbols: string
+}
 
 /** UI zoom levels (webContents zoom factor), stepped through by Ctrl+= / Ctrl+- and Ctrl+mouse wheel. */
 export const ZOOM_STEPS: readonly number[] = [0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2]
@@ -376,6 +387,19 @@ export type ZoomSource = 'keyboard' | 'wheel' | 'settings'
 export interface ZoomEvent {
   factor: number
   source: ZoomSource
+}
+
+/** UI languages (Settings → Language & time). English is the source language; pt-BR is translated. */
+export type Language = 'en' | 'pt-BR'
+
+export const LANGUAGES: readonly Language[] = ['en', 'pt-BR']
+
+/** What the OS says about language and region, read by main at startup (see NexoBridge.locale). */
+export interface SystemLocale {
+  /** The user's preferred UI languages, most preferred first (BCP 47, e.g. ["pt-BR", "en-US"]). May be empty. */
+  languages: string[]
+  /** The regional format (BCP 47, e.g. "pt-BR" on an English Windows set to Brazil); null when unknown. */
+  region: string | null
 }
 
 export interface AppearanceState {
@@ -558,14 +582,29 @@ export interface NexoBridge {
   appearance: {
     getState(): Promise<AppearanceState>
     /**
-     * Remember the theme choice (nativeTheme.themeSource, so OS-drawn scrollbars / menus / title bar follow it)
-     * and paint the window background `background` (#rrggbb, the page's --bg-0) so resizes don't flash.
+     * Remember the theme choice (nativeTheme.themeSource, so OS-drawn scrollbars / menus follow it), paint the
+     * window background so resizes don't flash, and recolor the Windows caption buttons to match the title bar.
      */
-    setTheme(theme: ThemeChoice, background: string): void
+    setTheme(theme: ThemeChoice, chrome: WindowChrome): void
     /** Set the zoom factor (snapped to ZOOM_STEPS); resolves with the factor applied. */
     setZoom(factor: number): Promise<number>
     /** Zoom changed (keyboard shortcut, Ctrl+wheel or setZoom). */
     onZoom(cb: (e: ZoomEvent) => void): () => void
+    /**
+     * Window / taskbar / Dock / tray icon while the app runs, kept for the next launch: a square PNG data URL
+     * (16 to 1024 px), or null for the bundled icon. Rejects an invalid image. Missing on older preloads.
+     */
+    setAppIcon(png: string | null): Promise<void>
+  }
+
+  /**
+   * System language and region (from main at startup), and the app language for main's own strings (tray menu,
+   * update messages). Missing on older preloads: callers must check.
+   */
+  locale: {
+    system: SystemLocale
+    /** Tell main the language in use (on start and on every change): it rebuilds the tray menu and keeps it for the next launch. */
+    setLanguage(language: Language): void
   }
 
   /** Auto-update (main process). */
@@ -624,6 +663,8 @@ export const IPC = {
   appearanceSetTheme: 'nexo:appearance:set-theme',
   appearanceSetZoom: 'nexo:appearance:set-zoom',
   appearanceZoom: 'nexo:appearance:zoom', // main → renderer (ZoomEvent)
+  appearanceSetAppIcon: 'nexo:appearance:set-app-icon',
+  localeSetLanguage: 'nexo:locale:set-language',
   musicSearch: 'nexo:music:search',
   musicResolve: 'nexo:music:resolve',
   musicPrefetch: 'nexo:music:prefetch',

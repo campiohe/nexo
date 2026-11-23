@@ -7,6 +7,7 @@
 // Initialized once at module load (session.ts imports this module), so React StrictMode double
 // effects never register duplicate listeners.
 import { create } from 'zustand'
+import { t } from '@renderer/i18n'
 import {
   effectiveMods,
   modifierOf,
@@ -137,7 +138,7 @@ function onHotkey(action: GlobalHotkeyAction, phase: HotkeyPhase): void {
 let syncSeq = 0
 
 function errorText(e: unknown): string {
-  return e instanceof Error && e.message ? e.message : 'unknown error'
+  return e instanceof Error && e.message ? e.message : t('unknown error')
 }
 
 /** The bindings the global hook should watch (push to talk only in PTT mode). */
@@ -162,7 +163,8 @@ async function syncBindings(): Promise<void> {
   if (!hotkeys) {
     setHookStatus(
       anyBound || useInputPrefs.getState().inputMode === 'ptt'
-        ? { active: false, reason: 'Global hotkeys need the Nexo desktop app. They only work while this window is focused.' }
+        ? // Translated now, like main's own reasons (the status is a snapshot, shown as is).
+          { active: false, reason: t('Global hotkeys need the Nexo desktop app. They only work while this window is focused.') }
         : null,
     )
     return
@@ -171,7 +173,7 @@ async function syncBindings(): Promise<void> {
     const status = await hotkeys.setBindings(bindings)
     if (seq === syncSeq) setHookStatus(status)
   } catch (e) {
-    if (seq === syncSeq) setHookStatus({ active: false, reason: `Global hotkeys are unavailable (${errorText(e)}).` })
+    if (seq === syncSeq) setHookStatus({ active: false, reason: t('Global hotkeys are unavailable ({error}).', { error: errorText(e) }) })
   }
 }
 

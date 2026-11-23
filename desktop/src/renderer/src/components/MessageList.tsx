@@ -4,9 +4,10 @@ import { NO_REACTIONS, useApp } from '../store/app'
 import { useCompose } from '../store/compose'
 import { anchorOf, useUi } from '../store/ui'
 import { toast } from '../lib/toast'
+import { useT, type Translate } from '../i18n'
 import { canDeleteMessage, canUnpinMessage } from '../lib/permissions'
 import { contentToPlain, mentionsUser } from '../lib/mentions'
-import { formatDay, formatFull, formatTime, isSameDay } from '../lib/time'
+import { formatDay, formatFull, formatTime, isSameDay, useClock } from '../lib/time'
 import { Avatar } from './Avatar'
 import { ConfirmDialog } from './Modal'
 import { MessageAttachments, MessageContent } from './MessageContent'
@@ -15,7 +16,7 @@ import { MessageActions } from './MessageActions'
 import { MessageEditor } from './MessageEditor'
 import { Reactions } from './Reactions'
 import { EmojiPicker } from './EmojiPicker'
-import { ArrowDownIcon, HashIcon } from './icons'
+import { ArrowDownIcon } from './icons'
 import { PinIcon } from './chatIcons'
 import { MessageEmbeds } from './EmbedCard'
 import { useChatPanels } from '../store/chatPanels'
@@ -32,11 +33,10 @@ const FLASH_MS = 1600
 const NO_ATTACHMENTS: Attachment[] = []
 
 /** Short description of a message for the delete confirmation. */
-function previewText(msg: Message): string {
+function previewText(msg: Message, t: Translate): string {
   const n = msg.attachments?.length ?? 0
-  const images = n === 1 ? '1 image' : `${n} images`
-  if (!msg.content) return n ? `(${images})` : ''
-  return n ? `${msg.content}\n(+ ${images})` : msg.content
+  if (!msg.content) return n ? t('({count, plural, one {# image} other {# images}})', { count: n }) : ''
+  return n ? `${msg.content}\n${t('(+ {count, plural, one {# image} other {# images}})', { count: n })}` : msg.content
 }
 
 interface Row {
@@ -78,6 +78,7 @@ function flash(el: HTMLElement) {
 }
 
 export function MessageList({ channelId }: { channelId: string }) {
+  const t = useT()
   const cm = useApp((s) => s.messages[channelId])
   const channelName = useApp((s) => s.channels.find((c) => c.id === channelId)?.name ?? '')
   const users = useApp((s) => s.users)
@@ -230,15 +231,15 @@ export function MessageList({ channelId }: { channelId: string }) {
         if ((useApp.getState().messages[channelId]?.items.length ?? 0) <= before.items.length) break
       }
       if (!el) {
-        if (opts?.tooFar) toast(exhausted ? 'That message no longer exists' : opts.tooFar, 'info')
-        else toast('Original message is further up', 'info')
+        if (opts?.tooFar) toast(exhausted ? t('That message no longer exists') : opts.tooFar, 'info')
+        else toast(t('Original message is further up'), 'info')
         return
       }
       stickRef.current = false
       el.scrollIntoView({ block: 'center', behavior: 'smooth' })
       flash(el)
     },
-    [channelId, loadOlder],
+    [channelId, loadOlder, t],
   )
 
   // "Jump" from search results or pinned messages (store/chatPanels), once the first page is in.
@@ -249,15 +250,15 @@ export function MessageList({ channelId }: { channelId: string }) {
     void jumpTo(jump.messageId, {
       maxPages: PANEL_JUMP_MAX_PAGES,
       createdAt: jump.createdAt,
-      tooFar: 'That message is too far back to jump to',
+      tooFar: t('That message is too far back to jump to'),
     })
-  }, [jump, loaded, jumpTo])
+  }, [jump, loaded, jumpTo, t])
 
   // Keyboard: Up/Down move between messages (focusing one shows its action bar), Escape goes to the composer.
   function onListKeyDown(e: KeyboardEvent<HTMLDivElement>) {
-    const t = e.target as HTMLElement
-    const onRow = t.classList.contains('message')
-    if (t !== e.currentTarget && !onRow) return
+    const target = e.target as HTMLElement
+    const onRow = target.classList.contains('message')
+    if (target !== e.currentTarget && !onRow) return
     if (e.key === 'Escape' && onRow) {
       e.preventDefault()
       useCompose.getState().focusComposer(channelId)
@@ -268,7 +269,7 @@ export function MessageList({ channelId }: { channelId: string }) {
     if (!rowsEls.length) return
     let next: HTMLElement | undefined
     if (onRow) {
-      const i = rowsEls.indexOf(t)
+      const i = rowsEls.indexOf(target)
       next = rowsEls[e.key === 'ArrowUp' ? i - 1 : i + 1]
     } else {
       next = rowsEls[rowsEls.length - 1]
@@ -280,7 +281,9 @@ export function MessageList({ channelId }: { channelId: string }) {
     }
   }
 
-  const rows = useMemo(() => buildRows(items), [items])
+  // t: the day separators (formatDay) are in the app language.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const rows = useMemo(() => buildRows(items), [items, t])
 
   return (
     <div className="message-list-wrap">
@@ -291,21 +294,18 @@ export function MessageList({ channelId }: { channelId: string }) {
         onKeyDown={onListKeyDown}
         tabIndex={0}
         role="log"
-        aria-label={`Messages in #${channelName}`}
+        aria-label={t('Messages in #{channel}', { channel: channelName })}
       >
         <div className="message-list-content" ref={contentRef}>
           {loaded && !hasMore && (
             <div className="channel-intro">
-              <div className="channel-intro-icon">
-                <HashIcon size={30} />
-              </div>
-              <h2>Welcome to #{channelName}</h2>
-              <p className="muted">This is the beginning of #{channelName}. Say hi!</p>
+              <h2>#{channelName}</h2>
+              <p className="muted">{t('The start of #{channel}.', { channel: channelName })}</p>
             </div>
           )}
           {(loading || !loaded) && (
             <div className={`history-loader ${loaded ? '' : 'is-initial'}`}>
-              <span className="spinner" /> {loaded ? 'Loading older messages…' : 'Loading messages…'}
+              <span className="spinner" /> {loaded ? t('Loading older messages…') : t('Loading messages…')}
             </div>
           )}
           {rows.map((r) => (
@@ -319,7 +319,7 @@ export function MessageList({ channelId }: { channelId: string }) {
               mine={r.msg.userId === meId}
               canDelete={canDeleteMessage(me, r.msg)}
               canUnpin={!!r.msg.pinned && canUnpinMessage(me, r.msg)}
-              pinnedBy={r.msg.pinned ? (users[r.msg.pinned.by]?.name ?? 'a deleted user') : null}
+              pinnedBy={r.msg.pinned ? (users[r.msg.pinned.by]?.name ?? t('a deleted user')) : null}
               mentioned={mentionsUser(r.msg, meId)}
               editing={editingId === r.msg.id}
               replyTarget={replyingToId === r.msg.id}
@@ -335,14 +335,14 @@ export function MessageList({ channelId }: { channelId: string }) {
       </div>
       {unseen > 0 && (
         <button className="new-messages-pill" onClick={jumpToBottom}>
-          {unseen === 1 ? 'New message' : `${unseen} new messages`} <ArrowDownIcon size={14} />
+          {t('{count, plural, one {New message} other {# new messages}}', { count: unseen })} <ArrowDownIcon size={14} />
         </button>
       )}
       {picker && (
         <EmojiPicker
           key={picker.messageId}
           anchor={picker.anchor}
-          label="Add a reaction"
+          label={t('Add a reaction')}
           onClose={() => setPicker(null)}
           onPick={(emoji) => {
             const messageId = picker.messageId
@@ -354,16 +354,18 @@ export function MessageList({ channelId }: { channelId: string }) {
         <ConfirmDialog
           title={
             pendingDelete.userId === meId
-              ? 'Delete message?'
-              : `Delete ${users[pendingDelete.userId]?.name ?? 'this user'}'s message?`
+              ? t('Delete message?')
+              : users[pendingDelete.userId]
+                ? t("Delete {name}'s message?", { name: users[pendingDelete.userId]!.name })
+                : t("Delete this user's message?")
           }
           message={
             <>
-              <div className="confirm-preview">{previewText(pendingDelete)}</div>
-              <span className="muted small">Tip: hold Shift while clicking delete to skip this.</span>
+              <div className="confirm-preview">{previewText(pendingDelete, t)}</div>
+              <span className="muted small">{t('Tip: hold Shift while clicking delete to skip this.')}</span>
             </>
           }
-          confirmLabel="Delete"
+          confirmLabel={t('Delete')}
           danger
           onClose={() => setPendingDelete(null)}
           onConfirm={async () => {
@@ -388,31 +390,35 @@ async function deleteNow(msg: Message) {
 
 /** The "replying to" line above a reply: connector, avatar, name, one-line snippet. Click jumps there. */
 const ReplyLine = memo(function ReplyLine({ reply, onJump }: { reply: NonNullable<Message['replyTo']>; onJump(id: string): void }) {
+  const t = useT()
   const users = useApp((s) => s.users)
   if (reply.deleted) {
     return (
       <div className="message-reply is-deleted">
-        <span className="message-reply-text">Original message was deleted</span>
+        <span className="message-reply-text">{t('Original message was deleted')}</span>
       </div>
     )
   }
   const author: User | undefined = reply.userId ? users[reply.userId] : undefined
   // '' = the account was removed (history), and a user missing from the list is gone too.
-  const name = author?.name ?? 'Deleted user'
+  const name = author?.name ?? t('Deleted user')
   const text = contentToPlain(reply.content, users).replace(/\s+/g, ' ').trim()
   return (
     <div className="message-reply">
       <button
         className="message-reply-target"
         onClick={() => onJump(reply.id)}
-        title="Go to the original message"
-        aria-label={`Replying to ${name}: ${text || (reply.hasAttachments ? 'image' : '')}. Go to the original message`}
+        title={t('Go to the original message')}
+        aria-label={t('Replying to {name}: {text}. Go to the original message', {
+          name,
+          text: text || (reply.hasAttachments ? t('image') : ''),
+        })}
       >
         <Avatar user={author} size={16} />
         <span className="message-reply-author" style={{ color: author?.color }}>
           {name}
         </span>
-        <span className={`message-reply-text ${text ? '' : 'is-meta'}`}>{text || (reply.hasAttachments ? '[image]' : '…')}</span>
+        <span className={`message-reply-text ${text ? '' : 'is-meta'}`}>{text || (reply.hasAttachments ? t('[image]') : '…')}</span>
       </button>
     </div>
   )
@@ -467,7 +473,10 @@ const MessageRow = memo(function MessageRow({
   onOpenPicker(messageId: string, anchor: HTMLElement, from: PickerState['from']): void
   onJump(messageId: string): void
 }) {
-  const pinTitle = pinnedBy !== null && msg.pinned ? `Pinned by ${pinnedBy} · ${formatFull(msg.pinned.at)}` : ''
+  const t = useT()
+  const clock = useClock() // re-render when Settings → Language & time changes the clock
+  const pinTitle =
+    pinnedBy !== null && msg.pinned ? t('Pinned by {name} · {when}', { name: pinnedBy, when: formatFull(msg.pinned.at, clock) }) : ''
   // The action bar only exists for the hovered / keyboard-focused message (cheap long lists).
   const [hover, setHover] = useState(false)
   const [keyboard, setKeyboard] = useState(false)
@@ -518,7 +527,7 @@ const MessageRow = memo(function MessageRow({
                 type="button"
                 className="people-avatar-btn"
                 onClick={(e) => openAuthorCard(author.id, e.currentTarget)}
-                aria-label={`Profile of ${author.name}`}
+                aria-label={t('Profile of {name}', { name: author.name })}
               >
                 <Avatar user={author} size={36} />
               </button>
@@ -527,8 +536,8 @@ const MessageRow = memo(function MessageRow({
             )
           ) : (
             <>
-              <time className="message-time-hover" dateTime={new Date(msg.createdAt).toISOString()} title={formatFull(msg.createdAt)}>
-                {formatTime(msg.createdAt)}
+              <time className="message-time-hover" dateTime={new Date(msg.createdAt).toISOString()} title={formatFull(msg.createdAt, clock)}>
+                {formatTime(msg.createdAt, clock)}
               </time>
               {pinTitle && (
                 <span className="message-pin-mark is-gutter" title={pinTitle} aria-label={pinTitle}>
@@ -546,10 +555,10 @@ const MessageRow = memo(function MessageRow({
                 style={{ color: author?.color }}
                 onClick={author ? (e) => openAuthorCard(author.id, e.currentTarget) : undefined}
               >
-                {author?.name ?? 'Unknown user'}
+                {author?.name ?? t('Unknown user')}
               </span>
-              <time className="message-time" dateTime={new Date(msg.createdAt).toISOString()} title={formatFull(msg.createdAt)}>
-                {formatTime(msg.createdAt)}
+              <time className="message-time" dateTime={new Date(msg.createdAt).toISOString()} title={formatFull(msg.createdAt, clock)}>
+                {formatTime(msg.createdAt, clock)}
               </time>
               {pinTitle && (
                 <span className="message-pin-mark" title={pinTitle} aria-label={pinTitle}>
@@ -565,9 +574,9 @@ const MessageRow = memo(function MessageRow({
               <div className="message-text">
                 {msg.content && <MessageContent text={msg.content} />}
                 {msg.editedAt ? (
-                  <span className="message-edited" title={`Edited ${formatFull(msg.editedAt)}`}>
+                  <span className="message-edited" title={t('Edited {when}', { when: formatFull(msg.editedAt, clock) })}>
                     {' '}
-                    (edited)
+                    {t('(edited)')}
                   </span>
                 ) : null}
               </div>

@@ -2,12 +2,14 @@
 import { app, ipcMain, type IpcMainInvokeEvent } from 'electron'
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { IPC, type AppPrefs, type CaptureEngine } from '../preload/api'
+import { IPC, LANGUAGES, type AppPrefs, type CaptureEngine, type Language } from '../preload/api'
 import { isAppUrl } from './security'
 
 interface PrefsFile extends AppPrefs {
   /** The one-time "Nexo is still running in the tray" hint was shown (internal, not part of AppPrefs). */
   trayHintShown: boolean
+  /** Last language the renderer reported (internal): main's strings use it from the start of the next launch. */
+  language?: Language
 }
 
 const DEFAULTS: PrefsFile = { closeToTray: true, fastCapture: true, captureEngine: 'native', trayHintShown: false }
@@ -28,6 +30,7 @@ function load(): PrefsFile {
     for (const key of BOOLEAN_PREFS) if (typeof raw[key] === 'boolean') data[key] = raw[key]
     if (isCaptureEngine(raw.captureEngine)) data.captureEngine = raw.captureEngine
     if (typeof raw.trayHintShown === 'boolean') data.trayHintShown = raw.trayHintShown
+    if (LANGUAGES.includes(raw.language as Language)) data.language = raw.language as Language
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'ENOENT') console.warn('[nexo] could not read prefs, using defaults:', err)
   }
@@ -58,6 +61,18 @@ export function takeTrayHint(): boolean {
   data.trayHintShown = true
   save(data)
   return true
+}
+
+/** The language saved by the last run (undefined before the renderer ever reported one). */
+export function savedLanguage(): Language | undefined {
+  return load().language
+}
+
+export function saveLanguage(language: Language): void {
+  const data = load()
+  if (data.language === language) return
+  data.language = language
+  save(data)
 }
 
 function parsePatch(patch: unknown): Partial<AppPrefs> {

@@ -1,5 +1,5 @@
 // Small inline SVG icon set (stroke-based, 24px grid, currentColor).
-import type { ReactNode, SVGProps } from 'react'
+import { useId, type ReactNode, type SVGProps } from 'react'
 
 export type IconProps = SVGProps<SVGSVGElement> & { size?: number }
 
@@ -172,17 +172,76 @@ export const ReplyIcon = (p: IconProps) => (
   </Svg>
 )
 
-/** Nexo mark: two interlocking rounded nodes. */
-export const NexoMark = ({ size = 28, ...rest }: IconProps) => (
-  <svg width={size} height={size} viewBox="0 0 32 32" aria-hidden="true" {...rest}>
-    <rect x="2" y="2" width="28" height="28" rx="9" fill="var(--accent)" />
-    <path
-      d="M10 22V10l12 12V10"
-      fill="none"
-      stroke="var(--accent-ink)"
-      strokeWidth="3.2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    />
-  </svg>
+// ---- Settings nav (SettingsModal.tsx) ----
+
+/** Profile: head and shoulders. */
+export const UserIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="12" cy="8" r="4" />
+    <path d="M4 21a8 8 0 0 1 16 0" />
+  </Svg>
 )
+
+/** Appearance: a painter's palette. */
+export const PaletteIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M12 3a9 9 0 0 0 0 18c1 0 1.6-.8 1.6-1.6 0-.5-.2-.8-.4-1.1-.3-.3-.4-.6-.4-1.1 0-.9.7-1.6 1.6-1.6H16a5 5 0 0 0 5-5c0-4.2-4-7.6-9-7.6Z" />
+    <path d="M7.5 12h.01M9.5 7.5h.01M14.5 7.5h.01M17.5 10.5h.01" />
+  </Svg>
+)
+
+/** Language & time: a globe. */
+/** Language: a character next to an "A" (the usual translate glyph). */
+export const LanguagesIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="m5 8 6 6M4 14l6-6 2-3M2 5h12M7 2h1M22 22l-5-10-5 10M14 18h6" />
+  </Svg>
+)
+
+/** Keybinds. */
+export const KeyboardIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="2" y="5" width="20" height="14" rx="2" />
+    <path d="M6 9h.01M10 9h.01M14 9h.01M18 9h.01M8 12.5h.01M12 12.5h.01M16 12.5h.01M8 15.5h8" />
+  </Svg>
+)
+
+/** Plugins: tiles with one being added. */
+export const PluginIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="3" y="3" width="7" height="7" rx="1.5" />
+    <rect x="3" y="14" width="7" height="7" rx="1.5" />
+    <rect x="14" y="14" width="7" height="7" rx="1.5" />
+    <path d="M17.5 3v7M14 6.5h7" />
+  </Svg>
+)
+
+/** Server: two rack units. */
+export const ServerIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="3" y="3" width="18" height="8" rx="2" />
+    <rect x="3" y="13" width="18" height="8" rx="2" />
+    <path d="M7 7h.01M7 17h.01" />
+  </Svg>
+)
+
+/**
+ * Nexo mark, the app icon's drawing (resources/icon.svg): a ring with a dot breaking out of it. `tile` draws it
+ * on the icon's rounded square, like the taskbar icon; without it, just the glyph in the accent color.
+ */
+export function NexoMark({ size = 28, tile = false, ...rest }: IconProps & { tile?: boolean }) {
+  const mask = `nexo-mark-${useId().replace(/:/g, '')}`
+  return (
+    <svg width={size} height={size} viewBox={tile ? '72 72 880 880' : '210 242 572 572'} aria-hidden="true" focusable="false" {...rest}>
+      <defs>
+        <mask id={mask}>
+          <rect width="1024" height="1024" fill="#fff" />
+          <circle cx="655.81" cy="368.19" r="130" fill="#000" />
+        </mask>
+      </defs>
+      {tile && <rect x="72" y="72" width="880" height="880" rx="196" fill="var(--bg-0)" stroke="var(--line-strong)" strokeWidth="10" />}
+      <circle cx="496" cy="528" r="226" fill="none" stroke="var(--accent)" strokeWidth={tile ? 80 : 92} mask={`url(#${mask})`} />
+      <circle cx="655.81" cy="368.19" r="96" fill="var(--accent)" />
+    </svg>
+  )
+}

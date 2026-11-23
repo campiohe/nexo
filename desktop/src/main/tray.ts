@@ -12,6 +12,7 @@ import {
 } from 'electron'
 import icon from '../../resources/icon.png?asset'
 import { IPC, type TrayAction } from '../preload/api'
+import { onLanguageChange, tm } from './i18n'
 import { platform } from './platform'
 import { takeTrayHint } from './prefs'
 import { isAppUrl } from './security'
@@ -40,6 +41,9 @@ let updateReady: string | null = null
 
 /** Unread mentions (lib/notify.ts in the renderer): the tray icon gets a red dot and the tooltip says so. */
 let mentions = 0
+
+/** Settings → Appearance → App icon (appIcon.ts): the image the tray icon is drawn from; null: the bundled icon.png. */
+let baseIcon: NativeImage | null = null
 
 /** The red of the unread-mention dot (same as the renderer's mention badge). */
 const DOT = { r: 0xf2, g: 0x3f, b: 0x43 }
@@ -75,9 +79,12 @@ function withDot(img: NativeImage): NativeImage {
   return nativeImage.createFromBitmap(px, { width, height })
 }
 
-/** icon.png (1024 px) scaled down; @1x/@1.5x/@2x representations so the OS picks a crisp one for its DPI. */
+/**
+ * The app icon (icon.png, 1024 px, or the chosen alternate, 256 px) scaled down; @1x/@1.5x/@2x representations so
+ * the OS picks a crisp one for its DPI.
+ */
 function trayImage(dot = false): NativeImage {
-  const src = nativeImage.createFromPath(icon)
+  const src = baseIcon && !baseIcon.isEmpty() ? baseIcon : nativeImage.createFromPath(icon)
   if (src.isEmpty()) return src
   const scaled = (px: number): NativeImage => {
     const img = src.resize({ width: px, height: px, quality: 'best' })
@@ -93,12 +100,18 @@ function trayImage(dot = false): NativeImage {
   return img
 }
 
+/** "Nexo · in General · muted · 2 unread mentions" (the parts that apply). */
 function tooltip(): string {
-  const unread = mentions > 0 ? ` · ${mentions} unread mention${mentions === 1 ? '' : 's'}` : ''
-  if (!voice.inVoice) return `Nexo${unread}`
-  const where = voice.channelName ? `in ${voice.channelName}` : 'in voice'
-  const flag = voice.deafened ? ' (deafened)' : voice.muted ? ' (muted)' : ''
-  return `Nexo — ${where}${flag}${unread}`
+  const parts = ['Nexo']
+  if (voice.inVoice) {
+    parts.push(voice.channelName ? tm('in {channel}', { channel: voice.channelName }) : tm('in voice'))
+    if (voice.deafened) parts.push(tm('deafened'))
+    else if (voice.muted) parts.push(tm('muted'))
+  }
+  if (mentions > 0) {
+    parts.push(mentions === 1 ? tm('{count} unread mention', { count: mentions }) : tm('{count} unread mentions', { count: mentions }))
+  }
+  return parts.join(' · ')
 }
 
 function sendAction(action: TrayAction): void {
@@ -118,24 +131,24 @@ function rebuild(): void {
   tray.setToolTip(tooltip())
   tray.setContextMenu(
     Menu.buildFromTemplate([
-      { label: 'Open Nexo', click: () => deps?.showWindow() },
+      { label: tm('Open Nexo'), click: () => deps?.showWindow() },
       { type: 'separator' },
-      { label: 'Mute', type: 'checkbox', checked: voice.muted, enabled: voice.inVoice, click: act('toggle-mute') },
-      { label: 'Deafen', type: 'checkbox', checked: voice.deafened, enabled: voice.inVoice, click: act('toggle-deafen') },
-      { label: 'Leave voice', enabled: voice.inVoice, click: act('leave-voice') },
+      { label: tm('Mute'), type: 'checkbox', checked: voice.muted, enabled: voice.inVoice, click: act('toggle-mute') },
+      { label: tm('Deafen'), type: 'checkbox', checked: voice.deafened, enabled: voice.inVoice, click: act('toggle-deafen') },
+      { label: tm('Leave voice'), enabled: voice.inVoice, click: act('leave-voice') },
       { type: 'separator' },
       ...(updateReady
         ? ([
             {
-              label: voice.inVoice ? 'Restart to update (leaves the call)' : 'Restart to update',
-              toolTip: `Install Nexo ${updateReady}`,
+              label: voice.inVoice ? tm('Restart to update (leaves the call)') : tm('Restart to update'),
+              toolTip: tm('Install Nexo {version}', { version: updateReady }),
               click: () => deps?.installUpdate(),
             },
             { type: 'separator' },
           ] satisfies MenuItemConstructorOptions[])
         : []),
       // app.quit() emits before-quit, which sets the isQuitting flag in index.ts.
-      { label: 'Quit Nexo', click: () => app.quit() },
+      { label: tm('Quit Nexo'), click: () => app.quit() },
     ]),
   )
 }
@@ -169,6 +182,7 @@ export function installTray(d: TrayDeps): boolean {
   }
   // macOS opens the context menu on click; Windows/Linux: a (left) click brings the window back.
   if (platform !== 'darwin') tray.on('click', () => deps?.showWindow())
+  onLanguageChange(rebuild)
   rebuild()
   return true
 }
@@ -182,6 +196,12 @@ export function setTrayMentions(count: number): void {
   if (!tray || tray.isDestroyed()) return
   if (dotChanged) tray.setImage(trayImage(mentions > 0))
   tray.setToolTip(tooltip())
+}
+
+/** Draws the tray icon from this image from now on (null: the bundled icon), keeping the unread dot. */
+export function setTrayBaseIcon(image: NativeImage | null): void {
+  baseIcon = image
+  if (tray && !tray.isDestroyed()) tray.setImage(trayImage(mentions > 0))
 }
 
 /** Shows or hides the "Restart to update" item (version of the downloaded update, or null). */
@@ -203,8 +223,8 @@ export function destroyTray(): void {
 /** One-time "still running" hint after the window is first hidden to the tray (Windows/Linux). */
 export function maybeShowTrayHint(): void {
   if (!tray || tray.isDestroyed() || platform === 'darwin') return
-  const title = 'Nexo is still running in the tray'
-  const content = 'Click the tray icon to open Nexo again. To exit, right-click it and choose Quit Nexo.'
+  const title = tm('Nexo is still running in the tray')
+  const content = tm('Click the tray icon to open Nexo again. To exit, right-click it and choose {quit}.', { quit: tm('Quit Nexo') })
   if (platform === 'win32') {
     if (!takeTrayHint()) return
     // Shell balloon (Action Center toast on Windows 10/11); not subject to the web Notification permission.

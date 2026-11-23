@@ -16,6 +16,7 @@ import { resumeMusic, retryMusic, useMusicPlayer } from '../../voice/musicPlayer
 import { saveMusicPrefs, useMusicPrefs } from '../../voice/musicPrefs'
 import { PlayIcon, VolumeIcon, VolumeOffIcon, AlertIcon } from './icons'
 import { DuckIcon, MusicIcon, PauseIcon, QueueIcon, SkipNextIcon, SkipPrevIcon } from './musicIcons'
+import { tKnown, useT, type Translate } from '../../i18n'
 import '../../styles/music.css'
 
 /** Width of the music panel (music.css .mu-panel), used to center it over the button that opens it. */
@@ -34,9 +35,10 @@ export function useInMusicChannel(channelId: string | null): boolean {
   )
 }
 
-export function addedByName(users: Record<string, User>, userId: string, meId: string | undefined): string {
-  if (userId === meId) return 'you'
-  return users[userId]?.name ?? 'someone'
+/** Who added a track, for "added by {name}". */
+export function addedByName(users: Record<string, User>, userId: string, meId: string | undefined, t: Translate): string {
+  if (userId === meId) return t('you // added by')
+  return users[userId]?.name ?? t('someone // added by')
 }
 
 /** The shared position of the current track, re-rendering a few times a second while it plays. */
@@ -71,21 +73,13 @@ export function Artwork({ src, size, className }: { src: string | null; size: nu
 export function MusicBar({ channelId }: { channelId: string }) {
   const on = usePlugins((s) => s.plugins.music)
   const state = useMusic((s) => s.byChannel[channelId])
-  if (!on) return null
-  if (!state?.current) {
-    return (
-      <div className="mu-idle">
-        <button className="mu-idle-btn" onClick={(e) => openPanel(channelId, e.currentTarget, 'stage-pill', 'search')}>
-          <MusicIcon size={14} /> Play music
-          {state && state.queue.length > 0 && <span className="mu-count">{state.queue.length} queued</span>}
-        </button>
-      </div>
-    )
-  }
+  // Nothing playing: no bar. Music is started from the toolbar's music button (and the sidebar's voice panel).
+  if (!on || !state?.current) return null
   return <NowPlaying channelId={channelId} state={state} track={state.current} />
 }
 
 function NowPlaying({ channelId, state, track }: { channelId: string; state: MusicState; track: MusicTrack }) {
+  const t = useT()
   const users = useApp((s) => s.users)
   const meId = useApp((s) => s.me?.id)
   const canAct = useInMusicChannel(channelId)
@@ -100,14 +94,14 @@ function NowPlaying({ channelId, state, track }: { channelId: string; state: Mus
   const onKeyDown = (e: KeyboardEvent<HTMLElement>) => {
     if (e.key !== ' ' || e.repeat || !canAct) return
     // Buttons and inputs keep Space for themselves.
-    const t = e.target as HTMLElement
-    if (t !== e.currentTarget && t.closest('button, input, textarea, select')) return
+    const target = e.target as HTMLElement
+    if (target !== e.currentTarget && target.closest('button, input, textarea, select')) return
     e.preventDefault()
     togglePlay()
   }
 
   return (
-    <section className="mu-bar" tabIndex={0} aria-label={`Music: ${track.title}`} onKeyDown={onKeyDown}>
+    <section className="mu-bar" tabIndex={0} aria-label={t('Music: {title}', { title: track.title })} onKeyDown={onKeyDown}>
       <div className="mu-bar-main">
         <Artwork src={track.artwork} size={48} />
         <div className="mu-meta">
@@ -116,9 +110,9 @@ function NowPlaying({ channelId, state, track }: { channelId: string; state: Mus
           </span>
           <span className="mu-sub">
             <span className="mu-sub-artist" title={track.artist}>
-              {track.artist || 'Unknown artist'}
+              {track.artist || t('Unknown artist')}
             </span>
-            <span className="mu-sub-added"> · added by {addedByName(users, track.addedBy, meId)}</span>
+            <span className="mu-sub-added"> · {t('added by {name}', { name: addedByName(users, track.addedBy, meId, t) })}</span>
           </span>
         </div>
         <div className="mu-transport">
@@ -126,8 +120,8 @@ function NowPlaying({ channelId, state, track }: { channelId: string; state: Mus
             className="mu-btn"
             onClick={() => void musicControl(channelId, 'previous')}
             disabled={!canAct}
-            title="Previous (restarts the song after its first 3 seconds)"
-            aria-label="Previous"
+            title={t('Previous (restarts the song after its first 3 seconds)')}
+            aria-label={t('Previous')}
           >
             <SkipPrevIcon size={16} />
           </button>
@@ -135,8 +129,8 @@ function NowPlaying({ channelId, state, track }: { channelId: string; state: Mus
             className={`mu-btn mu-btn-play ${buffering && playing && enabled ? 'is-buffering' : ''}`}
             onClick={togglePlay}
             disabled={!canAct}
-            title={playing ? 'Pause for everyone (Space)' : 'Play for everyone (Space)'}
-            aria-label={playing ? 'Pause' : 'Play'}
+            title={playing ? t('Pause for everyone (Space)') : t('Play for everyone (Space)')}
+            aria-label={playing ? t('Pause') : t('Play')}
           >
             {playing ? <PauseIcon size={18} /> : <PlayIcon size={18} />}
           </button>
@@ -144,8 +138,8 @@ function NowPlaying({ channelId, state, track }: { channelId: string; state: Mus
             className="mu-btn"
             onClick={() => void musicControl(channelId, 'skip')}
             disabled={!canAct}
-            title={state.queue.length ? `Skip to “${state.queue[0].title}”` : 'Skip (nothing queued: stops)'}
-            aria-label="Skip"
+            title={state.queue.length ? t('Skip to “{title}”', { title: state.queue[0]!.title }) : t('Skip (nothing queued: stops)')}
+            aria-label={t('Skip')}
           >
             <SkipNextIcon size={16} />
           </button>
@@ -155,8 +149,8 @@ function NowPlaying({ channelId, state, track }: { channelId: string; state: Mus
           <button
             className={`mu-btn mu-btn-queue ${panelOpen ? 'is-on' : ''}`}
             onClick={(e) => openPanel(channelId, e.currentTarget, 'stage-queue', 'queue')}
-            title="Queue and search"
-            aria-label={`Queue (${state.queue.length})`}
+            title={t('Queue and search')}
+            aria-label={t('Queue ({count})', { count: state.queue.length })}
             aria-haspopup="dialog"
             aria-expanded={panelOpen}
           >
@@ -175,22 +169,22 @@ function NowPlaying({ channelId, state, track }: { channelId: string; state: Mus
       {!enabled ? (
         <div className="mu-note">
           <VolumeOffIcon size={14} />
-          <span>Music doesn't play on this device.</span>
+          <span>{t("Music doesn't play on this device.")}</span>
           <button className="mu-link" onClick={() => saveMusicPrefs({ musicEnabled: true })}>
-            Play it here
+            {t('Play it here')}
           </button>
         </div>
       ) : notice ? (
         <div className="mu-note is-error" role="status">
           <AlertIcon size={14} />
-          <span>{notice}</span>
+          <span>{t("Can't play this here: {reason}", { reason: tKnown(notice) })}</span>
           <button className="mu-link" onClick={retryMusic}>
-            Retry
+            {t('Retry')}
           </button>
         </div>
       ) : blocked ? (
         <button className="mu-note is-action" onClick={resumeMusic}>
-          <PlayIcon size={12} /> Click to start music
+          <PlayIcon size={12} /> {t('Click to start music')}
         </button>
       ) : null}
     </section>
@@ -200,6 +194,7 @@ function NowPlaying({ channelId, state, track }: { channelId: string; state: Mus
 /** Shared progress; click or drag to seek (one `seek` on release), arrows ±5 s. */
 function Seekbar(props: { state: MusicState; durationMs: number; disabled: boolean; rev: number; onSeek(ms: number): void }) {
   const { state, durationMs, disabled, rev, onSeek } = props
+  const t = useT()
   // Ticks here only, not in the whole bar.
   const positionMs = useSharedPosition(state)
   const ref = useRef<HTMLDivElement>(null)
@@ -209,8 +204,8 @@ function Seekbar(props: { state: MusicState; durationMs: number; disabled: boole
   useEffect(() => {
     if (!pending) return
     if (rev !== pending.rev) return setPending(null)
-    const t = window.setTimeout(() => setPending(null), 1500)
-    return () => window.clearTimeout(t)
+    const timer = window.setTimeout(() => setPending(null), 1500)
+    return () => window.clearTimeout(timer)
   }, [pending, rev])
 
   const shown = drag ?? (pending && pending.rev === rev ? pending.ms : positionMs)
@@ -262,11 +257,11 @@ function Seekbar(props: { state: MusicState; durationMs: number; disabled: boole
         className={`mu-seek ${disabled ? 'is-disabled' : ''} ${drag !== null ? 'is-dragging' : ''}`}
         role="slider"
         tabIndex={disabled ? -1 : 0}
-        aria-label="Position"
+        aria-label={t('Position')}
         aria-valuemin={0}
         aria-valuemax={Math.round(dur / 1000)}
         aria-valuenow={Math.round(shown / 1000)}
-        aria-valuetext={`${formatDuration(shown)} of ${formatDuration(dur)}`}
+        aria-valuetext={t('{position} of {duration}', { position: formatDuration(shown), duration: formatDuration(dur) })}
         aria-disabled={disabled}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
@@ -289,6 +284,7 @@ let lastAudibleVolume = 0.5
 
 /** This device's music volume + the ducking toggle (also in Settings → Audio & video). */
 export function MusicVolume() {
+  const t = useT()
   const volume = useMusicPrefs((s) => s.musicVolume)
   const duck = useMusicPrefs((s) => s.musicDuck)
   const deafened = useVoice((s) => s.deafened)
@@ -299,8 +295,8 @@ export function MusicVolume() {
       <button
         className="mu-btn"
         onClick={() => saveMusicPrefs({ musicVolume: volume > 0 ? 0 : lastAudibleVolume || 0.5 })}
-        title={deafened ? "You're deafened" : volume > 0 ? 'Mute music (only for you)' : 'Unmute music'}
-        aria-label={volume > 0 ? 'Mute music' : 'Unmute music'}
+        title={deafened ? t("You're deafened") : volume > 0 ? t('Mute music (only for you)') : t('Unmute music')}
+        aria-label={volume > 0 ? t('Mute music') : t('Unmute music')}
       >
         {volume === 0 || deafened ? <VolumeOffIcon size={16} /> : <VolumeIcon size={16} />}
       </button>
@@ -312,16 +308,16 @@ export function MusicVolume() {
         step={1}
         value={pct}
         onChange={(e) => saveMusicPrefs({ musicVolume: Number(e.target.value) / 100 })}
-        aria-label="Music volume (only for you)"
-        title={`Music volume ${pct}% (only for you)`}
+        aria-label={t('Music volume (only for you)')}
+        title={t('Music volume {pct}% (only for you)', { pct })}
         style={{ ['--fill' as string]: `${pct}%` }}
       />
       <button
         className={`mu-btn ${duck ? 'is-on' : ''}`}
         onClick={() => saveMusicPrefs({ musicDuck: !duck })}
         aria-pressed={duck}
-        title={duck ? 'Lowering music while people talk (click to turn off)' : 'Lower music while people talk'}
-        aria-label="Lower music while people talk"
+        title={duck ? t('Lowering music while people talk (click to turn off)') : t('Lower music while people talk')}
+        aria-label={t('Lower music while people talk')}
       >
         <DuckIcon size={16} />
       </button>
@@ -334,6 +330,7 @@ export function MusicVolume() {
 
 /** Stage toolbar: opens the music panel of the channel you're in. Hidden when the plugin is off. */
 export function MusicButton({ size = 'lg' }: { size?: 'sm' | 'lg' }) {
+  const t = useT()
   const on = usePlugins((s) => s.plugins.music)
   const channelId = useVoice((s) => s.channelId)
   const from = `toolbar-${size}`
@@ -343,8 +340,8 @@ export function MusicButton({ size = 'lg' }: { size?: 'sm' | 'lg' }) {
     <button
       className={`vx-ctl vx-ctl-${size} ${open ? 'is-on' : ''}`}
       onClick={(e) => openPanel(channelId, e.currentTarget, from)}
-      title="Music"
-      aria-label="Music"
+      title={t('Music')}
+      aria-label={t('Music')}
       aria-haspopup="dialog"
       aria-expanded={open}
     >
@@ -355,6 +352,7 @@ export function MusicButton({ size = 'lg' }: { size?: 'sm' | 'lg' }) {
 
 /** Sidebar voice panel: what's playing in your channel (opens the panel), or a "Play music" link. */
 export function VoicePanelMusic() {
+  const t = useT()
   const on = usePlugins((s) => s.plugins.music)
   const channelId = useVoice((s) => s.channelId)
   const state = useMusic((s) => (channelId ? s.byChannel[channelId] : undefined))
@@ -366,17 +364,23 @@ export function VoicePanelMusic() {
       <button
         className={`mu-panel-line-btn ${cur ? '' : 'is-idle'}`}
         onClick={(e) => openPanel(channelId, e.currentTarget, 'voice-panel', cur ? 'queue' : 'search')}
-        title={cur ? `${cur.title} — ${cur.artist}${playing ? '' : ' (paused)'}` : 'Play music in this channel'}
+        title={
+          cur
+            ? playing
+              ? `${cur.title} — ${cur.artist}`
+              : t('{song} (paused)', { song: `${cur.title} — ${cur.artist}` })
+            : t('Play music in this channel')
+        }
       >
         <MusicIcon size={13} />
-        <span className="mu-panel-line-text">{cur ? `${cur.title}${cur.artist ? ` — ${cur.artist}` : ''}` : 'Play music'}</span>
+        <span className="mu-panel-line-text">{cur ? `${cur.title}${cur.artist ? ` — ${cur.artist}` : ''}` : t('Play music')}</span>
       </button>
       {cur && (
         <button
           className="vx-icon-btn mu-panel-line-play"
           onClick={() => void musicControl(channelId, playing ? 'pause' : 'play')}
-          title={playing ? 'Pause for everyone' : 'Play for everyone'}
-          aria-label={playing ? 'Pause music' : 'Play music'}
+          title={playing ? t('Pause for everyone') : t('Play for everyone')}
+          aria-label={playing ? t('Pause music') : t('Play music')}
         >
           {playing ? <PauseIcon size={12} /> : <PlayIcon size={12} />}
         </button>
@@ -387,20 +391,21 @@ export function VoicePanelMusic() {
 
 /** Under a voice channel in the sidebar (visible to everyone): "♪ Title — Artist" while it has a song. */
 export function ChannelMusicLine({ channelId }: { channelId: string }) {
+  const t = useT()
   const on = usePlugins((s) => s.plugins.music)
   const cur = useMusic((s) => s.byChannel[channelId]?.current ?? null)
   const playing = useMusic((s) => isMusicPlaying(s.byChannel[channelId]))
   if (!on || !cur) return null
   const label = `${cur.title}${cur.artist ? ` — ${cur.artist}` : ''}`
   return (
-    <div className={`mu-channel-line ${playing ? 'is-playing' : 'is-paused'}`} title={playing ? label : `${label} (paused)`}>
+    <div className={`mu-channel-line ${playing ? 'is-playing' : 'is-paused'}`} title={playing ? label : t('{song} (paused)', { song: label })}>
       <span className="mu-eq" aria-hidden="true">
         <i />
         <i />
         <i />
       </span>
       <span className="mu-channel-line-text">
-        <span className="sr-only">{playing ? 'Playing: ' : 'Paused: '}</span>
+        <span className="sr-only">{playing ? t('Playing:') : t('Paused:')} </span>
         {label}
       </span>
     </div>

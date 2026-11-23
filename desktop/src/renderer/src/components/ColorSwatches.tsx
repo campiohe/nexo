@@ -1,5 +1,6 @@
 import { CheckIcon } from './icons'
 import { inkOn } from '../lib/colors'
+import { useT } from '../i18n'
 
 interface Props {
   value: string
@@ -9,8 +10,9 @@ interface Props {
 }
 
 export function ColorSwatches({ value, onChange, colors, disabled }: Props) {
+  const t = useT()
   return (
-    <div className="swatches" role="radiogroup" aria-label="Color">
+    <div className="swatches" role="radiogroup" aria-label={t('Color')}>
       {colors.map((c) => {
         const selected = c.toLowerCase() === value.toLowerCase()
         return (
