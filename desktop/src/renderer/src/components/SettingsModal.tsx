@@ -32,7 +32,7 @@ import { ConfirmDialog, Modal } from './Modal'
 import {
   AlertIcon,
   BellIcon,
-  GlobeIcon,
+  LanguagesIcon,
   KeyboardIcon,
   LogoutIcon,
   PaletteIcon,
@@ -65,7 +65,7 @@ const GROUPS: { key: string; label: string | null; tabs: TabDef[] }[] = [
     tabs: [
       { id: 'profile', label: msg('Profile'), icon: UserIcon },
       { id: 'appearance', label: msg('Appearance'), icon: PaletteIcon },
-      { id: 'language', label: msg('Language & time'), icon: GlobeIcon },
+      { id: 'language', label: msg('Language & time'), icon: LanguagesIcon },
       { id: 'av', label: msg('Audio & video'), icon: HeadphonesIcon },
       { id: 'keybinds', label: msg('Keybinds'), icon: KeyboardIcon },
       { id: 'notifications', label: msg('Notifications'), icon: BellIcon, available: hasNativeNotifications },

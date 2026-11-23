@@ -191,10 +191,10 @@ export const PaletteIcon = (p: IconProps) => (
 )
 
 /** Language & time: a globe. */
-export const GlobeIcon = (p: IconProps) => (
+/** Language: a character next to an "A" (the usual translate glyph). */
+export const LanguagesIcon = (p: IconProps) => (
   <Svg {...p}>
-    <circle cx="12" cy="12" r="9" />
-    <path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18" />
+    <path d="m5 8 6 6M4 14l6-6 2-3M2 5h12M7 2h1M22 22l-5-10-5 10M14 18h6" />
   </Svg>
 )
 
