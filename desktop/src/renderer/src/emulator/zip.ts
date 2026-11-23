@@ -3,6 +3,7 @@
 // one entry (stored / deflate, via the browser's DecompressionStream). Zip64 and encrypted entries aren't
 // supported (game zips never need them). The SNES engine reads its zips itself (engine/rom.ts).
 import { EmulatorError } from './types'
+import { msg, t } from '../i18n'
 
 export interface ZipEntry {
   name: string
@@ -15,7 +16,7 @@ export interface ZipEntry {
   local: number
 }
 
-const CORRUPT_ZIP = 'This .zip file is damaged or uses an unsupported format'
+const CORRUPT_ZIP = msg('This .zip file is damaged or uses an unsupported format')
 const EOCD_SIG = 0x06054b50
 const CDIR_SIG = 0x02014b50
 const LOCAL_SIG = 0x04034b50
@@ -43,11 +44,11 @@ export async function listZip(file: Blob): Promise<ZipEntry[]> {
       break
     }
   }
-  if (eocd < 0) throw new EmulatorError(CORRUPT_ZIP)
+  if (eocd < 0) throw new EmulatorError(t(CORRUPT_ZIP))
   const count = dv.getUint16(eocd + 10, true)
   const dirSize = dv.getUint32(eocd + 12, true)
   const dirOffset = dv.getUint32(eocd + 16, true)
-  if (dirOffset + dirSize > size) throw new EmulatorError(CORRUPT_ZIP)
+  if (dirOffset + dirSize > size) throw new EmulatorError(t(CORRUPT_ZIP))
   const dir = new Uint8Array(await file.slice(dirOffset, dirOffset + dirSize).arrayBuffer())
   return parseDirectory(dir, count)
 }
@@ -58,7 +59,7 @@ function parseDirectory(dir: Uint8Array, count: number): ZipEntry[] {
   const entries: ZipEntry[] = []
   let p = 0
   for (let i = 0; i < count; i++) {
-    if (p + 46 > dir.length || dv.getUint32(p, true) !== CDIR_SIG) throw new EmulatorError(CORRUPT_ZIP)
+    if (p + 46 > dir.length || dv.getUint32(p, true) !== CDIR_SIG) throw new EmulatorError(t(CORRUPT_ZIP))
     const nameLen = dv.getUint16(p + 28, true)
     const extraLen = dv.getUint16(p + 30, true)
     const commentLen = dv.getUint16(p + 32, true)
@@ -89,7 +90,7 @@ export function listZipBytes(zip: Uint8Array): ZipEntry[] {
     if (dirOffset + dirSize > zip.length) break
     return parseDirectory(zip.subarray(dirOffset, dirOffset + dirSize), count)
   }
-  throw new EmulatorError(CORRUPT_ZIP)
+  throw new EmulatorError(t(CORRUPT_ZIP))
 }
 
 /** Base name of an entry ("roms/Game.z64" → "Game.z64"). */
@@ -101,17 +102,17 @@ export function baseName(name: string): string {
 /** One entry's bytes, never more than `maxBytes` (a lying directory can't balloon memory). */
 export async function extractZipEntry(zip: Uint8Array, entry: ZipEntry, maxBytes: number, tooBig: string): Promise<Uint8Array> {
   if (entry.size > maxBytes) throw new EmulatorError(tooBig)
-  if (entry.flags & 1) throw new EmulatorError('This .zip file is password-protected')
-  if (entry.method !== 0 && entry.method !== 8) throw new EmulatorError(CORRUPT_ZIP)
+  if (entry.flags & 1) throw new EmulatorError(t('This .zip file is password-protected'))
+  if (entry.method !== 0 && entry.method !== 8) throw new EmulatorError(t(CORRUPT_ZIP))
   const dv = new DataView(zip.buffer, zip.byteOffset, zip.byteLength)
   const l = entry.local
-  if (l + 30 > zip.length || dv.getUint32(l, true) !== LOCAL_SIG) throw new EmulatorError(CORRUPT_ZIP)
+  if (l + 30 > zip.length || dv.getUint32(l, true) !== LOCAL_SIG) throw new EmulatorError(t(CORRUPT_ZIP))
   const start = l + 30 + dv.getUint16(l + 26, true) + dv.getUint16(l + 28, true)
   const end = start + entry.compressed
-  if (end > zip.length) throw new EmulatorError(CORRUPT_ZIP)
+  if (end > zip.length) throw new EmulatorError(t(CORRUPT_ZIP))
   const data = zip.subarray(start, end)
   if (entry.method === 0) {
-    if (data.length !== entry.size) throw new EmulatorError(CORRUPT_ZIP)
+    if (data.length !== entry.size) throw new EmulatorError(t(CORRUPT_ZIP))
     return data.slice()
   }
   const out = new Uint8Array(entry.size)
@@ -127,8 +128,8 @@ export async function extractZipEntry(zip: Uint8Array, entry: ZipEntry, maxBytes
     }
   } catch {
     void reader.cancel().catch(() => {})
-    throw new EmulatorError(CORRUPT_ZIP)
+    throw new EmulatorError(t(CORRUPT_ZIP))
   }
-  if (filled !== out.length) throw new EmulatorError(CORRUPT_ZIP)
+  if (filled !== out.length) throw new EmulatorError(t(CORRUPT_ZIP))
   return out
 }

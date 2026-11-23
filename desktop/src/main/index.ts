@@ -10,6 +10,7 @@ import { devMode, isDev, platform, preloadArguments } from './platform'
 import { getPrefs, installPrefs } from './prefs'
 import { installPresence } from './presence'
 import { installHotkeys } from './hotkeys'
+import { installLanguage } from './i18n'
 import { installMainLog, logLine } from './log'
 import { installMusic, registerMusicScheme } from './music'
 import { installNativeShare, releaseNativeShare } from './native-media'
@@ -230,6 +231,7 @@ if (!app.requestSingleInstanceLock()) {
     installCapture()
     installSecrets()
     installPrefs()
+    installLanguage()
     installAppearance()
     installAppIcon()
     installHotkeys({ getWindow: () => mainWindow, focusWindow: raiseMainWindow })

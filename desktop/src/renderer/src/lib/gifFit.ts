@@ -1,22 +1,37 @@
 // Encode already cropped/resized RGBA frames as a looping GIF that fits a byte budget (animated profile
-// pictures, see AVATAR_ANIMATED_* in shared/protocol.ts). No DOM: the caller decodes and crops the frames.
+// pictures and banners, see AVATAR_ANIMATED_* / BANNER_ANIMATED_* in shared/protocol.ts). No DOM: the caller decodes and crops the frames.
 //
 // Every frame is a full picture with its own (local) palette from gifenc's quantizer. Each frame is
 // encoded once per colour count into a self-contained chunk (graphic control extension + image), so the
 // exact file size of any "keep every Nth frame" variant is a sum of cached chunk sizes: simplifying never
 // re-encodes a frame it already did.
 import { GIFEncoder, applyPalette, quantize, type GifPalette } from 'gifenc'
+import { msg } from '../i18n/core'
+
+/**
+ * An error for the user. Runs in a worker (no app language there): `message` is the English message key, and the
+ * main thread (lib/gifAvatar.ts) translates it with `values`.
+ */
+export class GifFitError extends Error {
+  constructor(
+    readonly key: string,
+    readonly values?: Readonly<Record<string, string | number>>,
+  ) {
+    super(key)
+  }
+}
 
 export interface RgbaFrame {
-  /** size × size × 4 bytes, straight (non-premultiplied) RGBA. */
+  /** width × height × 4 bytes, straight (non-premultiplied) RGBA. */
   data: Uint8ClampedArray
   /** How long the frame shows, in ms. */
   duration: number
 }
 
 export interface FitOptions {
-  /** Width = height of every frame. */
-  size: number
+  /** Size of every frame, in pixels. */
+  width: number
+  height: number
   maxBytes: number
   /** Encoding progress of the current attempt, 0..1; `simplifying` once the first attempt didn't fit. */
   onProgress?(fraction: number, simplifying: boolean): void
@@ -62,9 +77,9 @@ const MIN_DELAY_CS = 2
 const MAX_DELAY_CS = 0xffff
 
 /** "GIF89a" + logical screen descriptor (no global palette) + NETSCAPE2.0 loop-forever extension. */
-function header(size: number): Uint8Array {
+function header(width: number, height: number): Uint8Array {
   const b: number[] = [...'GIF89a'].map((c) => c.charCodeAt(0))
-  b.push(size & 0xff, size >> 8, size & 0xff, size >> 8, 0x70, 0, 0)
+  b.push(width & 0xff, width >> 8, height & 0xff, height >> 8, 0x70, 0, 0)
   b.push(0x21, 0xff, 0x0b, ...[...'NETSCAPE2.0'].map((c) => c.charCodeAt(0)), 0x03, 0x01, 0x00, 0x00, 0x00)
   return Uint8Array.from(b)
 }
@@ -79,15 +94,15 @@ function hasTransparency(data: Uint8ClampedArray): boolean {
  * One frame as a GIF chunk: graphic control extension (delay patched in later), image descriptor, local
  * colour table, LZW pixels.
  */
-function encodeChunk(frame: RgbaFrame, size: number, colors: number, alpha: boolean): Uint8Array {
+function encodeChunk(frame: RgbaFrame, width: number, height: number, colors: number, alpha: boolean): Uint8Array {
   // 4096-bin histograms: rgb565's 65536 bins make the quantizer ~30x slower on smooth gradients (~0.5 s per
   // 160 px frame) for a barely visible gain; palette entries are still full 8-bit averages.
   const format = alpha ? 'rgba4444' : 'rgb444'
   const palette: GifPalette = quantize(frame.data, colors, { format, oneBitAlpha: alpha })
   const index = applyPalette(frame.data, palette, format)
   const transparentIndex = alpha ? palette.findIndex((c) => c[3] === 0) : -1
-  const enc = GIFEncoder({ auto: false, initialCapacity: size * size })
-  enc.writeFrame(index, size, size, {
+  const enc = GIFEncoder({ auto: false, initialCapacity: width * height })
+  enc.writeFrame(index, width, height, {
     palette,
     first: false,
     // Smaller LZW codes for small palettes.
@@ -140,11 +155,11 @@ function defaultYield(): () => Promise<void> {
  * fits. Throws when even the simplest attempt is too big.
  */
 export async function encodeFittedGif(frames: RgbaFrame[], opts: FitOptions): Promise<FitResult> {
-  const { size, maxBytes, onProgress, signal } = opts
+  const { width, height, maxBytes, onProgress, signal } = opts
   const yieldToUi = opts.yieldToUi ?? defaultYield()
-  if (frames.length < 2) throw new Error('An animation needs at least two frames')
+  if (frames.length < 2) throw new GifFitError(msg('An animation needs at least two frames'))
   const alpha = frames.some((f) => hasTransparency(f.data))
-  const head = header(size)
+  const head = header(width, height)
   /** colours → chunk per input frame index (lazily filled). */
   const chunks = new Map<number, (Uint8Array | undefined)[]>()
 
@@ -162,7 +177,7 @@ export async function encodeFittedGif(frames: RgbaFrame[], opts: FitOptions): Pr
       if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError')
       let chunk = cache[i]
       if (!chunk) {
-        chunk = cache[i] = encodeChunk(frames[i], size, colors, alpha)
+        chunk = cache[i] = encodeChunk(frames[i], width, height, colors, alpha)
         await yieldToUi()
       }
       total += chunk.length
@@ -194,9 +209,7 @@ export async function encodeFittedGif(frames: RgbaFrame[], opts: FitOptions): Pr
     out[at] = TRAILER
     return { bytes: out, frames: kept, colors, step }
   }
-  throw new Error(
-    `This animation is too detailed to fit ${
-      maxBytes >= 1024 * 1024 ? `${Math.round(maxBytes / (1024 * 1024))} MB` : `${Math.round(maxBytes / 1024)} KB`
-    }, even simplified. Try a shorter or simpler one.`,
-  )
+  throw new GifFitError(msg('This animation is too detailed to fit {size}, even simplified. Try a shorter or simpler one.'), {
+    size: maxBytes >= 1024 * 1024 ? `${Math.round(maxBytes / (1024 * 1024))} MB` : `${Math.round(maxBytes / 1024)} KB`,
+  })
 }

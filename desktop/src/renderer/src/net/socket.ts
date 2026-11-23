@@ -24,6 +24,7 @@ import { handleNotRecognized, resetSignIn, saveNewLogin } from '../store/signin'
 import { forgetChannel, loadReadState, noteDeleted, noteMessage, resetUnread } from '../store/unread'
 import { addAccessRequest, applyUserRemoved, dropAccessRequest, setAccessRequests } from '../store/admin'
 import { notifyMessage } from '../lib/notify'
+import { msg, t } from '../i18n'
 import { applyPresenceChanged, pruneOffline, setBootstrapPresence } from '../store/presence'
 import { removeSound, resetSounds, setBootstrapSounds, upsertSound } from '../store/sounds'
 import { chatPanelsMessageDeleted, chatPanelsMessageUpdated, resetChatPanels } from '../store/chatPanels'
@@ -100,7 +101,7 @@ export function request<K extends RequestEvent>(event: K, payload: RequestPayloa
   return new Promise((resolve, reject) => {
     const s = socket
     if (!s || !s.connected) {
-      reject(new Error('Not connected to the server'))
+      reject(new Error(t('Not connected to the server')))
       return
     }
     // The typed overloads don't compose well with a generic event name; the public signature stays typed.
@@ -108,10 +109,11 @@ export function request<K extends RequestEvent>(event: K, payload: RequestPayloa
       emit(ev: string, p: unknown, cb: (err: Error | null, res?: AckResult<RequestData<K>>) => void): void
     }
     untyped.emit(event, payload, (err, res) => {
-      if (err) return reject(new Error('The server took too long to respond'))
-      if (!res || typeof res !== 'object') return reject(new Error('Invalid response from the server'))
+      if (err) return reject(new Error(t('The server took too long to respond')))
+      if (!res || typeof res !== 'object') return reject(new Error(t('Invalid response from the server')))
       if (res.ok) resolve(res.data)
-      else reject(new Error(res.error || 'Request failed'))
+      // The server's error stays in English: errorMessage() / toast() translate it (tKnown).
+      else reject(new Error(res.error || t('Request failed')))
     })
   })
 }
@@ -138,13 +140,17 @@ export function isConnected(): boolean {
 
 // ---------------------------------------------------------------------------------------------
 
+/**
+ * connectionError, in the app language at the time of the error (a server message stays English and is translated
+ * where shown, with tKnown: the onboarding form tests that English).
+ */
 function readableError(raw: string): string {
-  const msg = raw || 'Connection failed'
-  if (/websocket error|xhr poll error|timeout|transport/i.test(msg))
-    return `Can't reach the server at ${currentUrl}. Check the address and that the server is running.`
-  if (/^UNKNOWN_TOKEN$/.test(msg)) return "This server doesn't recognize this device anymore."
-  if (/^NOT_RECOGNIZED$/.test(msg)) return "This device isn't linked to that account anymore."
-  return msg
+  const text = raw || t('Connection failed')
+  if (/websocket error|xhr poll error|timeout|transport/i.test(text))
+    return t("Can't reach the server at {url}. Check the address and that the server is running.", { url: currentUrl })
+  if (/^UNKNOWN_TOKEN$/.test(text)) return t("This server doesn't recognize this device anymore.")
+  if (/^NOT_RECOGNIZED$/.test(text)) return t("This device isn't linked to that account anymore.")
+  return text
 }
 
 function wire(s: NexoSocket) {
@@ -501,8 +507,10 @@ async function handleUnknownToken() {
     connection: 'idle',
     connectionError: null,
     me: null,
-    onboardingNotice:
+    // English (a message key), translated where shown (tKnown).
+    onboardingNotice: msg(
       "This server doesn't recognize this device anymore (its data may have been reset). Pick a name to join again.",
+    ),
   })
 }
 

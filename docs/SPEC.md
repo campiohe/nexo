@@ -216,7 +216,10 @@ The visual design is Nexo's own: dark ink background, mint accent, rounded tiles
 users    (id TEXT PK, name TEXT UNIQUE NOCASE, color TEXT, token_hash TEXT UNIQUE, created_at INT,
           avatar TEXT NULL, role 'owner'|'admin'|'member',
           status_text TEXT NULL,                  custom status, NULL = none
-          avatar_animated INT DEFAULT 0)          1 = the profile picture is a GIF
+          avatar_animated INT DEFAULT 0,          1 = the profile picture is a GIF
+          banner TEXT NULL,                       uploaded banner's version token, NULL = none
+          banner_animated INT DEFAULT 0,          1 = the banner is a GIF
+          banner_preset TEXT DEFAULT 'solid')     built-in banner shown without an upload (BANNER_PRESETS)
 channels (id TEXT PK, name TEXT, type 'text'|'voice', position INT, created_at INT)
 messages (id TEXT PK, channel_id → channels ON DELETE CASCADE, user_id → users,
           content TEXT, created_at INT,          INDEX (channel_id, created_at)

@@ -32,7 +32,7 @@ const cache = new Map<string, Entry>()
 
 async function firstFrame(src: string): Promise<string> {
   const res = await fetch(src)
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`) // i18n-ignore: logged, never shown
   // createImageBitmap on an animated image decodes its first frame only.
   const bitmap = await createImageBitmap(await res.blob())
   try {

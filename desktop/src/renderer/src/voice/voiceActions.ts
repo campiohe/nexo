@@ -4,6 +4,7 @@
 import { request } from '@renderer/net/socket'
 import { useApp } from '@renderer/store/app'
 import { toast } from '@renderer/lib/toast'
+import { t } from '@renderer/i18n'
 import { getBridge, useVoice } from './session'
 import { playVoiceSound } from './sounds'
 
@@ -11,7 +12,7 @@ import { playVoiceSound } from './sounds'
 const NUDGE_TOAST_MS = 8000
 
 function nameOf(userId: string): string {
-  return useApp.getState().users[userId]?.name ?? 'Someone'
+  return useApp.getState().users[userId]?.name ?? t('Someone')
 }
 
 function voiceChannel(channelId: string) {
@@ -51,7 +52,7 @@ export async function moveToChannel(userId: string, channelId: string): Promise<
 export async function nudge(userId: string): Promise<boolean> {
   try {
     await request('voice:nudge', { userId })
-    toast(`Nudged ${nameOf(userId)}`, 'success')
+    toast(t('Nudged {name}', { name: nameOf(userId) }), 'success')
     return true
   } catch (err) {
     toast(err, 'error')
@@ -71,7 +72,7 @@ export function handleMoved(channelId: string, by: string): void {
     return
   }
   rejoinIn(channelId)
-  if (by !== useApp.getState().me?.id) toast(`${nameOf(by)} moved you to ${channel.name}`, 'info', 5000)
+  if (by !== useApp.getState().me?.id) toast(t('{name} moved you to {channel}', { name: nameOf(by), channel: channel.name }), 'info', 5000)
 }
 
 /** `voice:nudged`: someone wants our attention while we're muted / deafened. */
@@ -80,7 +81,7 @@ export function handleNudged(by: string): void {
   if (!useVoice.getState().channelId) return
   // The UI sound context is separate from the call's audio, so this is heard even while deafened.
   playVoiceSound('nudge')
-  toast(`${nameOf(by)} is trying to get your attention`, 'info', NUDGE_TOAST_MS)
+  toast(t('{name} is trying to get your attention', { name: nameOf(by) }), 'info', NUDGE_TOAST_MS)
   // Flash the taskbar button when Nexo isn't the focused window (main checks focus itself too).
   if (!document.hasFocus()) getBridge()?.requestAttention()
 }

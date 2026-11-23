@@ -4,6 +4,7 @@
 import type { MouseEvent } from 'react'
 import { QUICK_REACTIONS, findEmoji, noteRecentEmoji } from '../lib/emoji'
 import { toast } from '../lib/toast'
+import { useT } from '../i18n'
 import { useApp } from '../store/app'
 import { PencilIcon, ReplyIcon, SmilePlusIcon, TrashIcon } from './icons'
 import { PinIcon, PinOffIcon } from './chatIcons'
@@ -33,16 +34,17 @@ export function MessageActions({
   onEdit(): void
   onDelete(e: MouseEvent): void
 }) {
+  const t = useT()
   return (
-    <div className="message-actions" role="toolbar" aria-label="Message actions">
+    <div className="message-actions" role="toolbar" aria-label={t('Message actions')}>
       {QUICK_REACTIONS.map((emoji) => {
         const name = findEmoji(emoji)?.name ?? emoji
         return (
           <button
             key={emoji}
             className="icon-btn message-quick-react"
-            title={`React with ${name}`}
-            aria-label={`React with ${name}`}
+            title={t('React with {name}', { name })}
+            aria-label={t('React with {name}', { name })}
             onClick={() => {
               noteRecentEmoji(emoji)
               useApp.getState().toggleReaction(messageId, emoji).catch((err) => toast(err, 'error'))
@@ -55,37 +57,37 @@ export function MessageActions({
       <span className="message-actions-sep" aria-hidden="true" />
       <button
         className={`icon-btn ${pickerOpen ? 'is-active' : ''}`}
-        title="Add reaction"
-        aria-label="Add reaction"
+        title={t('Add reaction')}
+        aria-label={t('Add reaction')}
         aria-expanded={pickerOpen}
         onClick={(e) => onReact(e.currentTarget)}
       >
         <SmilePlusIcon size={16} />
       </button>
-      <button className="icon-btn" title="Reply" aria-label="Reply" onClick={onReply}>
+      <button className="icon-btn" title={t('Reply')} aria-label={t('Reply')} onClick={onReply}>
         <ReplyIcon size={16} />
       </button>
       {!pinned ? (
-        <button className="icon-btn" title="Pin message" aria-label="Pin message" onClick={() => setPinned(messageId, true)}>
+        <button className="icon-btn" title={t('Pin message')} aria-label={t('Pin message')} onClick={() => setPinned(messageId, true)}>
           <PinIcon size={16} />
         </button>
       ) : (
         canUnpin && (
-          <button className="icon-btn" title="Unpin message" aria-label="Unpin message" onClick={() => setPinned(messageId, false)}>
+          <button className="icon-btn" title={t('Unpin message')} aria-label={t('Unpin message')} onClick={() => setPinned(messageId, false)}>
             <PinOffIcon size={16} />
           </button>
         )
       )}
       {canEdit && (
-        <button className="icon-btn" title="Edit" aria-label="Edit message" onClick={onEdit}>
+        <button className="icon-btn" title={t('Edit')} aria-label={t('Edit message')} onClick={onEdit}>
           <PencilIcon size={15} />
         </button>
       )}
       {canDelete && (
         <button
           className="icon-btn danger"
-          title="Delete message (Shift+click to skip confirmation)"
-          aria-label="Delete message"
+          title={t('Delete message (Shift+click to skip confirmation)')}
+          aria-label={t('Delete message')}
           onClick={onDelete}
         >
           <TrashIcon size={15} />

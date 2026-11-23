@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { create } from 'zustand'
+import { msg, tKnown, useT } from '../../i18n'
 import type { CaptureSource } from '../../../../preload/api'
 import { DEFAULT_SHARE_PRESET, SHARE_PRESETS, getBridge, useVoice, type SharePreset } from '../../voice/session'
 import { refreshNativeEngine, useNativeAudioUnsupportedReason, useNativeEngineLikely } from '../../voice/nativeShare'
@@ -12,11 +13,12 @@ const PRESET_KEY = 'nexo.sharePreset'
 const AUDIO_KEY = 'nexo.shareAudio'
 const HIDE_NEXO_KEY = 'nexo.shareHideNexo'
 
+// Message keys (msg): translated where shown.
 const PRESET_BLURB: Record<SharePreset['id'], string> = {
-  smooth: 'Games on a weaker upload',
-  game: 'Most games — smooth and sharp',
-  sharp: 'Code, docs and slides — crisp text',
-  source: 'LAN or a strong upload',
+  smooth: msg('Games on a weaker upload'),
+  game: msg('Most games — smooth and sharp'),
+  sharp: msg('Code, docs and slides — crisp text'),
+  source: msg('LAN or a strong upload'),
 }
 
 function readPreset(): SharePreset['id'] {
@@ -82,6 +84,7 @@ export function SharePickerHost() {
 // ---------------------------------------------------------------------------------------------
 
 export function SharePicker({ onClose }: { onClose(): void }) {
+  const t = useT()
   const bridge = getBridge()
   const systemPicker = !bridge || bridge.usesSystemPicker
   // Native engine (decided again in startShare; this only drives the labels). Until the helper's capabilities
@@ -116,11 +119,11 @@ export function SharePicker({ onClose }: { onClose(): void }) {
         return list.find((s) => s.kind === 'screen')?.id ?? list[0]?.id ?? null
       })
     } catch (e) {
-      setListError(e instanceof Error ? e.message : 'Could not list screens and windows')
+      setListError(e instanceof Error ? tKnown(e.message) : t('Could not list screens and windows'))
     } finally {
       setLoading(false)
     }
-  }, [bridge, systemPicker])
+  }, [bridge, systemPicker, t])
 
   useEffect(() => {
     if (systemPicker) return
@@ -177,10 +180,10 @@ export function SharePicker({ onClose }: { onClose(): void }) {
 
   return createPortal(
     <div className="vx-modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div ref={panelRef} className="vx-modal vx-picker" role="dialog" aria-modal="true" aria-label="Share your screen" tabIndex={-1}>
+      <div ref={panelRef} className="vx-modal vx-picker" role="dialog" aria-modal="true" aria-label={t('Share your screen')} tabIndex={-1}>
         <header className="vx-modal-head">
-          <h2>Share your screen</h2>
-          <button className="vx-icon-btn" onClick={onClose} title="Close (Esc)" aria-label="Close">
+          <h2>{t('Share your screen')}</h2>
+          <button className="vx-icon-btn" onClick={onClose} title={t('Close (Esc)')} aria-label={t('Close')}>
             <CloseIcon size={18} />
           </button>
         </header>
@@ -190,11 +193,11 @@ export function SharePicker({ onClose }: { onClose(): void }) {
             <div className="vx-picker-system">
               <ScreenIcon size={28} />
               <div>
-                <strong>Your system will ask what to share</strong>
+                <strong>{t('Your system will ask what to share')}</strong>
                 <p>
                   {bridge
-                    ? 'On Wayland the desktop portal shows its own picker. Choose a quality below, then pick a screen or window.'
-                    : 'The browser will show its own picker after you click Choose…'}
+                    ? t('On Wayland the desktop portal shows its own picker. Choose a quality below, then pick a screen or window.')
+                    : t('The browser will show its own picker after you click Choose…')}
                 </p>
               </div>
             </div>
@@ -207,7 +210,7 @@ export function SharePicker({ onClose }: { onClose(): void }) {
                   className={`vx-tab ${tab === 'screen' ? 'is-active' : ''}`}
                   onClick={() => setTab('screen')}
                 >
-                  <ScreenIcon size={16} /> Screens <span className="vx-count">{screenCount}</span>
+                  <ScreenIcon size={16} /> {t('Screens')} <span className="vx-count">{screenCount}</span>
                 </button>
                 <button
                   role="tab"
@@ -215,19 +218,19 @@ export function SharePicker({ onClose }: { onClose(): void }) {
                   className={`vx-tab ${tab === 'window' ? 'is-active' : ''}`}
                   onClick={() => setTab('window')}
                 >
-                  <WindowIcon size={16} /> Windows <span className="vx-count">{windowCount}</span>
+                  <WindowIcon size={16} /> {t('Windows // share picker tab')} <span className="vx-count">{windowCount}</span>
                 </button>
                 <span className="vx-grow" />
-                <button className="vx-icon-btn" onClick={() => void refresh()} title="Refresh" aria-label="Refresh sources">
+                <button className="vx-icon-btn" onClick={() => void refresh()} title={t('Refresh')} aria-label={t('Refresh sources')}>
                   <RefreshIcon size={16} />
                 </button>
               </div>
 
-              <div className="vx-sources" role="listbox" aria-label={tab === 'screen' ? 'Screens' : 'Windows'}>
-                {loading && <div className="vx-sources-empty">Looking for screens and windows…</div>}
+              <div className="vx-sources" role="listbox" aria-label={tab === 'screen' ? t('Screens') : t('Windows // share picker tab')}>
+                {loading && <div className="vx-sources-empty">{t('Looking for screens and windows…')}</div>}
                 {!loading && listError && <div className="vx-sources-empty is-error">{listError}</div>}
                 {!loading && !listError && shown.length === 0 && (
-                  <div className="vx-sources-empty">No {tab === 'screen' ? 'screens' : 'windows'} found.</div>
+                  <div className="vx-sources-empty">{tab === 'screen' ? t('No screens found.') : t('No windows found.')}</div>
                 )}
                 {shown.map((s) => (
                   <button
@@ -240,7 +243,9 @@ export function SharePicker({ onClose }: { onClose(): void }) {
                       setSelectedId(s.id)
                       void useVoice.getState().startShare({ sourceId: s.id, presetId, withAudio: audio, hideNexo })
                     }}
-                    title={s.minimized ? `${s.name} (minimized: the stream starts when you switch back to it)` : s.name}
+                    title={
+                      s.minimized ? t('{name} (minimized: the stream starts when you switch back to it)', { name: s.name }) : s.name
+                    }
                   >
                     <span className={`vx-source-thumb ${s.minimized ? 'is-minimized' : ''}`}>
                       {s.thumbnail ? (
@@ -248,7 +253,7 @@ export function SharePicker({ onClose }: { onClose(): void }) {
                       ) : s.minimized ? (
                         <>
                           {s.icon ? <img src={s.icon} alt="" className="vx-source-bigicon" draggable={false} /> : <ScreenIcon size={28} />}
-                          <span className="vx-source-badge">Minimized</span>
+                          <span className="vx-source-badge">{t('Minimized')}</span>
                         </>
                       ) : (
                         <ScreenIcon size={28} />
@@ -264,8 +269,8 @@ export function SharePicker({ onClose }: { onClose(): void }) {
             </>
           )}
 
-          <h3 className="vx-section-title">Quality</h3>
-          <div className="vx-presets" role="radiogroup" aria-label="Stream quality">
+          <h3 className="vx-section-title">{t('Quality')}</h3>
+          <div className="vx-presets" role="radiogroup" aria-label={t('Stream quality')}>
             {SHARE_PRESETS.map((p) => (
               <button
                 key={p.id}
@@ -275,13 +280,13 @@ export function SharePicker({ onClose }: { onClose(): void }) {
                 onClick={() => choosePreset(p.id)}
               >
                 <span className="vx-preset-top">
-                  <strong>{p.label}</strong>
+                  <strong>{t(p.label)}</strong>
                   <span className="vx-preset-res">
                     {p.height}p{p.fps}
                   </span>
                 </span>
-                <span className="vx-preset-blurb">{PRESET_BLURB[p.id]}</span>
-                <span className="vx-preset-rate">up to {mbps(p.maxBitrate)} upload</span>
+                <span className="vx-preset-blurb">{t(PRESET_BLURB[p.id])}</span>
+                <span className="vx-preset-rate">{t('up to {rate} upload', { rate: mbps(p.maxBitrate) })}</span>
               </button>
             ))}
           </div>
@@ -297,30 +302,33 @@ export function SharePicker({ onClose }: { onClose(): void }) {
             <span className="vx-check-text">
               <span className="vx-check-label">
                 <VolumeIcon size={15} />{' '}
-                {!nativeAudio ? 'Share audio' : selectedKind === 'window' ? 'App audio' : 'System audio (without Nexo)'}
+                {!nativeAudio ? t('Share audio') : selectedKind === 'window' ? t('App audio') : t('System audio (without Nexo)')}
               </span>
               {!audioSupported ? (
                 <span className="vx-check-hint">
                   {nativeLikely && nativeNoAudio
-                    ? `${nativeNoAudio} — viewers will get video only.`
+                    ? t('{reason} — viewers will get video only.', { reason: t(nativeNoAudio) })
                     : bridge?.platform === 'linux'
-                      ? "System audio capture isn't available on Linux yet — viewers will get video only."
-                      : "System audio capture isn't supported on this system — viewers will get video only."}
+                      ? t("System audio capture isn't available on Linux yet — viewers will get video only.")
+                      : t("System audio capture isn't supported on this system — viewers will get video only.")}
                 </span>
               ) : native && audio ? (
                 <span className="vx-check-hint">
                   {selectedKind === 'window'
-                    ? 'Viewers hear only this app.'
-                    : 'Viewers hear everything your PC plays except Nexo, so the call stays out of the stream.'}
+                    ? t('Viewers hear only this app.')
+                    : t('Viewers hear everything your PC plays except Nexo, so the call stays out of the stream.')}
                 </span>
               ) : audio ? (
                 <span className="vx-check-hint is-warn">
-                  {nativeLikely && nativeNoAudio ? `${nativeNoAudio} natively, so this stream uses Chromium capture. ` : ''}
-                  Viewers will hear everything your default output device plays — including this call. To keep
-                  voices out of the stream, pick a different speaker for Nexo in Settings → Audio &amp; video.
+                  {nativeLikely && nativeNoAudio && (
+                    <>{t('{reason} natively, so this stream uses Chromium capture.', { reason: t(nativeNoAudio) })} </>
+                  )}
+                  {t(
+                    'Viewers will hear everything your default output device plays — including this call. To keep voices out of the stream, pick a different speaker for Nexo in Settings → Audio & video.',
+                  )}
                 </span>
               ) : (
-                <span className="vx-check-hint">Stream video only.</span>
+                <span className="vx-check-hint">{t('Stream video only.')}</span>
               )}
             </span>
           </label>
@@ -331,11 +339,12 @@ export function SharePicker({ onClose }: { onClose(): void }) {
               <span className="vx-check-box" aria-hidden="true" />
               <span className="vx-check-text">
                 <span className="vx-check-label">
-                  <EyeOffIcon size={15} /> Hide Nexo from the stream
+                  <EyeOffIcon size={15} /> {t('Hide Nexo from the stream')}
                 </span>
                 <span className="vx-check-hint">
-                  Viewers won't see your chats or the member list. While you share, Nexo is also hidden from your own
-                  screenshots and recordings.
+                  {t(
+                    "Viewers won't see your chats or the member list. While you share, Nexo is also hidden from your own screenshots and recordings.",
+                  )}
                 </span>
               </span>
             </label>
@@ -344,10 +353,10 @@ export function SharePicker({ onClose }: { onClose(): void }) {
 
         <footer className="vx-modal-foot">
           <button className="vx-btn" onClick={onClose}>
-            Cancel
+            {t('Cancel')}
           </button>
           <button className="vx-btn vx-btn-live" onClick={goLive} disabled={!canGo}>
-            {starting ? 'Starting…' : systemPicker ? 'Choose…' : 'Go Live'}
+            {starting ? t('Starting…') : systemPicker ? t('Choose…') : t('Go Live')}
           </button>
         </footer>
       </div>

@@ -1,107 +1,22 @@
 // Short synthesized UI sounds for mute / unmute / deafen / undeafen, someone joining / leaving your voice
-// channel, a "wake up" nudge, sign-in requests and chat notifications (no audio files: Web Audio only).
+// channel, a "wake up" nudge, sign-in requests and chat notifications (no audio files: Web Audio only;
+// the sounds themselves are designed in voice/soundKit.ts).
 // They play on the selected speaker through one lazily created AudioContext that is suspended again
 // once idle, so nothing runs between sounds. The context only feeds its own destination, never the
 // mic / WebRTC graph, so nobody in the call (or watching a stream) hears them.
 import { useDevicePrefs } from './devices'
+import { createSoundKit, playSound, type SoundKit, type VoiceSound } from './soundKit'
 
-export type VoiceSound =
-  | 'mute'
-  | 'unmute'
-  | 'deafen'
-  | 'undeafen'
-  | 'join'
-  | 'leave'
-  | 'nudge'
-  | 'request'
-  | 'message'
-  | 'mention'
+export type { VoiceSound }
 
-interface Note {
-  /** Hz. */
-  freq: number
-  /** Start offset, seconds. */
-  at: number
-  /** Length including the decay, seconds. */
-  dur: number
-  /** Level relative to PEAK (default 1). */
-  gain?: number
-}
-
-/** Modest peak level (the speaker test in Settings uses 0.25). */
-const PEAK = 0.11
-/** Soft attack, long enough to avoid a click. */
-const ATTACK = 0.008
-/** The exponential decay reaches this (-41 dB from the peak) RELEASE seconds before the note ends... */
-const FLOOR = 0.001
-/** ...then a short linear fade to exactly 0, so stopping the oscillator can't click. */
-const RELEASE = 0.015
-/** Keep the context running this long after the last sound, then suspend it. */
+/** Keep the context running this long after the last sound (and its room tail) went silent, then suspend it. */
 const IDLE_SUSPEND_MS = 2000
-
-// Mute/unmute: quick two-note blips (B5 ↔ E5), ~150 ms. Deafen/undeafen: lower, longer pair
-// (G4 ↔ C4), ~210 ms. Join/leave: a warm, slower perfect fourth (A4 ↔ D5), ~270 ms. Descending = off /
-// leaving, ascending = on / joining.
-const SOUNDS: Record<VoiceSound, readonly Note[]> = {
-  mute: [
-    { freq: 988, at: 0, dur: 0.075 },
-    { freq: 659, at: 0.06, dur: 0.09 },
-  ],
-  unmute: [
-    { freq: 659, at: 0, dur: 0.075 },
-    { freq: 988, at: 0.06, dur: 0.09 },
-  ],
-  deafen: [
-    { freq: 392, at: 0, dur: 0.1 },
-    { freq: 262, at: 0.085, dur: 0.125 },
-  ],
-  undeafen: [
-    { freq: 262, at: 0, dur: 0.1 },
-    { freq: 392, at: 0.085, dur: 0.125 },
-  ],
-  // Someone (or you) entered / left the voice channel you're in (voice/presenceSounds.ts).
-  join: [
-    { freq: 440, at: 0, dur: 0.12 },
-    { freq: 587, at: 0.1, dur: 0.17 },
-  ],
-  leave: [
-    { freq: 587, at: 0, dur: 0.12 },
-    { freq: 440, at: 0.1, dur: 0.17 },
-  ],
-  // Someone nudged you ("wake up"): a bright ding-dong played twice (E6 B5 E6 B5), ~0.55 s. Heard while
-  // deafened too: deafen silences the call's <audio> elements, not this context.
-  nudge: [
-    { freq: 1319, at: 0, dur: 0.14 },
-    { freq: 988, at: 0.08, dur: 0.17 },
-    { freq: 1319, at: 0.27, dur: 0.14 },
-    { freq: 988, at: 0.35, dur: 0.2 },
-  ],
-  // Someone asks to sign in (docs/SPEC-ACCOUNTS.md §4): a rising three-note chime (E5 A5 E6), ~330 ms,
-  // unlike any voice sound.
-  request: [
-    { freq: 659, at: 0, dur: 0.1 },
-    { freq: 880, at: 0.09, dur: 0.1 },
-    { freq: 1319, at: 0.18, dur: 0.15 },
-  ],
-  // A chat message in a channel you're not looking at (lib/notify.ts): a soft, quick low-to-high "bloop"
-  // (G5 C6), ~200 ms, quieter than the rest.
-  message: [
-    { freq: 784, at: 0, dur: 0.11, gain: 0.7 },
-    { freq: 1047, at: 0.05, dur: 0.15, gain: 0.7 },
-  ],
-  // Someone mentioned you: a brighter major arpeggio (C6 E6 G6) with a longer top note, ~340 ms.
-  mention: [
-    { freq: 1047, at: 0, dur: 0.09 },
-    { freq: 1319, at: 0.06, dur: 0.09 },
-    { freq: 1568, at: 0.12, dur: 0.22 },
-  ],
-}
 
 type SinkAudioContext = AudioContext & { setSinkId?: (id: string) => Promise<void> }
 
 let ctx: SinkAudioContext | null = null
-/** Sine plus faint 2nd/3rd harmonics: still soft, but audible on small speakers at low pitches. */
-let wave: PeriodicWave | null = null
+/** Shared nodes (dry bus, room reverb) and buffers for `ctx`, built on the first sound. */
+let kit: SoundKit | null = null
 /** Output device the context was last pointed at ('' = system default). */
 let appliedSink: string | null = null
 /** Resolves once the latest setSinkId settled, so the first sound doesn't start on the wrong device. */
@@ -131,7 +46,7 @@ function getContext(): SinkAudioContext | null {
     ctx = null
     return null
   }
-  wave = null
+  kit = null
   appliedSink = null
   sinkReady = Promise.resolve()
   applySink()
@@ -143,37 +58,8 @@ function closeContext(): void {
   idleTimer = undefined
   if (ctx) void ctx.close().catch(() => {})
   ctx = null
-  wave = null
+  kit = null
   appliedSink = null
-}
-
-function schedule(c: AudioContext, notes: readonly Note[]): number {
-  wave ??= c.createPeriodicWave(new Float32Array([0, 0, 0, 0]), new Float32Array([0, 1, 0.12, 0.04]))
-  const t0 = c.currentTime + 0.01
-  let end = 0
-  for (const n of notes) {
-    const start = t0 + n.at
-    const stop = start + n.dur
-    const osc = c.createOscillator()
-    osc.setPeriodicWave(wave)
-    osc.frequency.value = n.freq
-    const g = c.createGain()
-    // From silence, up to the peak, exponential decay back to (practically) silence: no clicks.
-    g.gain.setValueAtTime(0, start)
-    g.gain.linearRampToValueAtTime(PEAK * (n.gain ?? 1), start + ATTACK)
-    g.gain.exponentialRampToValueAtTime(FLOOR, stop - RELEASE)
-    g.gain.linearRampToValueAtTime(0, stop)
-    osc.connect(g)
-    g.connect(c.destination)
-    osc.onended = () => {
-      osc.disconnect()
-      g.disconnect()
-    }
-    osc.start(start)
-    osc.stop(stop + 0.01)
-    end = Math.max(end, n.at + n.dur)
-  }
-  return end
 }
 
 /**
@@ -191,7 +77,8 @@ export function playVoiceSound(sound: VoiceSound): void {
   void Promise.all([sinkReady, resumed])
     .then(() => {
       if (ctx !== c || c.state !== 'running') return
-      const secs = schedule(c, SOUNDS[sound])
+      if (kit?.ctx !== c) kit = createSoundKit(c)
+      const secs = playSound(kit, sound)
       window.clearTimeout(idleTimer)
       idleTimer = window.setTimeout(() => {
         idleTimer = undefined

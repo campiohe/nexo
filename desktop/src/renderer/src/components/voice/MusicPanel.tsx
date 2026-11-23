@@ -26,6 +26,7 @@ import { CloseIcon, PlusIcon, SearchIcon, TrashIcon } from '../icons'
 import { AlertIcon } from './icons'
 import { addedByName, Artwork, useInMusicChannel } from './MusicBar'
 import { BackIcon, GripIcon, LinkIcon, MusicIcon, PlayNextIcon } from './musicIcons'
+import { tKnown, useT } from '../../i18n'
 import '../../styles/music.css'
 
 const SEARCH_DEBOUNCE_MS = 350
@@ -47,38 +48,39 @@ export function MusicPanelHost() {
 let searchedQuery = ''
 
 function MusicPanel({ channelId, anchor }: { channelId: string; anchor: AnchorRect }) {
+  const t = useT()
   const tab = useMusicPanel((s) => s.tab)
   const state = useMusic((s) => s.byChannel[channelId])
-  const channelName = useApp((s) => s.channels.find((c) => c.id === channelId)?.name ?? 'Voice')
+  const channelName = useApp((s) => s.channels.find((c) => c.id === channelId)?.name) ?? t('Voice // channel name fallback')
   const canAct = useInMusicChannel(channelId)
   const queueCount = state?.queue.length ?? 0
 
-  const setTab = (t: MusicTab) => useMusicPanel.setState({ tab: t })
+  const setTab = (next: MusicTab) => useMusicPanel.setState({ tab: next })
 
   return (
-    <Floating anchor={anchor} side="top" onClose={closeMusicPanel} className="mu-panel" label="Music">
+    <Floating anchor={anchor} side="top" onClose={closeMusicPanel} className="mu-panel" label={t('Music')}>
       <header className="mu-panel-head">
         <MusicIcon size={16} />
-        <span className="mu-panel-title">Music</span>
+        <span className="mu-panel-title">{t('Music')}</span>
         <span className="mu-panel-channel" title={channelName}>
           {channelName}
         </span>
-        <div className="vx-seg mu-tabs" role="tablist" aria-label="Music panel">
+        <div className="vx-seg mu-tabs" role="tablist" aria-label={t('Music panel')}>
           <button role="tab" aria-selected={tab === 'search'} className={`vx-seg-btn ${tab === 'search' ? 'is-active' : ''}`} onClick={() => setTab('search')}>
-            Search
+            {t('Search')}
           </button>
           <button role="tab" aria-selected={tab === 'queue'} className={`vx-seg-btn ${tab === 'queue' ? 'is-active' : ''}`} onClick={() => setTab('queue')}>
-            Queue{queueCount > 0 ? ` (${queueCount})` : ''}
+            {queueCount > 0 ? t('Queue ({count})', { count: queueCount }) : t('Queue')}
           </button>
         </div>
-        <button className="vx-icon-btn" onClick={closeMusicPanel} title="Close (Esc)" aria-label="Close">
+        <button className="vx-icon-btn" onClick={closeMusicPanel} title={t('Close (Esc)')} aria-label={t('Close')}>
           <CloseIcon size={14} />
         </button>
       </header>
       {!canAct && (
         <div className="mu-panel-callout">
           <AlertIcon size={14} />
-          <span>Join {channelName} to add songs or control its music.</span>
+          <span>{t('Join {channel} to add songs or control its music.', { channel: channelName })}</span>
         </div>
       )}
       {tab === 'search' ? <SearchTab channelId={channelId} canAct={canAct} /> : <QueueTab channelId={channelId} state={state} canAct={canAct} />}
@@ -90,6 +92,7 @@ function MusicPanel({ channelId, anchor }: { channelId: string; anchor: AnchorRe
 // Search
 
 function SearchTab({ channelId, canAct }: { channelId: string; canAct: boolean }) {
+  const t = useT()
   const query = useMusicPanel((s) => s.query)
   const results = useMusicPanel((s) => s.results)
   const searching = useMusicPanel((s) => s.searching)
@@ -110,8 +113,8 @@ function SearchTab({ channelId, canAct }: { channelId: string; canAct: boolean }
       void runSearch(q)
     }
     if (!q || isMusicLink(q)) return go()
-    const t = window.setTimeout(go, SEARCH_DEBOUNCE_MS)
-    return () => window.clearTimeout(t)
+    const timer = window.setTimeout(go, SEARCH_DEBOUNCE_MS)
+    return () => window.clearTimeout(timer)
   }, [query])
 
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
@@ -139,13 +142,13 @@ function SearchTab({ channelId, canAct }: { channelId: string; canAct: boolean }
           onKeyDown={onKeyDown}
           // Escape clears the search first (Floating leaves it to the input while there's text).
           data-own-escape={query ? '' : undefined}
-          placeholder="Search songs, albums, playlists, or paste a link"
-          aria-label="Search YouTube Music"
+          placeholder={t('Search songs, albums, playlists, or paste a link')}
+          aria-label={t('Search YouTube Music')}
           spellCheck={false}
         />
-        {searching && <span className="vx-spinner" aria-label="Searching" />}
+        {searching && <span className="vx-spinner" aria-label={t('Searching')} />}
         {query && !searching && (
-          <button className="mu-search-clear" onClick={() => useMusicPanel.setState({ query: '' })} aria-label="Clear search" title="Clear">
+          <button className="mu-search-clear" onClick={() => useMusicPanel.setState({ query: '' })} aria-label={t('Clear search')} title={t('Clear')}>
             <CloseIcon size={12} />
           </button>
         )}
@@ -156,12 +159,12 @@ function SearchTab({ channelId, canAct }: { channelId: string; canAct: boolean }
         ) : error ? (
           <div className="mu-empty is-error">
             <AlertIcon size={18} />
-            <span>{error}</span>
+            <span>{tKnown(error)}</span>
           </div>
         ) : !query.trim() ? (
           <div className="mu-empty">
             <MusicIcon size={24} />
-            <span>Find something to play. Everyone in the channel hears it, in sync.</span>
+            <span>{t('Find something to play. Everyone in the channel hears it, in sync.')}</span>
           </div>
         ) : results ? (
           <Results canAct={canAct} onAdd={add} />
@@ -172,24 +175,25 @@ function SearchTab({ channelId, canAct }: { channelId: string; canAct: boolean }
 }
 
 function Results({ canAct, onAdd }: { canAct: boolean; onAdd(tracks: MusicTrackInfo[], next?: boolean): void }) {
+  const t = useT()
   const results = useMusicPanel((s) => s.results)
   if (!results) return null
   const none = results.tracks.length === 0 && results.albums.length === 0 && results.playlists.length === 0
-  if (none) return <div className="mu-empty is-search">No results</div>
+  if (none) return <div className="mu-empty is-search">{t('No results')}</div>
   return (
     <>
       {results.tracks.length > 0 && (
         <section className="mu-section">
-          <h4 className="mu-section-title">Songs</h4>
+          <h4 className="mu-section-title">{t('Songs')}</h4>
           <ul className="mu-list">
-            {results.tracks.map((t, i) => (
-              <TrackRow key={`${t.videoId}:${i}`} track={t} canAct={canAct} onAdd={onAdd} />
+            {results.tracks.map((track, i) => (
+              <TrackRow key={`${track.videoId}:${i}`} track={track} canAct={canAct} onAdd={onAdd} />
             ))}
           </ul>
         </section>
       )}
-      <CollectionSection title="Albums" items={results.albums} />
-      <CollectionSection title="Playlists" items={results.playlists} />
+      <CollectionSection title={t('Albums')} items={results.albums} />
+      <CollectionSection title={t('Playlists')} items={results.playlists} />
     </>
   )
 }
@@ -221,9 +225,10 @@ function CollectionSection({ title, items }: { title: string; items: MusicCollec
 
 function TrackRow(props: { track: MusicTrackInfo; canAct: boolean; onAdd(tracks: MusicTrackInfo[], next?: boolean): void; index?: number }) {
   const { track, canAct, onAdd, index } = props
-  const why = canAct ? undefined : 'Join the voice channel to add songs'
+  const t = useT()
+  const why = canAct ? undefined : t('Join the voice channel to add songs')
   return (
-    <li className="mu-row mu-row-track" onDoubleClick={canAct ? () => onAdd([track]) : undefined} title={canAct ? 'Double-click to add to the queue' : why}>
+    <li className="mu-row mu-row-track" onDoubleClick={canAct ? () => onAdd([track]) : undefined} title={canAct ? t('Double-click to add to the queue') : why}>
       {index !== undefined ? <span className="mu-row-index">{index + 1}</span> : <Artwork src={track.artwork} size={36} />}
       <span className="mu-row-text">
         <span className="mu-row-title">{track.title}</span>
@@ -233,10 +238,10 @@ function TrackRow(props: { track: MusicTrackInfo; canAct: boolean; onAdd(tracks:
       </span>
       <span className="mu-row-dur">{formatDuration(track.durationMs)}</span>
       <span className="mu-row-actions">
-        <button className="mu-btn" onClick={() => onAdd([track], true)} disabled={!canAct} title={why ?? 'Play next'} aria-label={`Play ${track.title} next`}>
+        <button className="mu-btn" onClick={() => onAdd([track], true)} disabled={!canAct} title={why ?? t('Play next')} aria-label={t('Play {title} next', { title: track.title })}>
           <PlayNextIcon size={15} />
         </button>
-        <button className="mu-btn" onClick={() => onAdd([track])} disabled={!canAct} title={why ?? 'Add to queue'} aria-label={`Add ${track.title} to the queue`}>
+        <button className="mu-btn" onClick={() => onAdd([track])} disabled={!canAct} title={why ?? t('Add to queue')} aria-label={t('Add {title} to the queue', { title: track.title })}>
           <PlusIcon size={15} />
         </button>
       </span>
@@ -245,31 +250,36 @@ function TrackRow(props: { track: MusicTrackInfo; canAct: boolean; onAdd(tracks:
 }
 
 function CollectionView({ canAct, onAdd, linked }: { canAct: boolean; onAdd(tracks: MusicTrackInfo[], next?: boolean): void; linked: boolean }) {
+  const t = useT()
   const c = useMusicPanel((s) => s.collection)
   if (!c) return null
   const tracks = c.data?.tracks ?? []
-  const total = tracks.reduce((sum, t) => sum + t.durationMs, 0)
+  const total = tracks.reduce((sum, x) => sum + x.durationMs, 0)
   return (
     <section className="mu-section">
       <div className="mu-collection-head">
         {!linked && (
-          <button className="vx-icon-btn" onClick={closeCollection} title="Back to results" aria-label="Back to results">
+          <button className="vx-icon-btn" onClick={closeCollection} title={t('Back to results')} aria-label={t('Back to results')}>
             <BackIcon size={16} />
           </button>
         )}
         <Artwork src={c.artwork ?? tracks[0]?.artwork ?? null} size={44} />
         <span className="mu-row-text">
           <span className="mu-row-title">{c.title}</span>
-          <span className="mu-row-sub">{c.loading ? 'Loading…' : tracks.length ? `${tracks.length} songs · ${formatTotal(total)}` : ''}</span>
+          <span className="mu-row-sub">{c.loading
+              ? t('Loading…')
+              : tracks.length
+                ? t('{count, plural, one {# song} other {# songs}} · {total}', { count: tracks.length, total: formatTotal(total) })
+                : ''}</span>
         </span>
         {tracks.length > 0 && (
           <button
             className="vx-btn vx-btn-sm vx-btn-primary"
             onClick={() => onAdd(tracks)}
             disabled={!canAct}
-            title={canAct ? 'Add every song to the queue' : 'Join the voice channel to add songs'}
+            title={canAct ? t('Add every song to the queue') : t('Join the voice channel to add songs')}
           >
-            <PlusIcon size={14} /> Add all
+            <PlusIcon size={14} /> {t('Add all')}
           </button>
         )}
       </div>
@@ -280,12 +290,12 @@ function CollectionView({ canAct, onAdd, linked }: { canAct: boolean; onAdd(trac
       ) : c.error ? (
         <div className="mu-empty is-error">
           <AlertIcon size={18} />
-          <span>{c.error}</span>
+          <span>{tKnown(c.error)}</span>
         </div>
       ) : (
         <ul className="mu-list">
-          {tracks.map((t, i) => (
-            <TrackRow key={`${t.videoId}:${i}`} track={t} canAct={canAct} onAdd={onAdd} index={linked && tracks.length === 1 ? undefined : i} />
+          {tracks.map((track, i) => (
+            <TrackRow key={`${track.videoId}:${i}`} track={track} canAct={canAct} onAdd={onAdd} index={linked && tracks.length === 1 ? undefined : i} />
           ))}
         </ul>
       )}
@@ -297,18 +307,19 @@ function CollectionView({ canAct, onAdd, linked }: { canAct: boolean; onAdd(trac
 // Queue
 
 function QueueTab({ channelId, state, canAct }: { channelId: string; state: MusicState | undefined; canAct: boolean }) {
+  const t = useT()
   const users = useApp((s) => s.users)
   const meId = useApp((s) => s.me?.id)
   const queue = state?.queue ?? []
   const cur = state?.current ?? null
-  const total = useMemo(() => queue.reduce((sum, t) => sum + t.durationMs, 0), [queue])
+  const total = useMemo(() => queue.reduce((sum, x) => sum + x.durationMs, 0), [queue])
   const [drag, setDrag] = useState<string | null>(null)
   const [over, setOver] = useState<{ index: number; after: boolean } | null>(null)
   const [confirmClear, setConfirmClear] = useState(false)
   useEffect(() => {
     if (!confirmClear) return
-    const t = window.setTimeout(() => setConfirmClear(false), 3000)
-    return () => window.clearTimeout(t)
+    const timer = window.setTimeout(() => setConfirmClear(false), 3000)
+    return () => window.clearTimeout(timer)
   }, [confirmClear])
 
   const move = (queueId: string, toIndex: number) => void musicControl(channelId, 'move', { queueId, toIndex })
@@ -326,7 +337,7 @@ function QueueTab({ channelId, state, canAct }: { channelId: string; state: Musi
   }
   const onDrop = (e: DragEvent<HTMLLIElement>) => {
     e.preventDefault()
-    const from = queue.findIndex((t) => t.queueId === drag)
+    const from = queue.findIndex((x) => x.queueId === drag)
     const to = over ? queueDropIndex(from, over.index, over.after) : null
     if (drag && to !== null) move(drag, to)
     endDrag()
@@ -336,59 +347,59 @@ function QueueTab({ channelId, state, canAct }: { channelId: string; state: Musi
     <div className="mu-panel-body">
       {cur ? (
         <section className="mu-section">
-          <h4 className="mu-section-title">{isMusicPlaying(state) ? 'Now playing' : 'Paused'}</h4>
+          <h4 className="mu-section-title">{isMusicPlaying(state) ? t('Now playing') : t('Paused // song')}</h4>
           <div className="mu-row mu-row-current">
             <Artwork src={cur.artwork} size={40} />
             <span className="mu-row-text">
               <span className="mu-row-title">{cur.title}</span>
               <span className="mu-row-sub">
-                {cur.artist} · added by {addedByName(users, cur.addedBy, meId)}
+                {cur.artist} · {t('added by {name}', { name: addedByName(users, cur.addedBy, meId, t) })}
               </span>
             </span>
             <span className="mu-row-dur">{formatDuration(cur.durationMs)}</span>
           </div>
         </section>
       ) : (
-        <div className="mu-empty is-search">Nothing is playing.</div>
+        <div className="mu-empty is-search">{t('Nothing is playing.')}</div>
       )}
       <section className="mu-section">
         <h4 className="mu-section-title">
-          Up next
+          {t('Up next')}
           {queue.length > 0 && (
             <span className="mu-section-meta">
-              {queue.length} {queue.length === 1 ? 'song' : 'songs'} · {formatTotal(total)}
+              {t('{count, plural, one {# song} other {# songs}} · {total}', { count: queue.length, total: formatTotal(total) })}
             </span>
           )}
         </h4>
         {queue.length === 0 ? (
           <div className="mu-empty is-search">
-            The queue is empty.{' '}
+            {t('The queue is empty.')}{' '}
             <button className="mu-link" onClick={() => useMusicPanel.setState({ tab: 'search' })}>
-              Search for songs
+              {t('Search for songs')}
             </button>
           </div>
         ) : (
           <ul className="mu-list mu-queue" onDragLeave={(e) => !e.currentTarget.contains(e.relatedTarget as Node | null) && setOver(null)}>
-            {queue.map((t, i) => (
+            {queue.map((track, i) => (
               <QueueRow
-                key={t.queueId}
-                track={t}
+                key={track.queueId}
+                track={track}
                 index={i}
                 count={queue.length}
                 canAct={canAct}
-                addedBy={addedByName(users, t.addedBy, meId)}
-                dragging={drag === t.queueId}
-                dropEdge={over?.index === i && drag !== t.queueId ? (over.after ? 'after' : 'before') : null}
+                addedBy={addedByName(users, track.addedBy, meId, t)}
+                dragging={drag === track.queueId}
+                dropEdge={over?.index === i && drag !== track.queueId ? (over.after ? 'after' : 'before') : null}
                 onDragStart={(e) => {
-                  e.dataTransfer.setData(QUEUE_DRAG_TYPE, t.queueId)
+                  e.dataTransfer.setData(QUEUE_DRAG_TYPE, track.queueId)
                   e.dataTransfer.effectAllowed = 'move'
-                  setDrag(t.queueId)
+                  setDrag(track.queueId)
                 }}
                 onDragEnd={endDrag}
                 onDragOver={(e) => onDragOver(e, i)}
                 onDrop={onDrop}
-                onMove={(to) => move(t.queueId, to)}
-                onRemove={() => void musicControl(channelId, 'remove', { queueId: t.queueId })}
+                onMove={(to) => move(track.queueId, to)}
+                onRemove={() => void musicControl(channelId, 'remove', { queueId: track.queueId })}
               />
             ))}
           </ul>
@@ -396,7 +407,7 @@ function QueueTab({ channelId, state, canAct }: { channelId: string; state: Musi
       </section>
       {queue.length > 0 && (
         <footer className="mu-queue-foot">
-          <span className="mu-hint">{canAct ? 'Drag songs to reorder (or Alt+↑/↓).' : ''}</span>
+          <span className="mu-hint">{canAct ? t('Drag songs to reorder (or Alt+↑/↓).') : ''}</span>
           <button
             className={`vx-btn vx-btn-sm ${confirmClear ? 'mu-btn-danger' : ''}`}
             disabled={!canAct}
@@ -406,7 +417,7 @@ function QueueTab({ channelId, state, canAct }: { channelId: string; state: Musi
               void musicControl(channelId, 'clear')
             }}
           >
-            <TrashIcon size={13} /> {confirmClear ? 'Click again to clear' : 'Clear queue'}
+            <TrashIcon size={13} /> {confirmClear ? t('Click again to clear') : t('Clear queue')}
           </button>
         </footer>
       )}
@@ -432,6 +443,7 @@ interface QueueRowProps {
 
 function QueueRow(p: QueueRowProps) {
   const { track, index, count, canAct } = p
+  const t = useT()
   return (
     <li
       className={`mu-row mu-row-queue ${p.dragging ? 'is-dragging' : ''} ${p.dropEdge ? `is-drop-${p.dropEdge}` : ''}`}
@@ -464,12 +476,12 @@ function QueueRow(p: QueueRowProps) {
       <span className="mu-row-text">
         <span className="mu-row-title">{track.title}</span>
         <span className="mu-row-sub">
-          {track.artist} · added by {p.addedBy}
+          {track.artist} · {t('added by {name}', { name: p.addedBy })}
         </span>
       </span>
       <span className="mu-row-dur">{formatDuration(track.durationMs)}</span>
       <span className="mu-row-actions">
-        <button className="mu-btn" onClick={p.onRemove} disabled={!canAct} title="Remove from the queue" aria-label={`Remove ${track.title}`}>
+        <button className="mu-btn" onClick={p.onRemove} disabled={!canAct} title={t('Remove from the queue')} aria-label={t('Remove {name}', { name: track.title })}>
           <CloseIcon size={13} />
         </button>
       </span>

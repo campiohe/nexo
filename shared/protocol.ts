@@ -26,6 +26,19 @@ export interface User {
    * while the user is speaking (saves CPU while gaming). Older servers omit it.
    */
   avatarAnimated?: boolean
+  /**
+   * Uploaded profile banner version token, or null when there is none (see BANNER_* below).
+   * Image URL: `${serverUrl}/banners/${id}?v=${banner}`. Older servers omit it.
+   */
+  banner?: string | null
+  /** The uploaded banner is a GIF (animated). Older servers omit it. */
+  bannerAnimated?: boolean
+  /**
+   * Built-in banner shown when there is no uploaded `banner` (one of BANNER_PRESETS; an upload wins).
+   * Always present on servers that support banners ('solid' by default): clients use its presence to detect
+   * banner support. Older servers omit it (clients then show the solid color and hide the banner editor).
+   */
+  bannerPreset?: BannerPreset
 }
 
 export const STATUS_TEXT_MAX = 64
@@ -437,10 +450,13 @@ export interface ClientToServerEvents {
   'voice:state': (p: VoiceStatePatch) => void
   /**
    * Change any of (at least one): color, custom status text (normalized: NFC, whitespace runs collapsed to one
-   * space, control characters removed, trimmed; '' or null clears; > STATUS_TEXT_MAX UTF-16 units fails).
-   * Broadcasts `user:upsert`.
+   * space, control characters removed, trimmed; '' or null clears; > STATUS_TEXT_MAX UTF-16 units fails),
+   * banner preset (one of BANNER_PRESETS; older servers don't know it). Broadcasts `user:upsert`.
    */
-  'profile:update': (p: { color?: string; statusText?: string | null }, ack: Ack<User>) => void
+  'profile:update': (
+    p: { color?: string; statusText?: string | null; bannerPreset?: BannerPreset },
+    ack: Ack<User>,
+  ) => void
   /**
    * Set this connection's status and/or activity (omitted fields keep their value). No ack; invalid fields
    * are ignored. The account's presence is the aggregate over its sockets (see PresenceStatus); a
@@ -579,6 +595,37 @@ export const AVATAR_SIZE = 256
 // AVATAR_ANIMATED_SIZE square and re-encode as GIF (dropping frames / lowering the frame rate to fit).
 export const AVATAR_ANIMATED_MAX_BYTES = 2 * 1024 * 1024
 export const AVATAR_ANIMATED_SIZE = 160
+
+// ---- Profile banners (HTTP, not socket.io; same rules as profile pictures) ----
+// PUT    /api/banner   Authorization: Bearer <device token>, body = image bytes
+//                      (Content-Type image/webp | image/png | image/jpeg <= BANNER_MAX_BYTES,
+//                      or image/gif <= BANNER_ANIMATED_MAX_BYTES; magic bytes must match)
+//                      → 200 { user: User }  (`banner` = version token, `bannerAnimated` true for a GIF;
+//                      the server also broadcasts `user:upsert`)
+// DELETE /api/banner   Authorization: Bearer <device token> → 200 { user: User } (banner null)
+// GET    /banners/:userId?v=<banner>  → the image (long-lived cache; the version changes on update)
+// Banners are BANNER_ASPECT wide (the profile card's banner). Clients crop to that aspect and resize to
+// BANNER_WIDTH×BANNER_HEIGHT (still) or BANNER_ANIMATED_WIDTH×BANNER_ANIMATED_HEIGHT (every frame of a GIF,
+// re-encoded to fit like animated profile pictures). Limits scale with the pixel count: a banner has ~5.6x
+// the pixels of a profile picture (2 MB vs 512 KB; real WebP uploads are ~100-300 KB), an animated one ~2.5x
+// those of an animated picture with 2x the budget (4 MB vs 2 MB) so GIFs keep their frame rate.
+export const BANNER_ASPECT = 5 / 2
+export const BANNER_WIDTH = 960
+export const BANNER_HEIGHT = 384
+export const BANNER_MAX_BYTES = 2 * 1024 * 1024
+export const BANNER_ANIMATED_WIDTH = 400
+export const BANNER_ANIMATED_HEIGHT = 160
+export const BANNER_ANIMATED_MAX_BYTES = 4 * 1024 * 1024
+
+/**
+ * Built-in banners for people without an upload, drawn by clients (CSS) from the user's color. 'solid' is the
+ * plain color. Servers reject other ids; clients show unknown ids (from a newer server) as 'solid'.
+ */
+export const BANNER_PRESETS = ['solid', 'flow', 'aurora', 'waves', 'dots', 'swirl'] as const
+export type BannerPreset = (typeof BANNER_PRESETS)[number]
+export const DEFAULT_BANNER_PRESET: BannerPreset = 'solid'
+export const isBannerPreset = (v: unknown): v is BannerPreset =>
+  typeof v === 'string' && (BANNER_PRESETS as readonly string[]).includes(v)
 
 // ---- Chat image attachments (HTTP, not socket.io) ----
 // POST /api/attachments   Authorization: Bearer <device token>, body = image bytes

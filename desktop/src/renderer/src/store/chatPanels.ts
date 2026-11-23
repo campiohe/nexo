@@ -5,6 +5,7 @@ import type { Message } from '@shared/protocol'
 import { SEARCH_QUERY_MAX } from '@shared/protocol'
 import { request } from '../net/socket'
 import { useApp } from './app'
+import { t } from '../i18n'
 
 export type ChatPanel = 'search' | 'pins' | null
 
@@ -36,6 +37,7 @@ interface ChatPanelsState {
   results: Message[]
   hasMore: boolean
   loading: boolean
+  /** As received (often the server's English): shown with tKnown(). */
   error: string | null
   /** Restrict searches to the selected channel (panel toggle). */
   thisChannelOnly: boolean
@@ -50,6 +52,7 @@ interface ChatPanelsState {
   pinsChannelId: string | null
   pins: Message[]
   pinsLoading: boolean
+  /** As received (often the server's English): shown with tKnown(). */
   pinsError: string | null
   loadPins(channelId: string): Promise<void>
 
@@ -99,7 +102,7 @@ export const useChatPanels = create<ChatPanelsState>()((set, get) => ({
     const seq = ++searchSeq
     set({ panel: 'search', search: q, results: [], hasMore: false, loading: true, error: null })
     if (q.text.length > SEARCH_QUERY_MAX) {
-      set({ loading: false, error: `Search is limited to ${SEARCH_QUERY_MAX} characters` })
+      set({ loading: false, error: t('Search is limited to {count} characters', { count: SEARCH_QUERY_MAX }) })
       return
     }
     const channelId = effectiveChannel(q)

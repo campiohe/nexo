@@ -13,18 +13,20 @@ import {
   type TitleBarStyle,
 } from '../lib/appearance'
 import { ICON_GEOMETRY, iconColors } from '../lib/appIcon'
+import { msg, useT } from '../i18n'
 import { useLinkPreviewsPref } from '../store/chatPrefs'
 
+// Labels are message keys (msg): translated where they're shown, with t(label).
 const THEMES: { id: ThemeChoice; label: string }[] = [
-  { id: 'system', label: 'System' },
-  { id: 'dark', label: 'Dark' },
-  { id: 'midnight', label: 'Midnight' },
-  { id: 'light', label: 'Light' },
+  { id: 'system', label: msg('System') },
+  { id: 'dark', label: msg('Dark') },
+  { id: 'midnight', label: msg('Midnight') },
+  { id: 'light', label: msg('Light') },
 ]
 
 const TITLE_BARS: { id: TitleBarStyle; label: string }[] = [
-  { id: 'search', label: 'With search' },
-  { id: 'minimal', label: 'Minimal' },
+  { id: 'search', label: msg('With search') },
+  { id: 'minimal', label: msg('Minimal') },
 ]
 
 const hasZoomBridge = () => typeof window.nexo?.appearance?.setZoom === 'function'
@@ -85,12 +87,16 @@ function ThemeCard({ id, label, hint }: { id: ThemeChoice; label: string; hint?:
 }
 
 function AccentRow() {
+  const t = useT()
   const accent = useAppearance((s) => s.accent)
   const label = ACCENTS.find((a) => a.id === accent)?.label
   return (
     <div className="appearance-group">
       <span id="accent-label" className="field-label">
-        Accent <span className="appearance-accent-name">{label}</span>
+        {t.rich('Accent <name>{accent}</name>', {
+          accent: label ? t(label) : '',
+          name: (c) => <span className="appearance-accent-name">{c}</span>,
+        })}
       </span>
       <div className="swatches" role="radiogroup" aria-labelledby="accent-label">
         {ACCENTS.map((a) => (
@@ -99,8 +105,8 @@ function AccentRow() {
             type="button"
             role="radio"
             aria-checked={accent === a.id}
-            aria-label={a.label}
-            title={a.label}
+            aria-label={t(a.label)}
+            title={t(a.label)}
             data-accent={a.id}
             className={`swatch accent-swatch ${accent === a.id ? 'is-selected' : ''}`}
             onClick={() => useAppearance.getState().setAccent(a.id)}
@@ -112,23 +118,24 @@ function AccentRow() {
 }
 
 function TitleBarRow() {
+  const t = useT()
   const titleBar = useAppearance((s) => s.titleBar)
   return (
     <div className="appearance-group">
       <span id="titlebar-label" className="field-label">
-        Title bar
+        {t('Title bar')}
       </span>
       <div className="vx-seg" role="radiogroup" aria-labelledby="titlebar-label">
-        {TITLE_BARS.map((t) => (
+        {TITLE_BARS.map((b) => (
           <button
-            key={t.id}
+            key={b.id}
             type="button"
             role="radio"
-            aria-checked={titleBar === t.id}
-            className={`vx-seg-btn ${titleBar === t.id ? 'is-active' : ''}`}
-            onClick={() => useAppearance.getState().setTitleBar(t.id)}
+            aria-checked={titleBar === b.id}
+            className={`vx-seg-btn ${titleBar === b.id ? 'is-active' : ''}`}
+            onClick={() => useAppearance.getState().setTitleBar(b.id)}
           >
-            {t.label}
+            {t(b.label)}
           </button>
         ))}
       </div>
@@ -158,6 +165,7 @@ function AppIconArt({ choice }: { choice: AppIconChoice }) {
 }
 
 function AppIconRow() {
+  const t = useT()
   const appIcon = useAppearance((s) => s.appIcon)
   const group = useRef<HTMLDivElement>(null)
 
@@ -175,7 +183,7 @@ function AppIconRow() {
   return (
     <div className="appearance-group">
       <span id="app-icon-label" className="field-label">
-        App icon
+        {t('App icon')}
       </span>
       <div ref={group} className="app-icon-options" role="radiogroup" aria-labelledby="app-icon-label" onKeyDown={onKeyDown}>
         {APP_ICONS.map((a) => (
@@ -189,16 +197,17 @@ function AppIconRow() {
             onClick={() => useAppearance.getState().setAppIcon(a.id)}
           >
             <AppIconArt choice={a.id} />
-            <span className="app-icon-label">{a.label}</span>
+            <span className="app-icon-label">{t(a.label)}</span>
           </button>
         ))}
       </div>
-      <span className="muted small">Used for the window, taskbar and tray. Pinned shortcuts keep the default icon.</span>
+      <span className="muted small">{t('Used for the window, taskbar and tray. Pinned shortcuts keep the default icon.')}</span>
     </div>
   )
 }
 
 function ZoomRow() {
+  const t = useT()
   const zoom = useAppearance((s) => s.zoom)
   const isMac = window.nexo?.platform === 'darwin'
   const mod = isMac ? '⌘' : 'Ctrl'
@@ -209,9 +218,9 @@ function ZoomRow() {
     <div className="appearance-group">
       <div className="appearance-row">
         <span className="toggle-text">
-          <span id="zoom-label">Zoom</span>
+          <span id="zoom-label">{t('Zoom')}</span>
           <span className="muted small">
-            {mod}+= and {mod}+- change it from anywhere, {mod}+0 resets it. {mod}+mouse wheel works too.
+            {t('{mod}+= and {mod}+- change it from anywhere, {mod}+0 resets it. {mod}+mouse wheel works too.', { mod })}
           </span>
         </span>
         <span className="appearance-zoom-value">{zoomPercent(ZOOM_STEPS[index]!)}</span>
@@ -236,7 +245,7 @@ function ZoomRow() {
           disabled={zoom === null || zoom === 1}
           onClick={() => void useAppearance.getState().setZoom(1)}
         >
-          Reset
+          {t('Reset')}
         </button>
       </div>
     </div>
@@ -244,6 +253,7 @@ function ZoomRow() {
 }
 
 export function AppearanceSection() {
+  const t = useT()
   const resolved = useAppearance((s) => s.resolved)
   const theme = useAppearance((s) => s.theme)
   const density = useAppearance((s) => s.density)
@@ -251,17 +261,22 @@ export function AppearanceSection() {
 
   return (
     <section>
-      <h3 className="settings-heading">Appearance</h3>
+      <h3 className="settings-heading">{t('Appearance')}</h3>
 
       <div className="appearance-group" role="radiogroup" aria-labelledby="theme-label">
         <span id="theme-label" className="field-label">
-          Theme
+          {t('Theme')}
         </span>
         <div className="theme-cards">
           {/* The OS theme is only known while System is chosen: main mirrors the choice into nativeTheme.themeSource,
               which prefers-color-scheme then follows. */}
-          {THEMES.map((t) => (
-            <ThemeCard key={t.id} id={t.id} label={t.label} hint={t.id === 'system' && theme === 'system' ? `(${resolved})` : undefined} />
+          {THEMES.map((c) => (
+            <ThemeCard
+              key={c.id}
+              id={c.id}
+              label={t(c.label)}
+              hint={c.id === 'system' && theme === 'system' ? `(${t(THEMES.find((x) => x.id === resolved)?.label ?? resolved)})` : undefined}
+            />
           ))}
         </div>
       </div>
@@ -276,11 +291,11 @@ export function AppearanceSection() {
       {hasZoomBridge() && <ZoomRow />}
 
       <div className="appearance-group">
-        <span className="field-label">Chat</span>
+        <span className="field-label">{t('Chat')}</span>
         <label className="toggle-row">
           <span className="toggle-text">
-            <span>Compact messages</span>
-            <span className="muted small">Smaller avatars and less space between messages.</span>
+            <span>{t('Compact messages')}</span>
+            <span className="muted small">{t('Smaller avatars and less space between messages.')}</span>
           </span>
           <input
             type="checkbox"
@@ -292,8 +307,8 @@ export function AppearanceSection() {
         </label>
         <label className="toggle-row">
           <span className="toggle-text">
-            <span>Show link previews</span>
-            <span className="muted small">Cards for links (videos, music, articles) under messages. Only on this device.</span>
+            <span>{t('Show link previews')}</span>
+            <span className="muted small">{t('Cards for links (videos, music, articles) under messages. Only on this device.')}</span>
           </span>
           <input
             type="checkbox"

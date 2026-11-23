@@ -21,8 +21,9 @@
 
 /* ---------- profile card ---------- */
 .pc { width: 300px; overflow: hidden; }
-.pc-banner { height: 60px; }
-.pc-avatar { margin: -40px 0 0 14px; width: max-content; padding: 4px; border-radius: 50%; background: var(--bg-1); }
+/* BANNER_ASPECT (5:2) at the card's width; the avatar overlaps its bottom 40px. */
+.pc-banner { aspect-ratio: 5 / 2; }
+.pc-avatar { position: relative; margin: -40px 0 0 14px; width: max-content; padding: 4px; border-radius: 50%; background: var(--bg-1); }
 .pc-avatar .avatar-presence { border-color: var(--bg-1); border-width: 4px; }
 .pc-body { display: flex; flex-direction: column; gap: 10px; padding: 8px 16px 16px; }
 .pc-name-row { display: flex; align-items: center; gap: 8px; min-width: 0; }

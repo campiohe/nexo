@@ -2,7 +2,8 @@
 // preview, name it (+ optional emoji), then upload it as a 16-bit mono WAV (voice/wav.ts explains why).
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react'
 import { SOUND_NAME_MAX } from '@shared/protocol'
-import { toast } from '../../lib/toast'
+import { errorMessage, toast } from '../../lib/toast'
+import { formatNumber, t, useT } from '../../i18n'
 import { uploadSound } from '../../net/sounds'
 import { previewBuffer, stopPreviews } from '../../voice/soundboard'
 import { clipDurationMs, encodeWav, finishClip, maxClipSamples, SOUNDBOARD_RATE } from '../../voice/wav'
@@ -31,6 +32,7 @@ const MAX_SEL = maxClipSamples(SOUNDBOARD_RATE) / SOUNDBOARD_RATE
 const MIN_SEL = 0.1
 const FADE_SAMPLES = Math.round(SOUNDBOARD_RATE * 0.005)
 const WAVE_H = 96
+const TWO_DECIMALS: Intl.NumberFormatOptions = { minimumFractionDigits: 2, maximumFractionDigits: 2 }
 
 interface Loaded {
   /** Per picked file, to key the waveform. */
@@ -79,14 +81,19 @@ function probeDuration(file: File): Promise<number | null> {
   })
 }
 
-const tooLong = () => new Error(`That file is too long (max ${MAX_SOURCE_SECONDS / 60} minutes). Cut it shorter first.`)
+const tooLong = () =>
+  new Error(t('That file is too long (max {minutes} minutes). Cut it shorter first.', { minutes: MAX_SOURCE_SECONDS / 60 }))
 
 async function decode(file: File): Promise<AudioBuffer> {
-  if (file.size > MAX_FILE_BYTES) throw new Error(`That file is too big (max ${MAX_FILE_BYTES / (1024 * 1024)} MB)`)
+  if (file.size > MAX_FILE_BYTES) throw new Error(t('That file is too big (max {size} MB)', { size: MAX_FILE_BYTES / (1024 * 1024) }))
   const probed = await probeDuration(file)
   if (probed !== null && probed > MAX_SOURCE_SECONDS) throw tooLong()
   if (probed === null && file.size > MAX_UNKNOWN_LENGTH_BYTES) {
-    throw new Error(`Couldn't tell how long that file is, so it's limited to ${MAX_UNKNOWN_LENGTH_BYTES / (1024 * 1024)} MB. Try an MP3, OGG or WAV file.`)
+    throw new Error(
+      t("Couldn't tell how long that file is, so it's limited to {size} MB. Try an MP3, OGG or WAV file.", {
+        size: MAX_UNKNOWN_LENGTH_BYTES / (1024 * 1024),
+      }),
+    )
   }
   const bytes = await file.arrayBuffer()
   // Decoded straight at the upload rate: no quality lost, and long files take less memory.
@@ -95,7 +102,7 @@ async function decode(file: File): Promise<AudioBuffer> {
   try {
     buffer = await c.decodeAudioData(bytes)
   } catch {
-    throw new Error("Couldn't read that file. Try an MP3, OGG, WAV, WebM or M4A file.")
+    throw new Error(t("Couldn't read that file. Try an MP3, OGG, WAV, WebM or M4A file."))
   }
   // The metadata can be missing or wrong (VBR estimates).
   if (buffer.duration > MAX_SOURCE_SECONDS) throw tooLong()
@@ -139,6 +146,7 @@ function peaksOf(buffer: AudioBuffer, cols: number): Float32Array {
 }
 
 export function SoundUploadDialog({ onClose }: { onClose(added: boolean): void }) {
+  const t = useT()
   const [loaded, setLoaded] = useState<Loaded | null>(null)
   const [decoding, setDecoding] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -168,16 +176,17 @@ export function SoundUploadDialog({ onClose }: { onClose(added: boolean): void }
     setDecoding(true)
     try {
       const buffer = await decode(file)
-      if (buffer.duration < MIN_SEL) throw new Error('That clip is too short')
+      if (buffer.duration < MIN_SEL) throw new Error(t('That clip is too short'))
       setLoaded({ id: ++loadSeq, name: file.name, buffer })
       setSel({ start: 0, len: Math.min(MAX_SEL, buffer.duration) })
       setName((n) => n || defaultName(file.name))
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      // Our own errors are already translated; errorMessage() also translates a known server / main text (tKnown).
+      setError(errorMessage(err))
     } finally {
       setDecoding(false)
     }
-  }, [])
+  }, [t])
 
   useEffect(() => () => stopPreviews(), [])
 
@@ -190,7 +199,7 @@ export function SoundUploadDialog({ onClose }: { onClose(added: boolean): void }
     try {
       const { blob, durationMs } = await renderClip(loaded.buffer, sel.start, sel.len)
       await uploadSound(blob, { name: n, emoji, durationMs })
-      toast(`Added “${n}” to the soundboard`, 'success')
+      toast(t('Added “{name}” to the soundboard', { name: n }), 'success')
       if (mounted.current) onClose(true)
     } catch (err) {
       toast(err, 'error')
@@ -200,7 +209,7 @@ export function SoundUploadDialog({ onClose }: { onClose(added: boolean): void }
 
   return (
     <Modal
-      title="Add a sound"
+      title={t('Add a sound')}
       width={540}
       className="sb-upload"
       // Escape while the emoji picker is open only closes the picker (it listens too).
@@ -210,10 +219,10 @@ export function SoundUploadDialog({ onClose }: { onClose(added: boolean): void }
       footer={
         <>
           <button className="btn btn-ghost" onClick={() => onClose(false)}>
-            Cancel
+            {t('Cancel')}
           </button>
           <button className="btn btn-primary" onClick={() => void submit()} disabled={!loaded || !name.trim() || busy}>
-            {busy ? 'Uploading…' : 'Add to soundboard'}
+            {busy ? t('Uploading…') : t('Add to soundboard')}
           </button>
         </>
       }
@@ -239,14 +248,14 @@ export function SoundUploadDialog({ onClose }: { onClose(added: boolean): void }
             </span>
             <span className="sb-file-dur">{fmt(duration)}</span>
             <button className="vx-btn vx-btn-sm" onClick={() => fileRef.current?.click()} disabled={decoding || busy}>
-              Change file
+              {t('Change file')}
             </button>
           </div>
         ) : (
           <button className="sb-drop-btn" onClick={() => fileRef.current?.click()} disabled={decoding} data-autofocus>
             {decoding ? <span className="vx-spinner" /> : <UploadIcon size={22} />}
-            <span>{decoding ? 'Reading the file…' : 'Choose an audio file'}</span>
-            <span className="muted small">or drop it here · MP3, OGG, WAV, WebM, M4A… (up to 10 min, 15 MB)</span>
+            <span>{decoding ? t('Reading the file…') : t('Choose an audio file')}</span>
+            <span className="muted small">{t('or drop it here · MP3, OGG, WAV, WebM, M4A… (up to 10 min, 15 MB)')}</span>
           </button>
         )}
       </div>
@@ -263,14 +272,14 @@ export function SoundUploadDialog({ onClose }: { onClose(added: boolean): void }
 
       <div className="sb-fields">
         <div className="sb-field sb-field-emoji">
-          <span className="sb-label">Emoji</span>
+          <span className="sb-label">{t('Emoji')}</span>
           <span className="sb-emoji-row">
             <button
               type="button"
               className="sb-emoji-btn"
               onClick={(e) => setPickerAnchor(pickerAnchor ? null : e.currentTarget)}
-              aria-label={emoji ? `Emoji: ${emoji}. Change` : 'Choose an emoji'}
-              title={emoji ? 'Change emoji' : 'Choose an emoji (optional)'}
+              aria-label={emoji ? t('Emoji: {emoji}. Change', { emoji }) : t('Choose an emoji')}
+              title={emoji ? t('Change emoji') : t('Choose an emoji (optional)')}
               disabled={busy}
             >
               {emoji ?? <SmilePlusIcon size={18} />}
@@ -280,8 +289,8 @@ export function SoundUploadDialog({ onClose }: { onClose(added: boolean): void }
                 type="button"
                 className="icon-btn sb-emoji-clear"
                 onClick={() => setEmoji(null)}
-                aria-label="Remove emoji"
-                title="Remove emoji"
+                aria-label={t('Remove emoji')}
+                title={t('Remove emoji')}
               >
                 <CloseIcon size={12} />
               </button>
@@ -289,7 +298,7 @@ export function SoundUploadDialog({ onClose }: { onClose(added: boolean): void }
           </span>
         </div>
         <label className="sb-field sb-field-name">
-          <span className="sb-label">Name</span>
+          <span className="sb-label">{t('Name')}</span>
           <input
             className="input"
             value={name}
@@ -298,7 +307,7 @@ export function SoundUploadDialog({ onClose }: { onClose(added: boolean): void }
             onKeyDown={(e) => {
               if (e.key === 'Enter') void submit()
             }}
-            placeholder="Airhorn"
+            placeholder={t('Airhorn')}
             disabled={busy}
             spellCheck={false}
           />
@@ -320,7 +329,7 @@ export function SoundUploadDialog({ onClose }: { onClose(added: boolean): void }
           anchor={pickerAnchor}
           onPick={(e) => setEmoji(e)}
           onClose={() => setPickerAnchor(null)}
-          label="Sound emoji"
+          label={t('Sound emoji')}
         />
       )}
     </Modal>
@@ -337,6 +346,7 @@ interface WaveformProps {
 type DragMode = 'move' | 'start' | 'end'
 
 function Waveform({ buffer, sel, onChange, disabled }: WaveformProps) {
+  const t = useT()
   const wrapRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [width, setWidth] = useState(0)
@@ -500,7 +510,7 @@ function Waveform({ buffer, sel, onChange, disabled }: WaveformProps) {
           onKeyDown={onHandleKey('move')}
           tabIndex={0}
           role="group"
-          aria-label={`Selection ${fmt(sel.start)} to ${fmt(sel.start + sel.len)}. Arrow keys move it.`}
+          aria-label={t('Selection {from} to {to}. Arrow keys move it.', { from: fmt(sel.start), to: fmt(sel.start + sel.len) })}
         >
           <span
             className="sb-handle is-start"
@@ -508,7 +518,7 @@ function Waveform({ buffer, sel, onChange, disabled }: WaveformProps) {
             onKeyDown={onHandleKey('start')}
             tabIndex={0}
             role="slider"
-            aria-label="Selection start"
+            aria-label={t('Selection start')}
             aria-valuemin={0}
             aria-valuemax={Math.round(dur * 100) / 100}
             aria-valuenow={Math.round(sel.start * 100) / 100}
@@ -519,7 +529,7 @@ function Waveform({ buffer, sel, onChange, disabled }: WaveformProps) {
             onKeyDown={onHandleKey('end')}
             tabIndex={0}
             role="slider"
-            aria-label="Selection end"
+            aria-label={t('Selection end')}
             aria-valuemin={0}
             aria-valuemax={Math.round(dur * 100) / 100}
             aria-valuenow={Math.round((sel.start + sel.len) * 100) / 100}
@@ -530,11 +540,11 @@ function Waveform({ buffer, sel, onChange, disabled }: WaveformProps) {
       <div className="sb-wave-bar">
         <button className="vx-btn vx-btn-sm" onClick={() => void toggle()} disabled={disabled}>
           {playing ? <StopIcon size={12} /> : <PlayIcon size={12} />}
-          {playing ? 'Stop' : 'Preview'}
+          {playing ? t('Stop') : t('Preview // play the selection')}
         </button>
         <span className="sb-wave-info">
-          {fmt(sel.start)} – {fmt(sel.start + sel.len)} · <strong>{sel.len.toFixed(2)} s</strong>
-          {dur > MAX_SEL && <span className="muted"> (max {MAX_SEL} s)</span>}
+          {fmt(sel.start)} – {fmt(sel.start + sel.len)} · <strong>{formatNumber(sel.len, TWO_DECIMALS)} s</strong>
+          {dur > MAX_SEL && <span className="muted"> {t('(max {seconds} s)', { seconds: MAX_SEL })}</span>}
         </span>
       </div>
     </div>

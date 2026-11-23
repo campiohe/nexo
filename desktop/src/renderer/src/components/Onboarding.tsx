@@ -9,10 +9,12 @@ import { Avatar } from './Avatar'
 import { ColorSwatches } from './ColorSwatches'
 import { AlertIcon, NexoMark } from './icons'
 import { AccessRequestStep, WelcomeBackStep } from './SignInSteps'
+import { tKnown, useT } from '../i18n'
 
 const NAME_RE = /^[\p{L}\p{M}\p{N}_.\- ]{2,24}$/u
 
 export function Onboarding() {
+  const t = useT()
   const connection = useApp((s) => s.connection)
   const connectionError = useApp((s) => s.connectionError)
   const notice = useApp((s) => s.onboardingNotice)
@@ -25,6 +27,7 @@ export function Onboarding() {
   const [color, setColor] = useState<string>(() => randomSwatch())
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
+  /** Translated where shown: a message key from this form, or an error message already in the app language. */
   const [localError, setLocalError] = useState<string | null>(null)
   const [submitted, setSubmitted] = useState(false)
   /** Checking the server for a saved login / "Welcome back" accounts before creating an account. */
@@ -37,7 +40,8 @@ export function Onboarding() {
 
   const busy = probing || requesting || (submitted && connection === 'connecting')
   const serverError = submitted && connection === 'error' ? connectionError : null
-  const error = localError ?? serverError
+  // The server's messages arrive in English (pt-BR/server.ts); the regexes below test that English.
+  const error = localError ?? (serverError && tKnown(serverError))
   const wrongPassword = !!serverError && /password/i.test(serverError)
   const nameTaken = !!serverError && /name/i.test(serverError)
   /** "That name is already taken": offer a sign-in request for that account. */
@@ -62,8 +66,8 @@ export function Onboarding() {
     if (busy) return
     const url = normalizeServerUrl(serverUrl)
     const cleanName = name.trim().replace(/\s+/g, ' ')
-    if (!isValidServerUrl(url)) return setLocalError('Enter a valid server address, like http://100.64.0.1:3001')
-    if (!NAME_RE.test(cleanName)) return setLocalError('Names must be 2–24 letters, numbers, spaces, . _ or -')
+    if (!isValidServerUrl(url)) return setLocalError(t('Enter a valid server address, like {example}', { example: 'http://100.64.0.1:3001' }))
+    if (!NAME_RE.test(cleanName)) return setLocalError(t('Names must be 2–24 letters, numbers, spaces, . _ or -'))
     setLocalError(null)
     setServerUrl(url)
     setName(cleanName)
@@ -118,19 +122,19 @@ export function Onboarding() {
       <form className="onboarding-card" onSubmit={(e) => void submit(e)} noValidate>
         <div className="onboarding-brand">
           <NexoMark size={36} tile />
-          <h1>Join a server</h1>
-          <p className="muted">Ask whoever runs it for the address.</p>
+          <h1>{t('Join a server')}</h1>
+          <p className="muted">{t('Ask whoever runs it for the address.')}</p>
         </div>
 
         {notice && (
           <div className="callout callout-warn">
             <AlertIcon size={16} />
-            <span>{notice}</span>
+            <span>{tKnown(notice)}</span>
           </div>
         )}
 
         <label className="field">
-          <span className="field-label">Server address</span>
+          <span className="field-label">{t('Server address')}</span>
           <input
             className="input"
             value={serverUrl}
@@ -146,13 +150,13 @@ export function Onboarding() {
         <div className="onboarding-identity">
           <Avatar user={{ name: name.trim() || '?', color }} size={40} />
           <label className="field grow">
-            <span className="field-label">Your name</span>
+            <span className="field-label">{t('Your name')}</span>
             <input
               ref={nameRef}
               className={`input ${nameTaken ? 'input-invalid' : ''}`}
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. Ana"
+              placeholder={t('e.g. Ana')}
               maxLength={24}
               spellCheck={false}
               autoComplete="nickname"
@@ -162,13 +166,13 @@ export function Onboarding() {
         </div>
 
         <div className="field">
-          <span className="field-label">Color</span>
+          <span className="field-label">{t('Color')}</span>
           <ColorSwatches value={color} onChange={setColor} colors={SWATCHES} disabled={busy} />
         </div>
 
         {showPassword ? (
           <label className="field">
-            <span className="field-label">Server password</span>
+            <span className="field-label">{t('Server password')}</span>
             <input
               ref={passwordRef}
               className={`input ${wrongPassword ? 'input-invalid' : ''}`}
@@ -188,7 +192,7 @@ export function Onboarding() {
               requestAnimationFrame(() => passwordRef.current?.focus())
             }}
           >
-            The server has a password
+            {t('The server has a password')}
           </button>
         )}
 
@@ -202,15 +206,15 @@ export function Onboarding() {
         {canRequestAccess && (
           <div className="onboarding-claim">
             <span>
-              Is <strong>{submittedName}</strong> you, on another device?
+              {t.rich('Is <b>{name}</b> you, on another device?', { name: submittedName, b: (c) => <strong>{c}</strong> })}
             </span>
             <button type="button" className="btn btn-ghost btn-sm" onClick={() => void requestAccess()} disabled={busy}>
               {requesting ? (
                 <>
-                  <span className="spinner" /> Sending…
+                  <span className="spinner" /> {t('Sending…')}
                 </>
               ) : (
-                'This is my account'
+                t('This is my account')
               )}
             </button>
           </div>
@@ -219,10 +223,10 @@ export function Onboarding() {
         <button className="btn btn-primary btn-lg" type="submit" disabled={busy}>
           {busy && !requesting ? (
             <>
-              <span className="spinner" /> Connecting…
+              <span className="spinner" /> {t('Connecting…')}
             </>
           ) : (
-            'Join'
+            t('Join')
           )}
         </button>
       </form>

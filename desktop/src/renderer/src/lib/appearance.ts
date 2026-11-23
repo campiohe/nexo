@@ -5,6 +5,7 @@
 import { create } from 'zustand'
 import { THEME_CHOICES, ZOOM_STEPS, type ThemeChoice, type WindowChrome, type ZoomEvent } from '../../../preload/api'
 import { APP_ICONS, renderAppIcon, usesAccent, type AppIconChoice } from './appIcon'
+import { formatNumber, msg, t } from '../i18n'
 import { toast, useToasts } from './toast'
 
 export type { AppIconChoice, ThemeChoice }
@@ -13,14 +14,14 @@ export { APP_ICONS }
 export type ResolvedTheme = 'dark' | 'midnight' | 'light'
 export type Density = 'cozy' | 'compact'
 
-/** Accent presets (tokens.css, <html data-accent>). */
+/** Accent presets (tokens.css, <html data-accent>). Labels are message keys: show them with t(label). */
 export const ACCENTS = [
-  { id: 'mint', label: 'Mint' },
-  { id: 'blue', label: 'Blue' },
-  { id: 'violet', label: 'Violet' },
-  { id: 'coral', label: 'Coral' },
-  { id: 'amber', label: 'Amber' },
-  { id: 'rose', label: 'Rose' },
+  { id: 'mint', label: msg('Mint') },
+  { id: 'blue', label: msg('Blue') },
+  { id: 'violet', label: msg('Violet') },
+  { id: 'coral', label: msg('Coral') },
+  { id: 'amber', label: msg('Amber') },
+  { id: 'rose', label: msg('Rose') },
 ] as const
 export type AccentChoice = (typeof ACCENTS)[number]['id']
 
@@ -214,15 +215,22 @@ export const useAppearance = create<AppearanceStore>()((set, get) => ({
 /** Zoom steps the settings slider and shortcuts move through. */
 export { ZOOM_STEPS }
 
-export const zoomPercent = (factor: number): string => `${Math.round(factor * 100)}%`
+/** "110%" ("110 %" where the language spaces it). */
+export const zoomPercent = (factor: number): string => formatNumber(factor, { style: 'percent', maximumFractionDigits: 0 })
 
 let zoomToastId: number | null = null
 
 function showZoomToast(factor: number): void {
   // One indicator, replaced on every step (not a stack of toasts).
   if (zoomToastId !== null) useToasts.getState().dismiss(zoomToastId)
-  const edge = factor === ZOOM_STEPS[0] ? ' (minimum)' : factor === ZOOM_STEPS[ZOOM_STEPS.length - 1] ? ' (maximum)' : ''
-  zoomToastId = toast(`Zoom ${zoomPercent(factor)}${edge}`, 'info', 1500)
+  const zoom = zoomPercent(factor)
+  const text =
+    factor === ZOOM_STEPS[0]
+      ? t('Zoom {zoom} (minimum)', { zoom })
+      : factor === ZOOM_STEPS[ZOOM_STEPS.length - 1]
+        ? t('Zoom {zoom} (maximum)', { zoom })
+        : t('Zoom {zoom}', { zoom })
+  zoomToastId = toast(text, 'info', 1500)
 }
 
 let installed = false

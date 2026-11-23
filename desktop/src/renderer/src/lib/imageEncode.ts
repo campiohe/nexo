@@ -3,6 +3,7 @@
 // are re-encoded to WebP in an OffscreenCanvas; animations can't be, so an oversized GIF is refused.
 import type { AttachmentType } from '@shared/protocol'
 import { ATTACHMENT_MAX_BYTES, ATTACHMENT_REENCODE_MAX_SIDE } from '@shared/protocol'
+import { t } from '../i18n'
 
 const MB = Math.round(ATTACHMENT_MAX_BYTES / (1024 * 1024))
 /** Refuse absurdly large source files before decoding them. */
@@ -30,7 +31,7 @@ async function reencode(blob: Blob): Promise<Blob> {
     // EXIF orientation is applied here, so the result is upright without it.
     bitmap = await createImageBitmap(blob)
   } catch {
-    throw new Error("Couldn't read that image")
+    throw new Error(t("Couldn't read that image"))
   }
   try {
     const scale = Math.min(1, ATTACHMENT_REENCODE_MAX_SIDE / Math.max(bitmap.width, bitmap.height))
@@ -38,7 +39,7 @@ async function reencode(blob: Blob): Promise<Blob> {
     const height = Math.max(1, Math.round(bitmap.height * scale))
     const canvas = new OffscreenCanvas(width, height)
     const ctx = canvas.getContext('2d')
-    if (!ctx) throw new Error("Couldn't process that image")
+    if (!ctx) throw new Error(t("Couldn't process that image"))
     ctx.imageSmoothingEnabled = true
     ctx.imageSmoothingQuality = 'high'
     ctx.drawImage(bitmap, 0, 0, width, height)
@@ -46,7 +47,7 @@ async function reencode(blob: Blob): Promise<Blob> {
       const out = await canvas.convertToBlob({ type: 'image/webp', quality })
       if (out.type === 'image/webp' && out.size > 0 && out.size <= ATTACHMENT_MAX_BYTES) return out
     }
-    throw new Error(`Couldn't make that image smaller than ${MB} MB`)
+    throw new Error(t("Couldn't make that image smaller than {size} MB", { size: MB }))
   } finally {
     bitmap.close()
   }
@@ -57,13 +58,17 @@ async function reencode(blob: Blob): Promise<Blob> {
  * for files that can't be sent.
  */
 export async function prepareImage(file: Blob): Promise<Blob> {
-  if (file.size === 0) throw new Error('That file is empty')
-  if (file.size > INPUT_MAX_BYTES) throw new Error('That image is too large')
+  if (file.size === 0) throw new Error(t('That file is empty'))
+  if (file.size > INPUT_MAX_BYTES) throw new Error(t('That image is too large'))
   const kind = await sniff(file)
-  if (!kind) throw new Error('Only PNG, JPEG, WebP and GIF images can be sent')
+  if (!kind) throw new Error(t('Only PNG, JPEG, WebP and GIF images can be sent'))
   if (file.size <= ATTACHMENT_MAX_BYTES) return file.type === kind.type ? file : new Blob([file], { type: kind.type })
   if (kind.animated) {
-    throw new Error(`${kind.type === 'image/gif' ? 'GIFs' : 'Animated images'} are limited to ${MB} MB`)
+    throw new Error(
+      kind.type === 'image/gif'
+        ? t('GIFs are limited to {size} MB', { size: MB })
+        : t('Animated images are limited to {size} MB', { size: MB }),
+    )
   }
   return reencode(file)
 }

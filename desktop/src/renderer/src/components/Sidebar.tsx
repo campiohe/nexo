@@ -26,6 +26,7 @@ import { toast } from '../lib/toast'
 import { canManageChannels, canMoveMember } from '../lib/permissions'
 import { Avatar } from './Avatar'
 import { ConfirmDialog } from './Modal'
+import { formatList, useT } from '../i18n'
 import { BellIcon, GearIcon, HashIcon, HeadphonesOffIcon, MicOffIcon, PencilIcon, PlusIcon, SpeakerIcon, TrashIcon, VideoIcon } from './icons'
 
 /**
@@ -236,12 +237,13 @@ export function Sidebar() {
   const channels = useApp((s) => s.channels)
   const text = channels.filter((c) => c.type === 'text')
   const voice = channels.filter((c) => c.type === 'voice')
+  const t = useT()
 
   return (
     <aside className="sidebar">
-      <nav className="sidebar-scroll" aria-label="Channels">
-        <ChannelSection type="text" label="Text channels" channels={text} />
-        <ChannelSection type="voice" label="Voice channels" channels={voice} />
+      <nav className="sidebar-scroll" aria-label={t('Channels')}>
+        <ChannelSection type="text" label={t('Text channels')} channels={text} />
+        <ChannelSection type="voice" label={t('Voice channels')} channels={voice} />
       </nav>
       <VoiceControls />
       <UserPanel />
@@ -260,6 +262,8 @@ function ChannelSection({ type, label, channels }: { type: ChannelType; label: s
   useEffect(() => {
     if (!canManage) setCreating(false)
   }, [canManage])
+  const t = useT()
+  const createLabel = type === 'text' ? t('Create text channel') : t('Create voice channel')
 
   return (
     <section className="channel-section">
@@ -269,8 +273,8 @@ function ChannelSection({ type, label, channels }: { type: ChannelType; label: s
           <button
             className="icon-btn section-add"
             onClick={() => setCreating((v) => !v)}
-            aria-label={`Create ${type} channel`}
-            title={`Create ${type} channel`}
+            aria-label={createLabel}
+            title={createLabel}
           >
             <PlusIcon size={16} />
           </button>
@@ -280,8 +284,8 @@ function ChannelSection({ type, label, channels }: { type: ChannelType; label: s
         <InlineNameForm
           type={type}
           initial=""
-          placeholder={type === 'text' ? 'new-channel' : 'New voice channel'}
-          submitLabel="Create"
+          placeholder={type === 'text' ? t('new-channel') : t('New voice channel')}
+          submitLabel={t('Create')}
           onCancel={() => setCreating(false)}
           onSubmit={async (name) => {
             const channel = await createChannel(name, type)
@@ -294,7 +298,9 @@ function ChannelSection({ type, label, channels }: { type: ChannelType; label: s
         {channels.map((c) => (
           <ChannelRow key={c.id} channel={c} />
         ))}
-        {channels.length === 0 && !creating && <li className="channel-empty">No {type} channels yet</li>}
+        {channels.length === 0 && !creating && (
+          <li className="channel-empty">{type === 'text' ? t('No text channels yet') : t('No voice channels yet')}</li>
+        )}
       </ul>
     </section>
   )
@@ -323,6 +329,7 @@ function ChannelRow({ channel }: { channel: Channel }) {
     setRenaming(false)
     setConfirming(false)
   }, [canManage])
+  const t = useT()
   const Icon = channel.type === 'text' ? HashIcon : SpeakerIcon
   const dropTarget = useVoiceDrag((s) => channel.type === 'voice' && s.over === channel.id)
   const dropEdge = useChannelDrag((s) => (s.over?.id === channel.id ? (s.over.after ? 'after' : 'before') : null))
@@ -350,7 +357,7 @@ function ChannelRow({ channel }: { channel: Channel }) {
           type={channel.type}
           initial={channel.name}
           placeholder={channel.name}
-          submitLabel="Save"
+          submitLabel={t('Save')}
           onCancel={() => setRenaming(false)}
           onSubmit={async (name) => {
             if (name !== channel.name) await renameChannel(channel.id, name)
@@ -405,27 +412,35 @@ function ChannelRow({ channel }: { channel: Channel }) {
           >
             <Icon size={17} className="channel-icon" />
             <span className="channel-name">{channel.name}</span>
-            {unread && <span className="sr-only">, unread messages</span>}
+            {unread && <span className="sr-only">{t(', unread messages')}</span>}
             {mentionLabel && (
               <span
                 className="mention-badge"
-                title={mentionLabel === '@' ? 'You were mentioned' : `${mentionLabel} unread mention${mentionLabel === '1' ? '' : 's'}`}
+                title={
+                  mentionLabel === '@'
+                    ? t('You were mentioned')
+                    : mentionLabel === '1'
+                      ? t('1 unread mention')
+                      : t('{count} unread mentions', { count: mentionLabel })
+                }
               >
                 {mentionLabel}
-                <span className="sr-only">, mentioned</span>
+                <span className="sr-only">{t(', mentioned')}</span>
               </span>
             )}
           </button>
           {canManage && (
             <span className="channel-actions">
-              <button className="icon-btn" onClick={() => setRenaming(true)} aria-label={`Rename ${channel.name}`} title="Rename">
+              <button className="icon-btn" onClick={() => setRenaming(true)} aria-label={t('Rename {name}', { name: channel.name })}
+                title={t('Rename')}
+              >
                 <PencilIcon size={14} />
               </button>
               <button
                 className="icon-btn danger"
                 onClick={() => setConfirming(true)}
-                aria-label={`Delete ${channel.name}`}
-                title="Delete"
+                aria-label={t('Delete {name}', { name: channel.name })}
+                title={t('Delete')}
               >
                 <TrashIcon size={14} />
               </button>
@@ -438,15 +453,15 @@ function ChannelRow({ channel }: { channel: Channel }) {
       {channel.type === 'voice' && <VoiceMembers channelId={channel.id} />}
       {confirming && (
         <ConfirmDialog
-          title={`Delete ${channel.type === 'text' ? '#' : ''}${channel.name}?`}
+          title={t('Delete {channel}?', { channel: `${channel.type === 'text' ? '#' : ''}${channel.name}` })}
           message={
-            channel.type === 'text' ? (
-              <>This deletes the channel and <strong>all of its messages</strong> for everyone. This can't be undone.</>
-            ) : (
-              <>Everyone in this voice channel will be disconnected. This can't be undone.</>
-            )
+            channel.type === 'text'
+              ? t.rich("This deletes the channel and <b>all of its messages</b> for everyone. This can't be undone.", {
+                  b: (c) => <strong>{c}</strong>,
+                })
+              : t("Everyone in this voice channel will be disconnected. This can't be undone.")
           }
-          confirmLabel="Delete channel"
+          confirmLabel={t('Delete channel')}
           danger
           onClose={() => setConfirming(false)}
           onConfirm={async () => {
@@ -474,6 +489,7 @@ function InlineNameForm(props: {
   const [value, setValue] = useState(props.initial)
   const [busy, setBusy] = useState(false)
   const ref = useRef<HTMLInputElement>(null)
+  const t = useT()
 
   useEffect(() => {
     ref.current?.focus()
@@ -517,7 +533,7 @@ function InlineNameForm(props: {
         placeholder={props.placeholder}
         maxLength={32}
         disabled={busy}
-        aria-label="Channel name"
+        aria-label={t('Channel name')}
       />
       <button className="btn btn-primary btn-xs" type="submit" disabled={busy || !value.trim()}>
         {props.submitLabel}
@@ -543,6 +559,7 @@ function VoiceMembers({ channelId }: { channelId: string }) {
   // "Playing X" under each name (yours from this device, others' from the server).
   const presences = usePresenceStore((s) => s.byUser)
   const ownActivity = usePresenceStore((s) => s.activity)
+  const t = useT()
   const members = voice.filter((v) => v.channelId === channelId)
   if (members.length === 0) return null
   return (
@@ -556,10 +573,14 @@ function VoiceMembers({ channelId }: { channelId: string }) {
           const canDrag = hasOtherVoiceChannel && canMoveMember(me, user)
           const hasMenu = !isSelf || canDrag
           const canNudge = !isSelf && (v.muted || v.deafened)
-          const name = user?.name ?? 'Unknown'
-          const hint = isSelf
-            ? 'Click for your profile; right-click or drag to move to another channel'
-            : 'Click for profile; right-click for volume and actions'
+          const name = user?.name ?? t('Unknown')
+          const hint = !hasMenu
+            ? t('Click for your profile')
+            : isSelf
+              ? t('Click for your profile; right-click or drag to move to another channel')
+              : canDrag
+                ? t('Click for profile; right-click for volume and actions; drag to move')
+                : t('Click for profile; right-click for volume and actions')
           const activity = isSelf ? ownActivity : (presences[v.userId]?.activity ?? null)
           return (
             <li
@@ -588,7 +609,7 @@ function VoiceMembers({ channelId }: { channelId: string }) {
                   : undefined
               }
               onDragEnd={canDrag ? endVoiceDrag : undefined}
-              title={hasMenu ? (canDrag && !isSelf ? `${hint}; drag to move` : hint) : 'Click for your profile'}
+              title={hint}
             >
               <Avatar user={user} size={20} animate={speaking.includes(v.userId)} />
               {activity ? (
@@ -602,7 +623,7 @@ function VoiceMembers({ channelId }: { channelId: string }) {
               ) : (
                 <span className="voice-member-name">{name}</span>
               )}
-              {speaking.includes(v.userId) && <span className="voice-member-sr">, speaking</span>}
+              {speaking.includes(v.userId) && <span className="voice-member-sr">{t(', speaking')}</span>}
               {canNudge && (
                 <button
                   className="icon-btn voice-member-nudge"
@@ -610,8 +631,8 @@ function VoiceMembers({ channelId }: { channelId: string }) {
                     e.stopPropagation()
                     void nudge(v.userId)
                   }}
-                  aria-label={`Wake up ${name}`}
-                  title="Wake up"
+                  aria-label={t('Wake up {name}', { name })}
+                  title={t('Wake up')}
                 >
                   <BellIcon size={13} />
                 </button>
@@ -628,8 +649,12 @@ function VoiceMembers({ channelId }: { channelId: string }) {
 function ViewerCount({ streamerId }: { streamerId: string }) {
   const viewers = useStreamViewers(streamerId)
   const users = useApp((s) => s.users)
+  const t = useT()
   if (viewers.length === 0) return null
-  const label = `${viewers.length} watching: ${viewers.map((id) => users[id]?.name ?? 'Someone').join(', ')}`
+  const label = t('{count} watching: {names}', {
+    count: viewers.length,
+    names: formatList(viewers.map((id) => users[id]?.name ?? t('Someone'))),
+  })
   return (
     <span className="voice-viewers" title={label} aria-label={label} role="img">
       <EyeIcon size={12} />
@@ -639,21 +664,22 @@ function ViewerCount({ streamerId }: { streamerId: string }) {
 }
 
 export function VoiceBadges({ state }: { state: VoiceState }) {
+  const t = useT()
   return (
     <span className="voice-badges">
-      {state.streaming && <span className="live-pill" title="Streaming">LIVE</span>}
+      {state.streaming && <span className="live-pill" title={t('Streaming')}>{t('LIVE')}</span>}
       {state.streaming && <ViewerCount streamerId={state.userId} />}
       {state.camera && (
-        <span className="voice-badge" title="Camera on" aria-label="Camera on" role="img">
+        <span className="voice-badge" title={t('Camera on')} aria-label={t('Camera on')} role="img">
           <VideoIcon size={14} />
         </span>
       )}
       {state.deafened ? (
-        <span className="voice-badge is-off" title="Deafened" aria-label="Deafened" role="img">
+        <span className="voice-badge is-off" title={t('Deafened')} aria-label={t('Deafened')} role="img">
           <HeadphonesOffIcon size={14} />
         </span>
       ) : state.muted ? (
-        <span className="voice-badge is-off" title="Muted" aria-label="Muted" role="img">
+        <span className="voice-badge is-off" title={t('Muted')} aria-label={t('Muted')} role="img">
           <MicOffIcon size={14} />
         </span>
       ) : null}
@@ -672,15 +698,16 @@ function UserPanel() {
   const connected = connection === 'connected'
   const statusText = me?.statusText?.trim()
   const activity = presence?.activity ?? null
+  const t = useT()
   const status = !connected
     ? connection === 'reconnecting'
-      ? 'Reconnecting…'
+      ? t('Reconnecting…')
       : connection === 'connecting'
-        ? 'Connecting…'
-        : 'Offline'
+        ? t('Connecting…')
+        : t('Offline')
     : activity
       ? activityLabel(activity)
-      : statusText || STATUS_LABEL[presence?.status ?? 'online']
+      : statusText || t(STATUS_LABEL[presence?.status ?? 'online'])
 
   const toggleMenu = () => {
     const ui = useUi.getState()
@@ -697,7 +724,7 @@ function UserPanel() {
         onClick={toggleMenu}
         aria-haspopup="dialog"
         aria-expanded={menuOpen}
-        title="Set your status"
+        title={t('Set your status')}
       >
         <Avatar user={me} size={32} online={connected} status={presence?.status} />
         <span className="user-panel-text">
@@ -710,7 +737,7 @@ function UserPanel() {
           </span>
         </span>
       </button>
-      <button className="icon-btn" onClick={() => openSettings(true)} aria-label="Settings" title="Settings">
+      <button className="icon-btn" onClick={() => openSettings(true)} aria-label={t('Settings')} title={t('Settings')}>
         <GearIcon size={18} />
       </button>
       {menuOpen && anchor && <StatusMenuPopover anchor={anchor} />}

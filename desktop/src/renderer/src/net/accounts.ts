@@ -2,6 +2,7 @@
 // GET /api/info, and the sign-in request endpoints under /api/access-requests. No auth except the
 // request's own secret.
 import type { AccessRequestStatus, ServerInfo, User } from '@shared/protocol'
+import { t } from '../i18n'
 
 /** /api/info is asked before connecting, so it must not hold up the app for long. */
 export const INFO_TIMEOUT_MS = 3000
@@ -51,7 +52,10 @@ export interface CreatedAccessRequest {
   expiresAt: number
 }
 
-/** Error from the access-request endpoints; `status` is the HTTP status (0 = network/timeout). */
+/**
+ * Error from the access-request endpoints; `status` is the HTTP status (0 = network/timeout). The message is the
+ * server's (English, translated where shown with tKnown) or ours, already in the app language.
+ */
 export class AccessRequestError extends Error {
   constructor(
     message: string,
@@ -77,8 +81,8 @@ async function send(url: string, init: RequestInit, networkError?: string): Prom
     return await fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS), ...init })
   } catch (err) {
     if (err instanceof DOMException && err.name === 'TimeoutError')
-      throw new AccessRequestError('The server took too long to respond', 0)
-    throw new AccessRequestError(networkError ?? `Can't reach the server at ${url.replace(/\/api\/.*$/, '')}`, 0)
+      throw new AccessRequestError(t('The server took too long to respond'), 0)
+    throw new AccessRequestError(networkError ?? t("Can't reach the server at {url}", { url: url.replace(/\/api\/.*$/, '') }), 0)
   }
 }
 
@@ -89,9 +93,10 @@ export async function createAccessRequest(
   password?: string,
 ): Promise<CreatedAccessRequest> {
   // Older servers answer 404 without CORS headers, which fetch reports as a network error.
-  const networkError =
-    `Couldn't send the sign-in request. The server at ${serverUrl} may be offline, or too old for ` +
-    'sign-in requests (update the Nexo server).'
+  const networkError = t(
+    "Couldn't send the sign-in request. The server at {url} may be offline, or too old for sign-in requests (update the Nexo server).",
+    { url: serverUrl },
+  )
   const init: RequestInit = {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -102,13 +107,13 @@ export async function createAccessRequest(
     throw await errorFrom(
       res,
       res.status === 404
-        ? "This server doesn't support sign-in requests yet (update the Nexo server)"
-        : `The server rejected the request (HTTP ${res.status})`,
+        ? t("This server doesn't support sign-in requests yet (update the Nexo server)")
+        : t('The server rejected the request (HTTP {status})', { status: res.status }),
     )
   }
   const data = (await res.json().catch(() => null)) as Partial<CreatedAccessRequest> | null
   if (!data || typeof data.id !== 'string' || typeof data.secret !== 'string') {
-    throw new AccessRequestError('Invalid response from the server', res.status)
+    throw new AccessRequestError(t('Invalid response from the server'), res.status)
   }
   return {
     id: data.id,
@@ -126,13 +131,13 @@ export async function pollAccessRequest(
     headers: { Authorization: `Bearer ${req.secret}` },
   })
   if (res.status === 404) return { status: 'gone' }
-  if (!res.ok) throw await errorFrom(res, `The server rejected the request (HTTP ${res.status})`)
+  if (!res.ok) throw await errorFrom(res, t('The server rejected the request (HTTP {status})', { status: res.status }))
   const data = (await res.json().catch(() => null)) as Partial<{ status: string; token: string }> | null
   if (data?.status === 'pending' || data?.status === 'denied') return { status: data.status }
   if (data?.status === 'approved' && typeof data.token === 'string' && data.token) {
     return { status: 'approved', token: data.token }
   }
-  throw new AccessRequestError('Invalid response from the server', res.status)
+  throw new AccessRequestError(t('Invalid response from the server'), res.status)
 }
 
 /** DELETE /api/access-requests/:id (best effort). */

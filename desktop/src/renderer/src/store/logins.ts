@@ -94,7 +94,7 @@ async function readSecret(key: string): Promise<SecretRead> {
 async function writeSecret(key: string, value: string | null): Promise<boolean> {
   const secrets = window.nexo?.secrets
   if (!secrets) {
-    if (!fallbackSet(key, value)) throw new Error('Local storage is unavailable')
+    if (!fallbackSet(key, value)) throw new Error('Local storage is unavailable') // i18n-ignore: logged, never shown
     return true
   }
   try {

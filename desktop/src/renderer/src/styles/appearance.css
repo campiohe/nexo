@@ -94,6 +94,8 @@
 :root[data-density='compact'] .day-separator { margin: 8px 20px 4px; }
 :root[data-density='compact'] .message-content { line-height: 1.375; }
 :root[data-density='compact'] .message-gutter { padding-top: 1px; }
+/* A 12-hour time ("12:45 PM") fits the narrower gutter. */
+:root[data-density='compact'] .message-time-hover { font-size: 10px; }
 /* Avatar sizes are inline styles (Avatar.tsx), hence !important. */
 :root[data-density='compact'] .message-gutter .avatar { width: 24px !important; height: 24px !important; font-size: 10px !important; }
 :root[data-density='compact'] .channel-intro { padding-top: 16px; }

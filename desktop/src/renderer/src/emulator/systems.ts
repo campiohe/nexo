@@ -2,6 +2,7 @@
 // gamepad layout) maps onto its pad. Engines (engine/<system>/) implement exactly this mapping; the UI shows it as
 // the controls help. Buttons go by POSITION on an Xbox-style pad: A bottom, B right, X left, Y top.
 import type { EmuSystem } from '@shared/protocol'
+import { msg } from '../i18n/core'
 
 export interface EmuSystemInfo {
   id: EmuSystem
@@ -13,7 +14,8 @@ export interface EmuSystemInfo {
   analog: boolean
   /**
    * How each Nexo control maps to the console's pad: [Nexo control (GAME_PAD name or 'Left stick' /
-   * 'Right stick' / 'D-pad'), console control]. In display order.
+   * 'Right stick' / 'D-pad'), console control]. In display order. A console control that's a description (not
+   * the name printed on the button) is a message key (msg): shown with t().
    */
   controls: [string, string][]
 }
@@ -21,11 +23,11 @@ export interface EmuSystemInfo {
 export const EMU_SYSTEM_INFO: Record<EmuSystem, EmuSystemInfo> = {
   snes: {
     id: 'snes',
-    name: 'Super Nintendo',
+    name: 'Super Nintendo', // i18n-ignore
     short: 'SNES',
     analog: false,
     controls: [
-      ['D-pad', 'D-pad (also the left stick)'],
+      ['D-pad', msg('D-pad (also the left stick)')],
       ['A', 'B'],
       ['B', 'A'],
       ['X', 'Y'],
@@ -38,17 +40,17 @@ export const EMU_SYSTEM_INFO: Record<EmuSystem, EmuSystemInfo> = {
   },
   genesis: {
     id: 'genesis',
-    name: 'Mega Drive / Genesis',
+    name: 'Mega Drive / Genesis', // i18n-ignore
     short: 'Mega Drive',
     analog: false,
     controls: [
-      ['D-pad', 'D-pad (also the left stick)'],
+      ['D-pad', msg('D-pad (also the left stick)')],
       ['X', 'A'],
       ['A', 'B'],
       ['B', 'C'],
-      ['L', 'X (6-button pad)'],
-      ['Y', 'Y (6-button pad)'],
-      ['R', 'Z (6-button pad)'],
+      ['L', msg('X (6-button pad)')],
+      ['Y', msg('Y (6-button pad)')],
+      ['R', msg('Z (6-button pad)')],
       ['START', 'Start'],
       ['SELECT', 'Mode'],
     ],
@@ -59,13 +61,13 @@ export const EMU_SYSTEM_INFO: Record<EmuSystem, EmuSystemInfo> = {
     short: 'PS1',
     analog: true,
     controls: [
-      ['D-pad', 'D-pad'],
-      ['Left stick', 'Left stick (DualShock)'],
-      ['Right stick', 'Right stick (DualShock)'],
-      ['A', '✕ Cross'],
-      ['B', '○ Circle'],
-      ['X', '□ Square'],
-      ['Y', '△ Triangle'],
+      ['D-pad', msg('D-pad')],
+      ['Left stick', msg('Left stick (DualShock)')],
+      ['Right stick', msg('Right stick (DualShock)')],
+      ['A', msg('✕ Cross')],
+      ['B', msg('○ Circle')],
+      ['X', msg('□ Square')],
+      ['Y', msg('△ Triangle')],
       ['L', 'L1'],
       ['R', 'R1'],
       ['L2', 'L2'],
@@ -78,18 +80,18 @@ export const EMU_SYSTEM_INFO: Record<EmuSystem, EmuSystemInfo> = {
   },
   n64: {
     id: 'n64',
-    name: 'Nintendo 64',
+    name: 'Nintendo 64', // i18n-ignore
     short: 'N64',
     analog: true,
     controls: [
-      ['Left stick', 'Control stick (keyboard: the arrows / WASD)'],
-      ['D-pad', 'D-pad (with a gamepad)'],
+      ['Left stick', msg('Control stick (keyboard: the arrows / WASD)')],
+      ['D-pad', msg('D-pad (with a gamepad)')],
       ['A', 'A'],
       ['X', 'B'],
       ['L2', 'Z'],
       ['L', 'L'],
       ['R', 'R'],
-      ['Right stick', 'C buttons'],
+      ['Right stick', msg('C buttons')],
       ['Y', 'C-up'],
       ['B', 'C-down'],
       ['R2', 'C-right'],

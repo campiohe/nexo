@@ -8,6 +8,7 @@ import { fetchEmbed, messageLinks, peekEmbed } from '../net/embeds'
 import { openExternal } from '../lib/linkify'
 import { useChatPrefs } from '../store/chatPrefs'
 import { PlayIcon } from './chatIcons'
+import { useT } from '../i18n'
 import '../styles/embeds.css'
 
 const PROVIDER_COLORS: Record<string, string> = {
@@ -123,6 +124,7 @@ function EmbedList({ links }: { links: string[] }) {
 }
 
 export function EmbedCard({ embed }: { embed: Embed }) {
+  const t = useT()
   const [thumbBroken, setThumbBroken] = useState(false)
   const thumb = embed.thumbnail && !thumbBroken ? embed.thumbnail : null
   const big = !!thumb && embed.kind !== 'post'
@@ -155,8 +157,12 @@ export function EmbedCard({ embed }: { embed: Embed }) {
           className={`embed-thumb ${big ? 'is-big' : 'is-small'}`}
           style={big ? fitThumb(thumb, embed.kind === 'video') : { width: SMALL_THUMB, height: SMALL_THUMB }}
           onClick={open}
-          title={`Open in browser: ${embed.url}`}
-          aria-label={`${embed.kind === 'video' ? 'Play' : 'Open'} ${embed.title} in the browser`}
+          title={t('Open in browser: {url}', { url: embed.url })}
+          aria-label={
+            embed.kind === 'video'
+              ? t('Play {title} in the browser', { title: embed.title })
+              : t('Open {title} in the browser', { title: embed.title })
+          }
         >
           <img
             src={thumb.url}

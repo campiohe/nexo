@@ -1,5 +1,6 @@
 // Tiny global toast system. Usable from anywhere (React or not): `toast('Saved')`, `toast(err, 'error')`.
 import { create } from 'zustand'
+import { t, tKnown } from '../i18n'
 
 export type ToastKind = 'info' | 'success' | 'error'
 
@@ -36,11 +37,14 @@ export function toast(message: unknown, kind: ToastKind = 'info', durationMs?: n
   return id
 }
 
-/** Readable message from anything thrown. */
+/**
+ * Readable message from anything thrown, in the app language: a message the server (or main) sent in English is
+ * translated when pt-BR/server.ts knows it (tKnown); callers translate their own text with t() before throwing.
+ */
 export function errorMessage(err: unknown): string {
-  if (typeof err === 'string') return err
-  if (err instanceof Error) return err.message || 'Something went wrong'
+  if (typeof err === 'string') return tKnown(err)
+  if (err instanceof Error) return err.message ? tKnown(err.message) : t('Something went wrong')
   if (err && typeof err === 'object' && 'message' in err && typeof (err as { message: unknown }).message === 'string')
-    return (err as { message: string }).message
-  return 'Something went wrong'
+    return tKnown((err as { message: string }).message)
+  return t('Something went wrong')
 }

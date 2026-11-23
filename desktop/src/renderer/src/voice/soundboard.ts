@@ -15,6 +15,7 @@ import type { AnchorRect } from '../store/ui'
 import { soundUrl } from '../net/sounds'
 import { request } from '../net/socket'
 import { toast } from '../lib/toast'
+import { t } from '../i18n'
 import { useDevicePrefs } from './devices'
 import { useUserVolumes } from './userVolumes'
 import { useVoice } from './session'
@@ -257,18 +258,18 @@ async function load(url: string, c: AudioContext): Promise<AudioBuffer> {
       try {
         res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })
       } catch {
-        throw new Error("Couldn't load that sound")
+        throw new Error(t("Couldn't load that sound"))
       }
-      if (!res.ok) throw new Error(res.status === 404 ? 'That sound was deleted' : "Couldn't load that sound")
+      if (!res.ok) throw new Error(res.status === 404 ? t('That sound was deleted') : t("Couldn't load that sound"))
       const bytes = await res.arrayBuffer()
       // Bounded input: ≤ 512 KB of 16-bit PCM decodes to a few MB at most. Compressed formats (only ever on
       // older servers, from uploads this client didn't make) could decode a tiny file into minutes of audio,
       // so they aren't decoded at all.
-      if (bytes.byteLength > SOUND_MAX_BYTES || !isWav(bytes)) throw new Error("Couldn't play that sound (unsupported audio)")
+      if (bytes.byteLength > SOUND_MAX_BYTES || !isWav(bytes)) throw new Error(t("Couldn't play that sound (unsupported audio)"))
       const buffer = await c.decodeAudioData(bytes).catch(() => {
-        throw new Error("Couldn't play that sound (unsupported audio)")
+        throw new Error(t("Couldn't play that sound (unsupported audio)"))
       })
-      if (buffer.duration > MAX_CLIP_SECONDS) throw new Error("Couldn't play that sound (longer than 5 seconds)")
+      if (buffer.duration > MAX_CLIP_SECONDS) throw new Error(t("Couldn't play that sound (longer than 5 seconds)"))
       cachePut(url, buffer)
       return buffer
     })().finally(() => inflight.delete(url))
@@ -409,10 +410,10 @@ const offApp = useApp.subscribe((s, prev) => {
   useSoundboardUi.setState({ popover: null, feed: [], uploadOpen: false, confirmDelete: null, previewing: null })
 })
 
-/** A board clip by id, for labels (undefined once deleted). */
+/** A board clip by id, for labels ("a sound", translated, once deleted). Call it while rendering after useT(). */
 export function soundLabel(soundId: string): string {
   const s = findSound(soundId)
-  return s ? `${s.emoji ? `${s.emoji} ` : ''}${s.name}` : 'a sound'
+  return s ? `${s.emoji ? `${s.emoji} ` : ''}${s.name}` : t('a sound')
 }
 
 if (import.meta.hot) {

@@ -5,6 +5,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { useApp } from '@renderer/store/app'
 import { toast } from '@renderer/lib/toast'
+import { t, useT } from '@renderer/i18n'
 import { setStreamVolume, useVoice } from '../../voice/session'
 import { isAudiblySpeaking, useParticipants, type VideoTrack } from '../../voice/participants'
 import { VideoTrackView } from './VideoTrackView'
@@ -115,9 +116,10 @@ interface PipCardProps {
 }
 
 function PipCard({ subject, voiceChannelId, overChat }: PipCardProps) {
+  const t = useT()
   const { view, kind } = subject
   const user = useApp((s) => s.users[view.identity])
-  const channelName = useApp((s) => s.channels.find((c) => c.id === voiceChannelId)?.name ?? 'voice')
+  const channelName = useApp((s) => s.channels.find((c) => c.id === voiceChannelId)?.name)
   const deafened = useVoice((s) => s.deafened)
   const volume = useParticipants((s) => s.streamVolumes[view.identity] ?? 1)
   const [corner, setCorner] = useState<Corner>(loadCorner)
@@ -131,7 +133,7 @@ function PipCard({ subject, voiceChannelId, overChat }: PipCardProps) {
 
   const name = user?.name ?? view.name
   const isStream = kind === 'stream'
-  const label = isStream ? (view.isLocal ? 'Your stream' : `${name}'s stream`) : `${name}'s camera`
+  const label = isStream ? (view.isLocal ? t('Your stream') : t("{name}'s stream", { name })) : t("{name}'s camera", { name })
   const showStreamAudio = isStream && view.hasScreenAudio && !view.isLocal
   const audioOff = volume === 0 || deafened
 
@@ -217,8 +219,8 @@ function PipCard({ subject, voiceChannelId, overChat }: PipCardProps) {
     <div
       ref={ref}
       role="region"
-      aria-label={`${label} (picture-in-picture)`}
-      title="Click to return to the call · drag to move"
+      aria-label={t('{label} (picture-in-picture)', { label })}
+      title={t('Click to return to the call · drag to move')}
       className={`pip is-${corner} ${overChat ? 'is-over-chat' : ''} ${
         !isStream && isAudiblySpeaking(view) ? 'is-speaking' : ''
       }`}
@@ -231,29 +233,33 @@ function PipCard({ subject, voiceChannelId, overChat }: PipCardProps) {
       <VideoTrackView track={subject.track} fit={isStream ? 'contain' : 'cover'} />
       <div className="pip-overlay">
         <div className="pip-top">
-          {isStream && <span className="vx-live-badge">LIVE</span>}
-          <span className="pip-name">{isStream && view.isLocal ? 'Your stream' : name}</span>
+          {isStream && <span className="vx-live-badge">{t('LIVE')}</span>}
+          <span className="pip-name">{isStream && view.isLocal ? t('Your stream') : name}</span>
           <span className="pip-grow" />
           {supportsPopOut() && (
-            <button className="vx-tile-btn" onClick={() => popOut(subject)} title="Pop out" aria-label="Pop out">
+            <button className="vx-tile-btn" onClick={() => popOut(subject)} title={t('Pop out')} aria-label={t('Pop out')}>
               <PopOutIcon size={16} />
             </button>
           )}
-          <button className="vx-tile-btn" onClick={() => dismissPip(subject)} title="Close" aria-label="Close player">
+          <button className="vx-tile-btn" onClick={() => dismissPip(subject)} title={t('Close')} aria-label={t('Close player')}>
             <CloseIcon size={16} />
           </button>
         </div>
         <div className="pip-bottom">
-          <button className="vx-tile-btn is-text" onClick={returnToCall} title={`Return to ${channelName}`}>
-            <ReturnIcon size={15} /> Return to call
+          <button
+            className="vx-tile-btn is-text"
+            onClick={returnToCall}
+            title={channelName ? t('Return to {channel}', { channel: channelName }) : t('Return to call')}
+          >
+            <ReturnIcon size={15} /> {t('Return to call')}
           </button>
           <span className="pip-grow" />
           {showStreamAudio && (
             <button
               className="vx-tile-btn"
               onClick={() => setStreamVolume(view.identity, volume > 0 ? 0 : lastVolume.current)}
-              title={deafened ? 'You are deafened' : volume > 0 ? 'Mute stream' : 'Unmute stream'}
-              aria-label={volume > 0 ? 'Mute stream' : 'Unmute stream'}
+              title={deafened ? t('You are deafened') : volume > 0 ? t('Mute stream') : t('Unmute stream')}
+              aria-label={volume > 0 ? t('Mute stream') : t('Unmute stream')}
             >
               {audioOff ? <VolumeOffIcon size={16} /> : <VolumeIcon size={16} />}
             </button>
@@ -328,7 +334,7 @@ function PopOutVideo({ target, track }: { target: PipTarget; track: VideoTrack }
         (err: unknown) => {
           if (cancelled) return
           console.warn('[pip] requestPictureInPicture failed', err)
-          toast("Couldn't pop out the video", 'error')
+          toast(t("Couldn't pop out the video"), 'error')
           onLeave()
         },
       )

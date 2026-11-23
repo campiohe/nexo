@@ -1,6 +1,7 @@
 import { useEffect, useRef, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { CloseIcon } from './icons'
+import { useT } from '../i18n'
 
 interface ModalProps {
   title: string
@@ -35,6 +36,7 @@ export function Modal({ title, onClose, children, footer, width = 440, className
   const panelRef = useRef<HTMLDivElement>(null)
   const closeRef = useRef(onClose)
   closeRef.current = onClose
+  const t = useT()
 
   useEffect(() => {
     const prev = document.activeElement as HTMLElement | null
@@ -73,7 +75,7 @@ export function Modal({ title, onClose, children, footer, width = 440, className
       >
         <header className="modal-header">
           <h2>{title}</h2>
-          <button className="icon-btn modal-close" onClick={onClose} aria-label="Close" title="Close (Esc)">
+          <button className="icon-btn modal-close" onClick={onClose} aria-label={t('Close')} title={t('Close (Esc)')}>
             <CloseIcon size={18} />
           </button>
         </header>
@@ -94,8 +96,9 @@ interface ConfirmProps {
   onClose(): void
 }
 
-export function ConfirmDialog({ title, message, confirmLabel = 'Confirm', danger, onConfirm, onClose }: ConfirmProps) {
+export function ConfirmDialog({ title, message, confirmLabel, danger, onConfirm, onClose }: ConfirmProps) {
   const busy = useRef(false)
+  const t = useT()
   return (
     <Modal
       title={title}
@@ -104,7 +107,7 @@ export function ConfirmDialog({ title, message, confirmLabel = 'Confirm', danger
       footer={
         <>
           <button className="btn btn-ghost" onClick={onClose}>
-            Cancel
+            {t('Cancel')}
           </button>
           <button
             className={`btn ${danger ? 'btn-danger' : 'btn-primary'}`}
@@ -119,7 +122,7 @@ export function ConfirmDialog({ title, message, confirmLabel = 'Confirm', danger
               }
             }}
           >
-            {confirmLabel}
+            {confirmLabel ?? t('Confirm')}
           </button>
         </>
       }

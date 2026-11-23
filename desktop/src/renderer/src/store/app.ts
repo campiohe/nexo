@@ -4,6 +4,7 @@ import type { Channel, ChannelType, Message, Reaction, User, VoiceState } from '
 import { MAX_MESSAGE_LENGTH, MAX_REACTIONS_PER_MESSAGE, MESSAGE_PAGE_SIZE } from '@shared/protocol'
 import { connect, disconnect, request } from '../net/socket'
 import { normalizeServerUrl } from '../lib/url'
+import { t } from '../i18n'
 import { settings } from './settings'
 import { resetUnread } from './unread'
 import { findLogin, NOTICE_UNREADABLE, resetSignIn } from './signin'
@@ -311,8 +312,8 @@ export const useApp = create<AppState>()((set, get) => {
 
     sendMessage: async (channelId, content, attachmentIds = [], replyToId) => {
       const text = content.trim()
-      if (!text && attachmentIds.length === 0) throw new Error('Message is empty')
-      if (text.length > MAX_MESSAGE_LENGTH) throw new Error(`Messages are limited to ${MAX_MESSAGE_LENGTH} characters`)
+      if (!text && attachmentIds.length === 0) throw new Error(t('Message is empty'))
+      if (text.length > MAX_MESSAGE_LENGTH) throw new Error(t('Messages are limited to {max} characters', { max: MAX_MESSAGE_LENGTH }))
       // Optional fields are only sent when used, so plain messages look exactly like before to older servers.
       const msg = await request('message:send', {
         channelId,
@@ -343,8 +344,8 @@ export const useApp = create<AppState>()((set, get) => {
     editMessage: async (messageId, content) => {
       const text = content.trim()
       const found = findMessage(get().messages, messageId)
-      if (!text && found && !found.msg.attachments?.length) throw new Error('Message is empty')
-      if (text.length > MAX_MESSAGE_LENGTH) throw new Error(`Messages are limited to ${MAX_MESSAGE_LENGTH} characters`)
+      if (!text && found && !found.msg.attachments?.length) throw new Error(t('Message is empty'))
+      if (text.length > MAX_MESSAGE_LENGTH) throw new Error(t('Messages are limited to {max} characters', { max: MAX_MESSAGE_LENGTH }))
       const msg = await request('message:edit', { messageId, content: text })
       // Same as the `message:updated` broadcast (which may have landed first): replace in place.
       set((s) => ({ messages: mapMessage(s.messages, msg.channelId, msg.id, () => msg) }))
@@ -359,7 +360,7 @@ export const useApp = create<AppState>()((set, get) => {
       const existing = reactions.find((r) => r.emoji === emoji)
       const on = !existing?.userIds.includes(meId)
       if (on && !existing && reactions.length >= MAX_REACTIONS_PER_MESSAGE)
-        throw new Error(`Messages can have at most ${MAX_REACTIONS_PER_MESSAGE} different reactions`)
+        throw new Error(t('Messages can have at most {max} different reactions', { max: MAX_REACTIONS_PER_MESSAGE }))
       // Optimistic; the `message:reactions` broadcast replaces the list with the server's.
       const apply = (value: boolean) =>
         set((s) => ({

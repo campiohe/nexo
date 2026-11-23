@@ -12,19 +12,22 @@ import { toast } from '../lib/toast'
 import { Floating } from './Floating'
 import { CheckIcon, CloseIcon } from './icons'
 import { SmileIcon, StatusDot } from './peopleIcons'
+import { msg, useT } from '../i18n'
 import '../styles/people.css'
 
+/** `hint` is a message key (msg), translated where shown. */
 const OPTIONS: { status: PresenceStatus; hint: string }[] = [
   { status: 'online', hint: '' },
-  { status: 'idle', hint: 'Shows you as away. Nexo also does this by itself after 10 minutes without input.' },
-  { status: 'dnd', hint: "You won't get notification popups or sounds. Wake-ups still ring." },
+  { status: 'idle', hint: msg('Shows you as away. Nexo also does this by itself after 10 minutes without input.') },
+  { status: 'dnd', hint: msg("You won't get notification popups or sounds. Wake-ups still ring.") },
 ]
 
 /** The three statuses; the one you picked is checked (auto-idle doesn't change your pick). */
 export function StatusOptions({ onPicked }: { onPicked?(): void }) {
+  const t = useT()
   const manual = usePresenceStore((s) => s.manual)
   return (
-    <div className="status-options" role="radiogroup" aria-label="Status">
+    <div className="status-options" role="radiogroup" aria-label={t('Status')}>
       {OPTIONS.map((o) => (
         <button
           key={o.status}
@@ -39,8 +42,8 @@ export function StatusOptions({ onPicked }: { onPicked?(): void }) {
         >
           <StatusDot status={o.status} />
           <span className="status-option-text">
-            <span className="status-option-label">{STATUS_LABEL[o.status]}</span>
-            {o.hint && <span className="status-option-hint">{o.hint}</span>}
+            <span className="status-option-label">{t(STATUS_LABEL[o.status])}</span>
+            {o.hint && <span className="status-option-hint">{t(o.hint)}</span>}
           </span>
           {manual === o.status && <CheckIcon size={14} className="status-option-check" />}
         </button>
@@ -51,6 +54,7 @@ export function StatusOptions({ onPicked }: { onPicked?(): void }) {
 
 /** "Set a custom status" row that turns into an inline input. Hidden on servers without custom status. */
 export function CustomStatusEditor({ startEditing = false }: { startEditing?: boolean }) {
+  const t = useT()
   const me = useApp((s) => s.me)
   const connected = useApp((s) => s.connection === 'connected')
   const current = me?.statusText ?? ''
@@ -98,10 +102,10 @@ export function CustomStatusEditor({ startEditing = false }: { startEditing?: bo
             setEditing(true)
           }}
           disabled={!connected}
-          title={current ? 'Edit custom status' : undefined}
+          title={current ? t('Edit custom status') : undefined}
         >
           <SmileIcon size={15} />
-          <span className="custom-status-text">{current || 'Set a custom status'}</span>
+          <span className="custom-status-text">{current || t('Set a custom status')}</span>
         </button>
         {current && (
           <button
@@ -109,8 +113,8 @@ export function CustomStatusEditor({ startEditing = false }: { startEditing?: bo
             className="icon-btn custom-status-clear"
             onClick={() => void save(null)}
             disabled={busy || !connected}
-            aria-label="Clear custom status"
-            title="Clear custom status"
+            aria-label={t('Clear custom status')}
+            title={t('Clear custom status')}
           >
             <CloseIcon size={14} />
           </button>
@@ -130,8 +134,8 @@ export function CustomStatusEditor({ startEditing = false }: { startEditing?: bo
         className="input input-sm"
         value={value}
         maxLength={STATUS_TEXT_MAX}
-        placeholder="What's up?"
-        aria-label="Custom status"
+        placeholder={t("What's up?")}
+        aria-label={t('Custom status')}
         disabled={busy}
         // Floating cards leave Escape to this input: it cancels the edit only.
         data-own-escape=""
@@ -150,14 +154,14 @@ export function CustomStatusEditor({ startEditing = false }: { startEditing?: bo
         </span>
         {value && (
           <button type="button" className="btn btn-ghost btn-xs" onClick={() => setValue('')} disabled={busy}>
-            Clear
+            {t('Clear')}
           </button>
         )}
         <button type="button" className="btn btn-ghost btn-xs" onClick={() => setEditing(false)} disabled={busy}>
-          Cancel
+          {t('Cancel')}
         </button>
         <button type="submit" className="btn btn-primary btn-xs" disabled={busy}>
-          Save
+          {t('Save')}
         </button>
       </div>
     </form>
@@ -166,9 +170,10 @@ export function CustomStatusEditor({ startEditing = false }: { startEditing?: bo
 
 /** The user panel's status menu (opened from its avatar). */
 export function StatusMenuPopover({ anchor }: { anchor: AnchorRect }) {
+  const t = useT()
   const close = () => useUi.getState().openStatusMenu(false)
   return (
-    <Floating anchor={anchor} side="top" onClose={close} className="status-menu" label="Set your status">
+    <Floating anchor={anchor} side="top" onClose={close} className="status-menu" label={t('Set your status')}>
       <CustomStatusEditor />
       <StatusOptions onPicked={close} />
     </Floating>
@@ -177,13 +182,14 @@ export function StatusMenuPopover({ anchor }: { anchor: AnchorRect }) {
 
 /** Settings → Profile. */
 export function CustomStatusField() {
+  const t = useT()
   const me = useApp((s) => s.me)
   if (!supportsStatusText(me)) return null
   return (
     <div className="field">
-      <span className="field-label">Custom status</span>
+      <span className="field-label">{t('Custom status')}</span>
       <CustomStatusEditor />
-      <span className="field-hint">Shown under your name in the member list and on your profile card.</span>
+      <span className="field-hint">{t('Shown under your name in the member list and on your profile card.')}</span>
     </div>
   )
 }

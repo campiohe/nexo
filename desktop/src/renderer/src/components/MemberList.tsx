@@ -9,8 +9,10 @@ import '../styles/people.css'
 import { canMoveMember, hasRoles, roleOf } from '../lib/permissions'
 import { Avatar } from './Avatar'
 import { SpeakerIcon } from './icons'
+import { useT } from '../i18n'
 
 export function MemberList() {
+  const t = useT()
   const users = useApp((s) => s.users)
   const online = useApp((s) => s.online)
   const voice = useApp((s) => s.voice)
@@ -23,10 +25,10 @@ export function MemberList() {
   const ownPresence = usePresence(meId)
 
   const voiceByUser = new Map(voice.map((v) => [v.userId, v]))
-  const all = Object.values(users).sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
+  const all = Object.values(users).sort((a, b) => a.name.localeCompare(b.name, t.locale, { sensitivity: 'base' }))
   const on = all.filter((u) => online[u.id])
   const off = all.filter((u) => !online[u.id])
-  const channelName = (id: string) => channels.find((c) => c.id === id)?.name ?? 'voice'
+  const channelName = (id: string) => channels.find((c) => c.id === id)?.name ?? t('voice // fallback channel name')
   const hasOtherVoiceChannel = channels.filter((c) => c.type === 'voice').length > 1
 
   const renderUser = (u: User, isOnline: boolean) => {
@@ -39,10 +41,10 @@ export function MemberList() {
     const statusText = isOnline ? u.statusText?.trim() : undefined
     // Second line: what they're playing, else their custom status, else the voice channel they're in.
     const sub = activity ? (
-      <span className="people-sub" title={activityLabel(activity)}>
+      <span className="people-sub" title={activityLabel(activity, t)}>
         <GamepadIcon size={12} />
         <span className="people-sub-text">
-          Playing <strong>{activity.name}</strong>
+          {t.rich('Playing <b>{game}</b>', { game: activity.name, b: (c) => <strong>{c}</strong> })}
         </span>
       </span>
     ) : statusText ? (
@@ -63,14 +65,20 @@ export function MemberList() {
               }
             : undefined
         }
-        title={canAdjust ? (u.id === meId ? 'Right-click to move to another channel' : 'Right-click for volume and actions') : undefined}
+        title={
+          canAdjust
+            ? u.id === meId
+              ? t('Right-click to move to another channel')
+              : t('Right-click for volume and actions')
+            : undefined
+        }
       >
         <Avatar user={u} size={30} online={isOnline} status={presence?.status} />
         <div className="member-text">
           <span className="member-name-row">
             <span className="member-name">
               {u.name}
-              {u.id === meId && <span className="member-you"> (you)</span>}
+              {u.id === meId && <span className="member-you"> {t('(you)')}</span>}
             </span>
             {roles && role !== 'member' && <RoleMark role={role} />}
           </span>
@@ -81,9 +89,14 @@ export function MemberList() {
               </span>
             ))}
         </div>
-        {v?.streaming && <span className="live-pill">LIVE</span>}
+        {v?.streaming && <span className="live-pill">{t('LIVE')}</span>}
         {v && sub && (
-          <span className="member-voice-icon" title={`In ${channelName(v.channelId)}`} aria-label={`In ${channelName(v.channelId)}`} role="img">
+          <span
+            className="member-voice-icon"
+            title={t('In {channel}', { channel: channelName(v.channelId) })}
+            aria-label={t('In {channel}', { channel: channelName(v.channelId) })}
+            role="img"
+          >
             <SpeakerIcon size={13} />
           </span>
         )}
@@ -92,13 +105,13 @@ export function MemberList() {
   }
 
   return (
-    <aside className="members" aria-label="Members">
+    <aside className="members" aria-label={t('Members')}>
       <div className="members-scroll">
-        <h3 className="members-heading">Online · {on.length}</h3>
+        <h3 className="members-heading">{t('Online · {count}', { count: on.length })}</h3>
         <ul className="member-list">{on.map((u) => renderUser(u, true))}</ul>
         {off.length > 0 && (
           <>
-            <h3 className="members-heading">Offline · {off.length}</h3>
+            <h3 className="members-heading">{t('Offline · {count}', { count: off.length })}</h3>
             <ul className="member-list">{off.map((u) => renderUser(u, false))}</ul>
           </>
         )}
@@ -109,7 +122,8 @@ export function MemberList() {
 
 /** Owner / admin next to a name: a small icon (crown / shield) with an accessible label instead of a pill. */
 function RoleMark({ role }: { role: Exclude<Role, 'member'> }) {
-  const label = role === 'owner' ? 'Server owner' : 'Admin'
+  const t = useT()
+  const label = role === 'owner' ? t('Server owner') : t('Admin')
   return (
     <span className={`member-role is-${role}`} title={label} aria-label={label} role="img">
       <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">

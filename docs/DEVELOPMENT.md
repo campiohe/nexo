@@ -131,6 +131,12 @@ The server checks the file's magic bytes against its `Content-Type`. It doesn't 
 no native image libraries. Errors come back as JSON `{error}`: 400 empty, 401 bad token, 413 too big,
 415 wrong type, 429 more than one change per 3 s.
 
+**Profile banners** work the same way, stored as `DATA_DIR/banners/<userId>`: `PUT`/`DELETE /api/banner`
+(`image/webp`/`png`/`jpeg` ≤ 2 MB, or `image/gif` ≤ 4 MB; sets `banner` and `bannerAnimated`) and
+`GET /banners/<userId>?v=<user.banner>`. Clients crop to 5:2 (960×384, GIFs 400×160). Without an upload the
+client draws the user's `bannerPreset` (`profile:update { bannerPreset }`, one of `BANNER_PRESETS`) from
+their color.
+
 **Chat images** are stored in `DATA_DIR/attachments/`:
 
 | Request | Auth | Result |

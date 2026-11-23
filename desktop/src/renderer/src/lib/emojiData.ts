@@ -1,7 +1,9 @@
 // Curated emoji set for the picker (offline, no dependency). One line per emoji: `emoji|name|keywords`.
 // A `+` right after the emoji marks one that takes a skin tone. Text-default symbols (❤ ☀ ✌ …) get their
 // emoji variation selector added by lib/emoji.ts, and anything that fails EMOJI_RE is dropped there.
-// Plain data with no imports, so desktop/scripts/check-emoji.ts can load it under bare Node.
+// Plain data (its only import, msg, is from the import-free i18n/core), so desktop/scripts/check-emoji.mjs can load
+// it under bare Node. Category labels are message keys: shown with t(label). Emoji names and keywords stay English.
+import { msg } from '../i18n/core'
 
 export interface EmojiCategoryData {
   id: string
@@ -14,7 +16,7 @@ export interface EmojiCategoryData {
 export const EMOJI_DATA: EmojiCategoryData[] = [
   {
     id: 'smileys',
-    label: 'Smileys & Emotion',
+    label: msg('Smileys & Emotion'),
     icon: '😀',
     list: `
 😀|grinning face|smile happy
@@ -181,7 +183,7 @@ export const EMOJI_DATA: EmojiCategoryData[] = [
   },
   {
     id: 'people',
-    label: 'People & Body',
+    label: msg('People & Body'),
     icon: '👋',
     list: `
 👋+|waving hand|hello hi bye wave
@@ -337,7 +339,7 @@ export const EMOJI_DATA: EmojiCategoryData[] = [
   },
   {
     id: 'nature',
-    label: 'Animals & Nature',
+    label: msg('Animals & Nature'),
     icon: '🐶',
     list: `
 🐶|dog face|puppy pet
@@ -490,7 +492,7 @@ export const EMOJI_DATA: EmojiCategoryData[] = [
   },
   {
     id: 'food',
-    label: 'Food & Drink',
+    label: msg('Food & Drink'),
     icon: '🍔',
     list: `
 🍏|green apple|fruit
@@ -604,7 +606,7 @@ export const EMOJI_DATA: EmojiCategoryData[] = [
   },
   {
     id: 'activities',
-    label: 'Activities',
+    label: msg('Activities'),
     icon: '⚽',
     list: `
 ⚽|soccer ball|football
@@ -677,7 +679,7 @@ export const EMOJI_DATA: EmojiCategoryData[] = [
   },
   {
     id: 'travel',
-    label: 'Travel & Places',
+    label: msg('Travel & Places'),
     icon: '🚗',
     list: `
 🚗|automobile|car
@@ -753,7 +755,7 @@ export const EMOJI_DATA: EmojiCategoryData[] = [
   },
   {
     id: 'objects',
-    label: 'Objects',
+    label: msg('Objects'),
     icon: '💡',
     list: `
 👓|glasses|
@@ -898,7 +900,7 @@ export const EMOJI_DATA: EmojiCategoryData[] = [
   },
   {
     id: 'symbols',
-    label: 'Symbols',
+    label: msg('Symbols'),
     icon: '❤',
     list: `
 ✅|check mark button|yes done ok correct
@@ -1023,7 +1025,7 @@ export const EMOJI_DATA: EmojiCategoryData[] = [
   },
   {
     id: 'flags',
-    label: 'Flags',
+    label: msg('Flags'),
     icon: '🏁',
     list: `
 🇧🇷|flag: brazil|br brasil

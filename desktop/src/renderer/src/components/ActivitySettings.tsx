@@ -9,11 +9,12 @@ import { formatElapsed, useNow } from '../lib/activity'
 import { errorMessage, toast } from '../lib/toast'
 import { AlertIcon, TrashIcon } from './icons'
 import { GamepadIcon } from './peopleIcons'
+import { tKnown, useT } from '../i18n'
 import '../styles/people.css'
 
 /** The main process's message without Electron's "Error invoking remote method '…': Error: " prefix. */
 const ipcErrorMessage = (err: unknown): string =>
-  errorMessage(err).replace(/^Error invoking remote method '[^']*': (?:[A-Za-z]*Error: )?/, '')
+  tKnown(errorMessage(err).replace(/^Error invoking remote method '[^']*': (?:[A-Za-z]*Error: )?/, ''))
 
 /** Needs the desktop bridge (absent in a plain browser or with an older preload). */
 export const hasActivityBridge = (): boolean => typeof window.nexo?.presence?.getState === 'function'
@@ -29,8 +30,9 @@ function guessName(exe: string): string {
 }
 
 export function ActivitySection() {
+  const t = useT()
   const [settings, setSettings] = useState<ActivitySettings | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [loadFailed, setLoadFailed] = useState(false)
   const [saving, setSaving] = useState(false)
   const [adding, setAdding] = useState(false)
   const activity = usePresenceStore((s) => s.activity)
@@ -44,7 +46,7 @@ export function ActivitySection() {
       .then((s) => alive && setSettings(s.settings))
       .catch((err: unknown) => {
         console.error('[nexo] presence.getState failed', err)
-        if (alive) setError("Couldn't load the activity settings")
+        if (alive) setLoadFailed(true)
       })
     return () => {
       alive = false
@@ -80,20 +82,20 @@ export function ActivitySection() {
 
   return (
     <section className="activity-section">
-      <h3 className="settings-heading">Activity</h3>
-      {error ? (
+      <h3 className="settings-heading">{t('Activity')}</h3>
+      {loadFailed ? (
         <div className="callout callout-warn">
           <AlertIcon size={16} />
-          <span>{error}</span>
+          <span>{t("Couldn't load the activity settings")}</span>
         </div>
       ) : (
         <>
           <label className="toggle-row">
             <span className="toggle-text">
-              <span>Share what I'm playing</span>
+              <span>{t("Share what I'm playing")}</span>
               <span className="muted small">
-                Only the game's name is shared. Detection runs on this computer and your programs never leave it.
-                {!isWindows && ' Best effort on this system.'}
+                {t("Only the game's name is shared. Detection runs on this computer and your programs never leave it.")}
+                {!isWindows && ` ${t('Best effort on this system.')}`}
               </span>
             </span>
             <input
@@ -111,17 +113,21 @@ export function ActivitySection() {
               <GamepadIcon size={18} />
               {activity ? (
                 <span>
-                  Playing <strong>{activity.name}</strong> · {formatElapsed(activity.startedAt, now)}
+                  {t.rich('Playing <b>{game}</b> · {elapsed}', {
+                    game: activity.name,
+                    elapsed: formatElapsed(activity.startedAt, now, t),
+                    b: (c) => <strong>{c}</strong>,
+                  })}
                 </span>
               ) : (
-                <span className="muted">No game detected right now.</span>
+                <span className="muted">{t('No game detected right now.')}</span>
               )}
             </div>
           )}
 
           <div className="field">
-            <span className="field-label">Your games</span>
-            <span className="field-hint">Missing a game? Start it, then add it from your running programs.</span>
+            <span className="field-label">{t('Your games')}</span>
+            <span className="field-hint">{t('Missing a game? Start it, then add it from your running programs.')}</span>
             {settings && settings.customGames.length > 0 && (
               <ul className="activity-games">
                 {settings.customGames.map((g) => (
@@ -135,8 +141,8 @@ export function ActivitySection() {
                       className="icon-btn danger"
                       onClick={() => removeGame(g.exe)}
                       disabled={saving}
-                      aria-label={`Remove ${g.name}`}
-                      title="Remove"
+                      aria-label={t('Remove {name}', { name: g.name })}
+                      title={t('Remove')}
                     >
                       <TrashIcon size={15} />
                     </button>
@@ -155,7 +161,7 @@ export function ActivitySection() {
             ) : (
               <div>
                 <button type="button" className="btn btn-ghost btn-sm" onClick={() => setAdding(true)} disabled={!settings}>
-                  Add a game
+                  {t('Add a game')}
                 </button>
               </div>
             )}
@@ -167,6 +173,7 @@ export function ActivitySection() {
 }
 
 function AddGame({ busy, onAdd, onCancel }: { busy: boolean; onAdd(g: CustomGame): void; onCancel(): void }) {
+  const t = useT()
   const [processes, setProcesses] = useState<string[] | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [filter, setFilter] = useState('')
@@ -193,23 +200,23 @@ function AddGame({ busy, onAdd, onCancel }: { busy: boolean; onAdd(g: CustomGame
       <div className="activity-add-row">
         <input
           className="input input-sm"
-          placeholder="Filter running programs"
-          aria-label="Filter running programs"
+          placeholder={t('Filter running programs')}
+          aria-label={t('Filter running programs')}
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
         />
         <button type="button" className="btn btn-ghost btn-xs" onClick={load}>
-          Refresh
+          {t('Refresh')}
         </button>
       </div>
       {loadError ? (
         <p className="muted small">{loadError}</p>
       ) : !processes ? (
-        <p className="muted small">Loading running programs…</p>
+        <p className="muted small">{t('Loading running programs…')}</p>
       ) : shown.length === 0 ? (
-        <p className="muted small">No running program matches.</p>
+        <p className="muted small">{t('No running program matches.')}</p>
       ) : (
-        <ul className="activity-procs" role="listbox" aria-label="Running programs">
+        <ul className="activity-procs" role="listbox" aria-label={t('Running programs')}>
           {shown.map((p) => (
             <li key={p}>
               <button
@@ -238,18 +245,18 @@ function AddGame({ busy, onAdd, onCancel }: { busy: boolean; onAdd(g: CustomGame
       >
         <input
           className="input input-sm"
-          placeholder={exe ? 'Name others see' : 'Pick a program above'}
-          aria-label="Game name"
+          placeholder={exe ? t('Name others see') : t('Pick a program above')}
+          aria-label={t('Game name')}
           value={name}
           maxLength={ACTIVITY_NAME_MAX}
           disabled={!exe}
           onChange={(e) => setName(e.target.value)}
         />
         <button type="button" className="btn btn-ghost btn-xs" onClick={onCancel}>
-          Cancel
+          {t('Cancel')}
         </button>
         <button type="submit" className="btn btn-primary btn-xs" disabled={!exe || !trimmed || busy}>
-          Add
+          {t('Add')}
         </button>
       </form>
     </div>

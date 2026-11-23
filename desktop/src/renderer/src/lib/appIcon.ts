@@ -1,11 +1,14 @@
 // Settings → Appearance → App icon: the variants of the Nexo icon (resources/icon.svg: a ring with a dot breaking out
 // of it, on a rounded-square tile) and the PNG main applies to the window, taskbar and tray (main/appIcon.ts).
 
+import { msg } from '../i18n/core'
+
+/** Labels are message keys: show them with t(label). */
 export const APP_ICONS = [
-  { id: 'classic', label: 'Classic' },
-  { id: 'accent', label: 'Accent' },
-  { id: 'paper', label: 'Paper' },
-  { id: 'mono', label: 'Mono' },
+  { id: 'classic', label: msg('Classic') },
+  { id: 'accent', label: msg('Accent // app icon') },
+  { id: 'paper', label: msg('Paper') },
+  { id: 'mono', label: msg('Mono') },
 ] as const
 export type AppIconChoice = (typeof APP_ICONS)[number]['id']
 

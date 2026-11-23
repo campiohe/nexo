@@ -586,6 +586,9 @@ describe('Nexo protocol', () => {
       role: 'owner',
       statusText: null,
       avatarAnimated: false,
+      banner: null,
+      bannerAnimated: false,
+      bannerPreset: 'solid',
     })
     assert.deepEqual(await upsert, updated)
 

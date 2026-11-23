@@ -39,6 +39,7 @@ export interface ProfileCardState {
 export type SettingsTab =
   | 'profile'
   | 'appearance'
+  | 'language'
   | 'av'
   | 'keybinds'
   | 'notifications'

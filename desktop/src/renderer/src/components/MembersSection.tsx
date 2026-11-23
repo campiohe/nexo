@@ -10,26 +10,29 @@ import { errorMessage, toast } from '../lib/toast'
 import { Avatar } from './Avatar'
 import { ConfirmDialog } from './Modal'
 import { AlertIcon } from './icons'
+import { useT, type Translate } from '../i18n'
 
 const ROLE_RANK: Record<Role, number> = { owner: 0, admin: 1, member: 2 }
 const SETTABLE: ('admin' | 'member')[] = ['admin', 'member']
 
 export function RoleBadge({ role, compact = false }: { role: Role; compact?: boolean }) {
-  return <span className={`role-badge is-${role}${compact ? ' is-compact' : ''}`}>{ROLE_LABEL[role]}</span>
+  const t = useT()
+  return <span className={`role-badge is-${role}${compact ? ' is-compact' : ''}`}>{t(ROLE_LABEL[role])}</span>
 }
 
-function intro(me: User): string {
+function intro(t: Translate, me: User): string {
   switch (roleOf(me)) {
     case 'owner':
-      return "You're the owner. You can make people admins and remove accounts."
+      return t("You're the owner. You can make people admins and remove accounts.")
     case 'admin':
-      return "You're an admin. You can remove members. Only the owner can change roles or remove admins."
+      return t("You're an admin. You can remove members. Only the owner can change roles or remove admins.")
     default:
-      return 'Admins manage channels and accounts. Ask one if you need something changed.'
+      return t('Admins manage channels and accounts. Ask one if you need something changed.')
   }
 }
 
 export function MembersSection() {
+  const t = useT()
   const me = useApp((s) => s.me)
   const users = useApp((s) => s.users)
   const online = useApp((s) => s.online)
@@ -43,7 +46,7 @@ export function MembersSection() {
   const list = Object.values(users).sort(
     (a, b) =>
       (roles ? ROLE_RANK[roleOf(a)] - ROLE_RANK[roleOf(b)] : 0) ||
-      a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }),
+      a.name.localeCompare(b.name, t.locale, { sensitivity: 'base' }),
   )
   // Close the confirmation if the account is already gone or we lost the right to remove it.
   const removeTarget = removing && users[removing.id] && canRemove(me, users[removing.id]) ? users[removing.id] : null
@@ -66,7 +69,7 @@ export function MembersSection() {
     try {
       await removeUser(u.id)
       setRemoving(null)
-      toast(`Removed ${u.name}`, 'success')
+      toast(t('Removed {name}', { name: u.name }), 'success')
     } catch (err) {
       setRemoveError(errorMessage(err))
     }
@@ -74,16 +77,18 @@ export function MembersSection() {
 
   return (
     <section>
-      <h3 className="settings-heading">Members</h3>
+      <h3 className="settings-heading">{t('Members')}</h3>
       {roles ? (
-        <p className="muted small members-intro">{intro(me)}</p>
+        <p className="muted small members-intro">{intro(t, me)}</p>
       ) : (
         <div className="callout callout-warn">
           <AlertIcon size={16} />
-          <span>This server doesn't have roles yet, so everyone can manage channels. Update the server to manage members here.</span>
+          <span>
+            {t("This server doesn't have roles yet, so everyone can manage channels. Update the server to manage members here.")}
+          </span>
         </div>
       )}
-      <ul className="members-admin" aria-label="Members">
+      <ul className="members-admin" aria-label={t('Members')}>
         {list.map((u) => {
           const role = roleOf(u)
           const settable = roles && canSetRole(me, u)
@@ -95,7 +100,7 @@ export function MembersSection() {
                 <div className="members-admin-text">
                   <span className="members-admin-name" style={{ color: u.color }}>
                     {u.name}
-                    {u.id === me.id && <span className="member-you"> (you)</span>}
+                    {u.id === me.id && <span className="member-you"> {t('(you)')}</span>}
                   </span>
                   {roles && (
                     <span>
@@ -104,7 +109,7 @@ export function MembersSection() {
                   )}
                 </div>
                 {settable && (
-                  <div className="vx-seg members-role-seg" role="radiogroup" aria-label={`Role of ${u.name}`}>
+                  <div className="vx-seg members-role-seg" role="radiogroup" aria-label={t('Role of {name}', { name: u.name })}>
                     {SETTABLE.map((r) => (
                       <button
                         key={r}
@@ -115,7 +120,7 @@ export function MembersSection() {
                         disabled={!!pendingRole}
                         onClick={() => void changeRole(u, r)}
                       >
-                        {ROLE_LABEL[r]}
+                        {t(ROLE_LABEL[r])}
                       </button>
                     ))}
                   </div>
@@ -129,7 +134,7 @@ export function MembersSection() {
                       setRemoving(u)
                     }}
                   >
-                    Remove
+                    {t('Remove')}
                   </button>
                 )}
               </div>
@@ -145,17 +150,22 @@ export function MembersSection() {
 
       {removeTarget && (
         <ConfirmDialog
-          title={`Remove ${removeTarget.name}?`}
+          title={t('Remove {name}?', { name: removeTarget.name })}
           danger
-          confirmLabel="Remove account"
+          confirmLabel={t('Remove account')}
           message={
             <div className="members-confirm">
               <span>
-                This deletes <strong>{removeTarget.name}</strong>'s account and <strong>all of their messages</strong>{' '}
-                and images, for everyone. Their devices are signed out right away.
+                {t.rich(
+                  "This deletes <b>{name}</b>'s account and <b>all of their messages</b> and images, for everyone. Their devices are signed out right away.",
+                  { name: removeTarget.name, b: (c) => <strong>{c}</strong> },
+                )}
               </span>
               <span>
-                The name <strong>{removeTarget.name}</strong> becomes free, so anyone can join with it. This can't be undone.
+                {t.rich("The name <b>{name}</b> becomes free, so anyone can join with it. This can't be undone.", {
+                  name: removeTarget.name,
+                  b: (c) => <strong>{c}</strong>,
+                })}
               </span>
               {removeError && (
                 <div className="callout callout-error" role="alert">

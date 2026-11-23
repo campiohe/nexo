@@ -389,6 +389,19 @@ export interface ZoomEvent {
   source: ZoomSource
 }
 
+/** UI languages (Settings → Language & time). English is the source language; pt-BR is translated. */
+export type Language = 'en' | 'pt-BR'
+
+export const LANGUAGES: readonly Language[] = ['en', 'pt-BR']
+
+/** What the OS says about language and region, read by main at startup (see NexoBridge.locale). */
+export interface SystemLocale {
+  /** The user's preferred UI languages, most preferred first (BCP 47, e.g. ["pt-BR", "en-US"]). May be empty. */
+  languages: string[]
+  /** The regional format (BCP 47, e.g. "pt-BR" on an English Windows set to Brazil); null when unknown. */
+  region: string | null
+}
+
 export interface AppearanceState {
   /** Main's copy of the theme (the renderer's localStorage copy is the one applied before the first paint). */
   theme: ThemeChoice
@@ -584,6 +597,16 @@ export interface NexoBridge {
     setAppIcon(png: string | null): Promise<void>
   }
 
+  /**
+   * System language and region (from main at startup), and the app language for main's own strings (tray menu,
+   * update messages). Missing on older preloads: callers must check.
+   */
+  locale: {
+    system: SystemLocale
+    /** Tell main the language in use (on start and on every change): it rebuilds the tray menu and keeps it for the next launch. */
+    setLanguage(language: Language): void
+  }
+
   /** Auto-update (main process). */
   updates: {
     getState(): Promise<UpdateState>
@@ -641,6 +664,7 @@ export const IPC = {
   appearanceSetZoom: 'nexo:appearance:set-zoom',
   appearanceZoom: 'nexo:appearance:zoom', // main → renderer (ZoomEvent)
   appearanceSetAppIcon: 'nexo:appearance:set-app-icon',
+  localeSetLanguage: 'nexo:locale:set-language',
   musicSearch: 'nexo:music:search',
   musicResolve: 'nexo:music:resolve',
   musicPrefetch: 'nexo:music:prefetch',

@@ -9,6 +9,7 @@ import { useVoice } from '../../voice/session'
 import { EMU_SYSTEM_INFO } from '../../emulator/systems'
 import { Modal } from '../Modal'
 import { answerAsk, cancelLoading, GAME_FILE_ACCEPT, hostGameFiles, useEmuHost, type EmuLoading } from './host'
+import { formatList, useT } from '../../i18n'
 import '../../styles/emulator.css'
 
 /** The emulator area takes the stage of `channelId`: plugin on, a session running there, not hidden here. */
@@ -61,13 +62,14 @@ export function GameFileInput({ inputRef, channelId }: { inputRef: RefObject<HTM
 
 /** "Reading Game.bin… 45%" with a bar and Cancel (the toolbar card, and the emulator screen while loading another game). */
 export function LoadProgress({ loading, className = '' }: { loading: EmuLoading; className?: string }) {
+  const t = useT()
   const pct = loading.progress === null ? null : Math.round(loading.progress * 100)
-  const label = loading.step === 'reading' ? 'Reading' : 'Starting'
+  const label = loading.step === 'reading' ? t('Reading {name}…', { name: loading.name }) : t('Starting {name}…', { name: loading.name })
   return (
     <div className={`emu-load ${className}`} role="status" aria-live="polite">
       <div className="emu-load-text">
         <span className="emu-load-name" title={loading.name}>
-          {label} {loading.name}…
+          {label}
         </span>
         {pct !== null && <span className="emu-load-pct">{pct}%</span>}
       </div>
@@ -81,7 +83,7 @@ export function LoadProgress({ loading, className = '' }: { loading: EmuLoading;
         <span style={pct === null ? undefined : { width: `${pct}%` }} />
       </div>
       <button className="gm-btn gm-btn-ghost emu-load-cancel" onClick={cancelLoading}>
-        Cancel
+        {t('Cancel')}
       </button>
     </div>
   )
@@ -90,13 +92,20 @@ export function LoadProgress({ loading, className = '' }: { loading: EmuLoading;
 /** "Is this a Mega Drive or a PlayStation game?" when the picked file could be either (a .bin without a .cue). */
 function AskSystemDialog() {
   const ask = useEmuHost((s) => s.ask)
+  const t = useT()
   if (!ask) return null
-  const names = ask.systems.map((id) => EMU_SYSTEM_INFO[id].name)
-  const question = names.length === 2 ? `${names[0]} or ${names[1]}` : names.join(', ')
+  const consoles = formatList(
+    ask.systems.map((id) => EMU_SYSTEM_INFO[id].name),
+    'disjunction',
+  )
   return (
-    <Modal title="Which console is this game for?" onClose={() => answerAsk(null)} width={460}>
+    <Modal title={t('Which console is this game for?')} onClose={() => answerAsk(null)} width={460}>
       <p className="emu-ask-text">
-        Nexo can't tell from <strong>{ask.main.name}</strong> alone. Is it a {question} game?
+        {t.rich("Nexo can't tell from <b>{file}</b> alone. Is it a {consoles} game?", {
+          file: ask.main.name,
+          consoles,
+          b: (c) => <strong>{c}</strong>,
+        })}
       </p>
       <div className="emu-ask-choices">
         {ask.systems.map((id) => (
@@ -106,7 +115,9 @@ function AskSystemDialog() {
         ))}
       </div>
       {ask.systems.includes('psx') && (
-        <p className="emu-note emu-ask-hint">PlayStation games usually come with a .cue file: pick it together with the .bin files.</p>
+        <p className="emu-note emu-ask-hint">
+          {t('PlayStation games usually come with a .cue file: pick it together with the .bin files.')}
+        </p>
       )}
     </Modal>
   )
@@ -128,6 +139,7 @@ export function EmulatorButton({ size = 'lg' }: { size?: 'sm' | 'lg' }) {
   const shown = useEmuAreaShown(channelId)
   const loading = useEmuHost((s) => s.loading)
   const input = useRef<HTMLInputElement>(null)
+  const t = useT()
   if (!on || !channelId) return null
   // While the area is shown it shows the progress over the game itself.
   const showLoadCard = !!loading && !shown
@@ -144,13 +156,13 @@ export function EmulatorButton({ size = 'lg' }: { size?: 'sm' | 'lg' }) {
         title={
           session
             ? shown
-              ? 'Hide the game (show people)'
-              : `Show ${session.title}`
+              ? t('Hide the game (show people)')
+              : t('Show {title}', { title: session.title })
             : loading
-              ? 'Loading the game…'
-              : 'Play a game: load a SNES, Mega Drive, PlayStation or Nintendo 64 game file you own'
+              ? t('Loading the game…')
+              : t('Play a game: load a SNES, Mega Drive, PlayStation or Nintendo 64 game file you own')
         }
-        aria-label="Emulator"
+        aria-label={t('Emulator')}
         aria-pressed={shown}
       >
         <ConsoleIcon size={size === 'lg' ? 20 : 18} />
@@ -169,10 +181,12 @@ export function ChannelEmuLine({ channelId }: { channelId: string }) {
   const session = useEmulator((s) => s.byChannel[channelId])
   const host = useApp((s) => (session ? s.users[session.hostId] : undefined))
   const meId = useApp((s) => s.me?.id)
+  const t = useT()
   if (!on || !session) return null
-  const by = session.hostId === meId ? 'hosted by you' : `hosted by ${host?.name ?? 'someone'}`
+  const by = session.hostId === meId ? t('hosted by you') : t('hosted by {name}', { name: host?.name ?? t('someone') })
+  const line = `${session.title} · ${by}`
   return (
-    <div className="gm-channel-line is-live emu-channel-line" title={`${session.title} · ${by}${session.paused ? ' (paused)' : ''}`}>
+    <div className="gm-channel-line is-live emu-channel-line" title={session.paused ? t('{line} (paused)', { line }) : line}>
       <ConsoleIcon size={12} />
       <span className="gm-channel-line-text">
         {session.title} · {by}

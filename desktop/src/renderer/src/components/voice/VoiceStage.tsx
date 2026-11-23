@@ -13,10 +13,12 @@ import {
 import { ConnectionQuality } from 'livekit-client'
 import type { User } from '@shared/protocol'
 import { useApp } from '@renderer/store/app'
+import { formatList, formatNumber, useT, type Translate } from '@renderer/i18n'
 import { Avatar } from '@renderer/components/Avatar'
 import {
   getSharePreset,
   resumeAudio,
+  type ShareStats,
   setStreamVolume,
   stopWatching,
   useUserVolume,
@@ -67,14 +69,15 @@ export function VoiceStage({ channelId }: { channelId: string }) {
  * repeated here: voice/session.ts toasts every voice error and the sidebar's voice panel keeps it until dismissed.
  */
 function JoinCard({ channelId }: { channelId: string }) {
-  const channelName = useApp((s) => s.channels.find((c) => c.id === channelId)?.name ?? 'Voice')
+  const t = useT()
+  const channelName = useApp((s) => s.channels.find((c) => c.id === channelId)?.name) ?? t('Voice')
   const voice = useApp((s) => s.voice)
   const users = useApp((s) => s.users)
   const otherChannelId = useVoice((s) => (s.status !== 'idle' && s.status !== 'error' ? s.channelId : null))
   const otherName = useApp((s) => s.channels.find((c) => c.id === otherChannelId)?.name)
   const members = voice.filter((v) => v.channelId === channelId)
-  const names = members.map((m) => users[m.userId]?.name ?? 'Someone')
-  const streamers = members.filter((m) => m.streaming).map((m) => users[m.userId]?.name ?? 'Someone')
+  const names = members.map((m) => users[m.userId]?.name ?? t('Someone'))
+  const streamers = members.filter((m) => m.streaming).map((m) => users[m.userId]?.name ?? t('Someone'))
 
   return (
     <div className="vx-stage vx-stage-idle">
@@ -90,21 +93,30 @@ function JoinCard({ channelId }: { channelId: string }) {
         <h2 className="vx-join-title">{channelName}</h2>
         <p className="vx-join-sub">
           {members.length === 0
-            ? "No one's here yet."
-            : names.slice(0, 4).join(', ') +
-              (members.length > 4 ? ` and ${members.length - 4} more` : '') +
-              (members.length === 1 ? ' is here' : ' are here')}
+            ? t("No one's here yet.")
+            : members.length > 4
+              ? t('{names} and {count} more are here', {
+                  names: names.slice(0, 4).join(', '),
+                  count: members.length - 4,
+                })
+              : t('{count, plural, one {{names} is here} other {{names} are here}}', {
+                  names: formatList(names),
+                  count: members.length,
+                })}
         </p>
         {streamers.length > 0 && (
           <p className="vx-join-live">
-            <span className="vx-live-badge">LIVE</span>
-            {streamers.join(', ')} streaming
+            <span className="vx-live-badge">{t('LIVE')}</span>
+            {t('{count, plural, one {{names} is streaming} other {{names} are streaming}}', {
+              names: formatList(streamers),
+              count: streamers.length,
+            })}
           </p>
         )}
         <button className="vx-btn vx-btn-primary vx-btn-lg" onClick={() => void useVoice.getState().join(channelId)}>
-          {otherChannelId ? `Switch to ${channelName}` : 'Join voice'}
+          {otherChannelId ? t('Switch to {channel}', { channel: channelName }) : t('Join voice')}
         </button>
-        {otherChannelId && otherName && <p className="vx-join-note">You'll leave {otherName}.</p>}
+        {otherChannelId && otherName && <p className="vx-join-note">{t("You'll leave {channel}.", { channel: otherName })}</p>}
       </div>
     </div>
   )
@@ -119,6 +131,7 @@ type TileSpec =
   | { key: string; kind: 'user'; view: ParticipantView }
 
 function Stage() {
+  const t = useT()
   const channelId = useVoice((s) => s.channelId)
   const status = useVoice((s) => s.status)
   const audioBlocked = useVoice((s) => s.audioBlocked)
@@ -203,17 +216,17 @@ function Stage() {
     <div className="vx-stage">
       {status === 'connecting' && (
         <div className="vx-stage-banner">
-          <span className="vx-spinner" /> Connecting to voice…
+          <span className="vx-spinner" /> {t('Connecting to voice…')}
         </div>
       )}
       {status === 'reconnecting' && (
         <div className="vx-stage-banner is-warn">
-          <span className="vx-spinner" /> Connection lost. Reconnecting…
+          <span className="vx-spinner" /> {t('Connection lost. Reconnecting…')}
         </div>
       )}
       {audioBlocked && (
         <button className="vx-stage-banner is-action" onClick={() => void resumeAudio()}>
-          <VolumeIcon size={16} /> Audio is paused by the system. Click to enable sound.
+          <VolumeIcon size={16} /> {t('Audio is paused by the system. Click to enable sound.')}
         </button>
       )}
 
@@ -245,7 +258,7 @@ function Stage() {
       )}
 
       {channelId && <MusicBar channelId={channelId} />}
-      <div className="vx-toolbar" role="toolbar" aria-label="Voice controls">
+      <div className="vx-toolbar" role="toolbar" aria-label={t('Voice controls')}>
         <MuteButton size="lg" />
         <DeafenButton size="lg" />
         <CameraButton size="lg" />
@@ -343,6 +356,7 @@ interface TileShellProps {
 }
 
 function TileShell({ className, mode, focusable, focused, onToggleFocus, onContextMenu, popOut, label, children }: TileShellProps) {
+  const t = useT()
   const ref = useRef<HTMLDivElement>(null)
   const clickTimer = useRef<number | undefined>(undefined)
   useEffect(() => () => window.clearTimeout(clickTimer.current), [])
@@ -373,17 +387,17 @@ function TileShell({ className, mode, focusable, focused, onToggleFocus, onConte
             <button
               className="vx-tile-btn"
               onClick={popOut.toggle}
-              title={popOut.active ? 'Close pop-out' : 'Pop out'}
-              aria-label={popOut.active ? 'Close pop-out' : 'Pop out'}
+              title={popOut.active ? t('Close pop-out') : t('Pop out')}
+              aria-label={popOut.active ? t('Close pop-out') : t('Pop out')}
               aria-pressed={popOut.active}
             >
               <PopOutIcon size={16} />
             </button>
           )}
-          <button className="vx-tile-btn" onClick={onToggleFocus} title={focused ? 'Back to grid' : 'Focus'} aria-label={focused ? 'Back to grid' : 'Focus'}>
+          <button className="vx-tile-btn" onClick={onToggleFocus} title={focused ? t('Back to grid') : t('Focus')} aria-label={focused ? t('Back to grid') : t('Focus')}>
             {focused ? <CollapseIcon size={16} /> : <ExpandIcon size={16} />}
           </button>
-          <button className="vx-tile-btn" onClick={() => toggleFullscreen(ref.current)} title="Fullscreen (double-click)" aria-label="Fullscreen">
+          <button className="vx-tile-btn" onClick={() => toggleFullscreen(ref.current)} title={t('Fullscreen (double-click)')} aria-label={t('Fullscreen')}>
             <FullscreenIcon size={16} />
           </button>
         </div>
@@ -403,6 +417,7 @@ interface UserTileProps {
 }
 
 const UserTile = memo(function UserTile({ view, user, mode, focused, onToggleFocus, onVolumeMenu }: UserTileProps) {
+  const t = useT()
   const name = nameOf(view, user)
   const color = colorOf(view, user)
   const selfMuted = useVoice((s) => view.isLocal && s.muted)
@@ -448,25 +463,29 @@ const UserTile = memo(function UserTile({ view, user, mode, focused, onToggleFoc
       )}
       <div className="vx-tile-label">
         {(muted || deafened) && (
-          <span className="vx-label-icon is-danger" title={deafened ? 'Deafened' : 'Muted'}>
+          <span className="vx-label-icon is-danger" title={deafened ? t('Deafened') : t('Muted')}>
             {deafened ? <HeadphonesOffIcon size={13} /> : <MicOffIcon size={13} />}
           </span>
         )}
         <span className="vx-label-name">
           {name}
-          {view.isLocal && <span className="vx-label-you"> (you)</span>}
+          {view.isLocal && <span className="vx-label-you"> {t('(you)')}</span>}
         </span>
         {volumeAdjusted && (
           <span
             className={`vx-label-icon ${mutedForMe ? 'is-danger' : 'is-adjusted'}`}
-            title={mutedForMe ? 'Muted for you (right-click to change)' : `Volume ${Math.round(userVolume * 100)}% (right-click to change)`}
+            title={
+              mutedForMe
+                ? t('Muted for you (right-click to change)')
+                : t('Volume {percent}% (right-click to change)', { percent: Math.round(userVolume * 100) })
+            }
           >
             {mutedForMe ? <VolumeOffIcon size={13} /> : <VolumeIcon size={13} />}
           </span>
         )}
-        {(view.isStreaming || selfNativeLive) && <span className="vx-live-badge is-small">LIVE</span>}
+        {(view.isStreaming || selfNativeLive) && <span className="vx-live-badge is-small">{t('LIVE')}</span>}
         {poor && (
-          <span className="vx-label-icon is-warn" title="Poor connection">
+          <span className="vx-label-icon is-warn" title={t('Poor connection')}>
             <AlertIcon size={13} />
           </span>
         )}
@@ -476,7 +495,22 @@ const UserTile = memo(function UserTile({ view, user, mode, focused, onToggleFoc
 })
 
 function mbps(bps: number): string {
-  return `${(bps / 1_000_000).toFixed(bps < 10_000_000 ? 1 : 0)} Mbps`
+  const digits = bps < 10_000_000 ? 1 : 0
+  return `${formatNumber(bps / 1_000_000, { minimumFractionDigits: digits, maximumFractionDigits: digits })} Mbps`
+}
+
+/** Tooltip of the "You're live" card's numbers. */
+function liveStatsTitle(t: Translate, stats: ShareStats): string {
+  // Sizes as strings: a resolution is not formatted as a number ("1920", not "1.920").
+  const values = { capture: stats.captureFps, send: stats.sendFps, width: String(stats.width), height: String(stats.height) }
+  const line = stats.width
+    ? t('Capturing {capture} fps, sending {send} fps at {width}×{height}', values)
+    : t('Capturing {capture} fps, sending {send} fps', values)
+  return stats.idle
+    ? t("Your screen isn't changing, so there are no new frames to send. Viewers see changes as soon as they happen. {details}", {
+        details: line,
+      })
+    : line
 }
 
 interface LiveCardProps {
@@ -490,6 +524,7 @@ interface LiveCardProps {
  * Shows what the helper reports instead.
  */
 const LiveCard = memo(function LiveCard({ view, user, mode }: LiveCardProps) {
+  const t = useT()
   const color = colorOf(view, user)
   const presetId = useVoice((s) => s.sharePresetId)
   const stats = useVoice((s) => s.shareStats)
@@ -502,54 +537,49 @@ const LiveCard = memo(function LiveCard({ view, user, mode }: LiveCardProps) {
   return (
     <div
       role="listitem"
-      aria-label="Your stream"
+      aria-label={t('Your stream')}
       className={`vx-tile is-${mode} vx-stream is-unwatched vx-livecard`}
       style={{ ['--tile-color' as string]: color }}
     >
       <div className="vx-unwatched">
         <span className="vx-unwatched-title">
-          <span className="vx-live-badge">LIVE</span> You're live
+          <span className="vx-live-badge">{t('LIVE')}</span> {t("You're live")}
         </span>
         <StreamViewers streamerId={view.identity} variant="card" showEmpty />
         {!compact && preset && (
           <span className="vx-livecard-preset">
-            {preset.label} · {preset.height}p{preset.fps}
+            {t(preset.label)} · {preset.height}p{preset.fps}
           </span>
         )}
         {!compact &&
           (stats ? (
-            <span
-              className="vx-livecard-stats"
-              title={`${
-                stats.idle ? "Your screen isn't changing, so there are no new frames to send. Viewers see changes as soon as they happen. " : ''
-              }Capturing ${stats.captureFps} fps, sending ${stats.sendFps} fps${stats.width ? ` at ${stats.width}×${stats.height}` : ''}`}
-            >
-              {stats.idle ? 'Idle' : `${stats.sendFps} fps`}
+            <span className="vx-livecard-stats" title={liveStatsTitle(t, stats)}>
+              {stats.idle ? t('Idle // stream') : `${stats.sendFps} fps`}
               {stats.bitrate ? ` · ${mbps(stats.bitrate)}` : ''}
               {stats.encoder ? ` · ${stats.encoder}` : ''}
             </span>
           ) : (
-            <span className="vx-livecard-stats">Measuring…</span>
+            <span className="vx-livecard-stats">{t('Measuring…')}</span>
           ))}
         {reconnecting ? (
           <span className="vx-livecard-notice">
-            <span className="vx-spinner" /> Reconnecting…
+            <span className="vx-spinner" /> {t('Reconnecting…')}
           </span>
         ) : (
           stats?.stalled && (
-            <span className="vx-livecard-notice" title="Viewers keep seeing the last frame until it updates again.">
-              <AlertIcon size={13} /> Window minimized / no new frames
+            <span className="vx-livecard-notice" title={t('Viewers keep seeing the last frame until it updates again.')}>
+              <AlertIcon size={13} /> {t('Window minimized / no new frames')}
             </span>
           )
         )}
         {audioFailed && (
-          <span className="vx-livecard-notice" title="Stream audio stopped working. Viewers still see your stream.">
-            <AlertIcon size={13} /> No stream audio
+          <span className="vx-livecard-notice" title={t('Stream audio stopped working. Viewers still see your stream.')}>
+            <AlertIcon size={13} /> {t('No stream audio')}
           </span>
         )}
         {!compact && (
           <button className="vx-btn" onClick={() => void useVoice.getState().stopShare()}>
-            Stop streaming
+            {t('Stop streaming')}
           </button>
         )}
       </div>
@@ -569,6 +599,7 @@ interface StreamTileProps {
 }
 
 const StreamTile = memo(function StreamTile({ view, user, watching, volume, deafened, mode, focused, onToggleFocus }: StreamTileProps) {
+  const t = useT()
   const name = nameOf(view, user)
   const color = colorOf(view, user)
   const [stats, setStats] = useVideoStats()
@@ -577,15 +608,16 @@ const StreamTile = memo(function StreamTile({ view, user, watching, volume, deaf
 
   if (!watching) {
     return (
-      <div role="listitem" aria-label={`${name}'s stream`} className={`vx-tile is-${mode} vx-stream is-unwatched`} style={{ ['--tile-color' as string]: color }}>
+      <div role="listitem" aria-label={t("{name}'s stream", { name })} className={`vx-tile is-${mode} vx-stream is-unwatched`} style={{ ['--tile-color' as string]: color }}>
         <div className="vx-unwatched">
           {mode !== 'strip' && <Avatar user={avatarUser(view, user)} size={mode === 'focus' ? 72 : 48} />}
           <span className="vx-unwatched-title">
-            <span className="vx-live-badge">LIVE</span> {view.isLocal ? "You're live" : `${name} is streaming`}
+            <span className="vx-live-badge">{t('LIVE')}</span>{' '}
+            {view.isLocal ? t("You're live") : t('{name} is streaming', { name })}
           </span>
           <StreamViewers streamerId={view.identity} variant="card" showEmpty={view.isLocal} />
           <button className="vx-btn vx-btn-primary" onClick={() => watchStream(view.identity)}>
-            <EyeIcon size={16} /> {view.isLocal ? 'Preview' : 'Watch stream'}
+            <EyeIcon size={16} /> {view.isLocal ? t('Preview // own stream') : t('Watch stream')}
           </button>
         </div>
       </div>
@@ -600,18 +632,18 @@ const StreamTile = memo(function StreamTile({ view, user, watching, volume, deaf
       focused={focused}
       onToggleFocus={onToggleFocus}
       popOut={popOutCtl}
-      label={`${name}'s stream`}
+      label={t("{name}'s stream", { name })}
     >
       {track ? (
         <VideoTrackView track={track} fit="contain" onStats={mode === 'strip' ? undefined : setStats} />
       ) : (
         <div className="vx-stream-loading">
-          <span className="vx-spinner" /> Loading stream…
+          <span className="vx-spinner" /> {t('Loading stream…')}
         </div>
       )}
       <div className="vx-stream-top">
-        <span className="vx-live-badge">LIVE</span>
-        <span className="vx-stream-name">{view.isLocal ? 'Your stream' : name}</span>
+        <span className="vx-live-badge">{t('LIVE')}</span>
+        <span className="vx-stream-name">{view.isLocal ? t('Your stream') : name}</span>
         {stats && mode !== 'strip' && (
           <span className="vx-stream-stats">
             {stats.width}×{stats.height} · {stats.fps} fps
@@ -622,11 +654,16 @@ const StreamTile = memo(function StreamTile({ view, user, watching, volume, deaf
       {mode !== 'strip' && (
         <div className="vx-stream-bottom" onClick={stop} onDoubleClick={stop}>
           {view.hasScreenAudio && !view.isLocal && (
-            <label className="vx-volume" title={deafened ? 'You are deafened' : `Stream volume ${Math.round(volume * 100)}%`}>
+            <label
+              className="vx-volume"
+              title={
+                deafened ? t('You are deafened') : t('Stream volume {percent}%', { percent: Math.round(volume * 100) })
+              }
+            >
               <button
                 className="vx-tile-btn"
                 onClick={() => setStreamVolume(view.identity, volume > 0 ? 0 : 1)}
-                aria-label={volume > 0 ? 'Mute stream' : 'Unmute stream'}
+                aria-label={volume > 0 ? t('Mute stream') : t('Unmute stream')}
               >
                 {volume === 0 || deafened ? <VolumeOffIcon size={16} /> : <VolumeIcon size={16} />}
               </button>
@@ -636,14 +673,14 @@ const StreamTile = memo(function StreamTile({ view, user, watching, volume, deaf
                 max={100}
                 value={Math.round(volume * 100)}
                 onChange={(e) => setStreamVolume(view.identity, Number(e.target.value) / 100)}
-                aria-label="Stream volume"
+                aria-label={t('Stream volume')}
                 style={{ ['--fill' as string]: `${Math.round(volume * 100)}%` }}
               />
             </label>
           )}
           <span className="vx-grow" />
-          <button className="vx-tile-btn is-text" onClick={() => stopWatching(view.identity)} title="Stop watching">
-            <EyeOffIcon size={16} /> {view.isLocal ? 'Hide preview' : 'Stop watching'}
+          <button className="vx-tile-btn is-text" onClick={() => stopWatching(view.identity)} title={t('Stop watching')}>
+            <EyeOffIcon size={16} /> {view.isLocal ? t('Hide preview') : t('Stop watching')}
           </button>
         </div>
       )}

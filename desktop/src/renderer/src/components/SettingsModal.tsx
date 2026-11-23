@@ -1,9 +1,13 @@
-import { useEffect, useRef, useState, type ChangeEvent } from 'react'
+import { useEffect, useRef, useState, type ChangeEvent, type ComponentType } from 'react'
 import type { AppPrefs, CaptureEngine, HotkeyStatus, Keybind, NativeShareCapabilities, UpdateState } from '../../../preload/api'
-import { useApp } from '../store/app'
+import { useApp, type ConnectionStatus } from '../store/app'
+import { msg, useT, type Translate } from '../i18n'
 import { useUi, type SettingsTab } from '../store/ui'
 import { ActivitySection, hasActivityBridge } from './ActivitySettings'
 import { AppearanceSection } from './AppearanceSettings'
+import { LanguageTimeSection } from './LanguageSettings'
+import { GamepadIcon } from './peopleIcons'
+import { HeadphonesIcon, ScreenIcon } from './voice/icons'
 import { CustomStatusField } from './StatusMenu'
 import { SWATCHES } from '../lib/colors'
 import { toast, useToasts } from '../lib/toast'
@@ -22,9 +26,22 @@ import { hasNativeNotifications, setNotifyPrefs, useNotifyPrefs, type NotifyLeve
 import '../styles/notify.css'
 import { Avatar } from './Avatar'
 import { AvatarCropDialog } from './AvatarCropDialog'
+import { BannerField } from './BannerSettings'
 import { ColorSwatches } from './ColorSwatches'
 import { ConfirmDialog, Modal } from './Modal'
-import { AlertIcon, LogoutIcon } from './icons'
+import {
+  AlertIcon,
+  BellIcon,
+  GlobeIcon,
+  KeyboardIcon,
+  LogoutIcon,
+  PaletteIcon,
+  PluginIcon,
+  ServerIcon,
+  UserIcon,
+  UsersIcon,
+  type IconProps,
+} from './icons'
 
 type Tab = SettingsTab
 
@@ -33,37 +50,42 @@ const hasPrefs = () => typeof window.nexo?.prefs?.get === 'function'
 
 interface TabDef {
   id: Tab
+  /** Message key (msg): shown with t(label). */
   label: string
+  /** Drawn left of the label (decorative: the label names the tab). */
+  icon: ComponentType<IconProps>
   available?: () => boolean
 }
 
-/** Nav groups; `label: null` is the server group, labelled with the server's name. */
+/** Nav groups; `label: null` is the server group, labelled with the server's name. Labels are message keys. */
 const GROUPS: { key: string; label: string | null; tabs: TabDef[] }[] = [
   {
     key: 'you',
-    label: 'You',
+    label: msg('You'),
     tabs: [
-      { id: 'profile', label: 'Profile' },
-      { id: 'appearance', label: 'Appearance' },
-      { id: 'av', label: 'Audio & video' },
-      { id: 'keybinds', label: 'Keybinds' },
-      { id: 'notifications', label: 'Notifications', available: hasNativeNotifications },
-      { id: 'activity', label: 'Activity', available: hasActivityBridge },
+      { id: 'profile', label: msg('Profile'), icon: UserIcon },
+      { id: 'appearance', label: msg('Appearance'), icon: PaletteIcon },
+      { id: 'language', label: msg('Language & time'), icon: GlobeIcon },
+      { id: 'av', label: msg('Audio & video'), icon: HeadphonesIcon },
+      { id: 'keybinds', label: msg('Keybinds'), icon: KeyboardIcon },
+      { id: 'notifications', label: msg('Notifications'), icon: BellIcon, available: hasNativeNotifications },
+      { id: 'activity', label: msg('Activity'), icon: GamepadIcon, available: hasActivityBridge },
     ],
   },
-  { key: 'device', label: 'This device', tabs: [{ id: 'app', label: 'App', available: hasPrefs }] },
+  { key: 'device', label: msg('This device'), tabs: [{ id: 'app', label: msg('App'), icon: ScreenIcon, available: hasPrefs }] },
   {
     key: 'server',
     label: null,
     tabs: [
-      { id: 'plugins', label: 'Plugins' },
-      { id: 'members', label: 'Members' },
-      { id: 'server', label: 'Server' },
+      { id: 'plugins', label: msg('Plugins'), icon: PluginIcon },
+      { id: 'members', label: msg('Members'), icon: UsersIcon },
+      { id: 'server', label: msg('Server'), icon: ServerIcon },
     ],
   },
 ]
 
 export function SettingsModal() {
+  const t = useT()
   const open = useUi((s) => s.settingsOpen)
   const close = () => useUi.getState().openSettings(false)
   // In store/ui.ts so other places can open a given section (e.g. the profile card's "Edit profile").
@@ -73,28 +95,29 @@ export function SettingsModal() {
   if (!open) return null
 
   return (
-    <Modal title="Settings" onClose={close} width={720} className="settings-modal">
+    <Modal title={t('Settings')} onClose={close} width={720} className="settings-modal">
       <div className="settings">
-        <nav className="settings-nav" role="tablist" aria-label="Settings sections" aria-orientation="vertical">
+        <nav className="settings-nav" role="tablist" aria-label={t('Settings sections')} aria-orientation="vertical">
           {GROUPS.map((g) => {
-            const tabs = g.tabs.filter((t) => !t.available || t.available())
+            const tabs = g.tabs.filter((d) => !d.available || d.available())
             if (tabs.length === 0) return null
-            const label = g.label ?? (serverName || 'Server')
+            const label = g.label ? t(g.label) : serverName || t('Server')
             return (
               <div key={g.key} className="settings-nav-group" role="presentation">
                 {/* Visual grouping only: a tablist may only own tabs, and each tab's name says enough. */}
                 <span className="settings-nav-label" aria-hidden="true" title={label}>
                   {label}
                 </span>
-                {tabs.map((t) => (
+                {tabs.map((d) => (
                   <button
-                    key={t.id}
+                    key={d.id}
                     role="tab"
-                    aria-selected={tab === t.id}
-                    className={`settings-tab ${tab === t.id ? 'is-active' : ''}`}
-                    onClick={() => setTab(t.id)}
+                    aria-selected={tab === d.id}
+                    className={`settings-tab ${tab === d.id ? 'is-active' : ''}`}
+                    onClick={() => setTab(d.id)}
                   >
-                    {t.label}
+                    <d.icon size={18} className="settings-tab-icon" aria-hidden="true" />
+                    <span className="settings-tab-label">{t(d.label)}</span>
                   </button>
                 ))}
               </div>
@@ -104,9 +127,10 @@ export function SettingsModal() {
         <div className="settings-panel" role="tabpanel">
           {tab === 'profile' && <ProfileSection />}
           {tab === 'appearance' && <AppearanceSection />}
+          {tab === 'language' && <LanguageTimeSection />}
           {tab === 'av' && (
             <section>
-              <h3 className="settings-heading">Audio & video</h3>
+              <h3 className="settings-heading">{t('Audio & video')}</h3>
               <DeviceSettings />
             </section>
           )}
@@ -124,6 +148,7 @@ export function SettingsModal() {
 }
 
 function ProfileSection() {
+  const t = useT()
   const me = useApp((s) => s.me)
   const updateColor = useApp((s) => s.updateColor)
   const [saving, setSaving] = useState(false)
@@ -143,12 +168,12 @@ function ProfileSection() {
 
   return (
     <section>
-      <h3 className="settings-heading">Profile</h3>
+      <h3 className="settings-heading">{t('Profile')}</h3>
       <div className="profile-card">
         <span className="avatar-preview">
           <Avatar user={me} size={96} animate />
           {me.avatar && me.avatarAnimated && (
-            <span className="avatar-gif-badge" title="Animated picture: others see it move when they hover over you or while you talk">
+            <span className="avatar-gif-badge" title={t('Animated picture: others see it move when they hover over you or while you talk')}>
               GIF
             </span>
           )}
@@ -157,20 +182,22 @@ function ProfileSection() {
           <div className="profile-name" style={{ color: me.color }}>
             {me.name}
           </div>
-          <div className="muted small">Your name is tied to this device.</div>
+          <div className="muted small">{t('Your name is tied to this device.')}</div>
           <AvatarActions hasAvatar={!!me.avatar} />
         </div>
       </div>
       <div className="field">
-        <span className="field-label">Color</span>
+        <span className="field-label">{t('Color')}</span>
         <ColorSwatches value={me.color} onChange={pick} colors={SWATCHES} disabled={saving} />
       </div>
+      <BannerField />
       <CustomStatusField />
     </section>
   )
 }
 
 function AvatarActions({ hasAvatar }: { hasAvatar: boolean }) {
+  const t = useT()
   const fileRef = useRef<HTMLInputElement>(null)
   const [image, setImage] = useState<LoadedImage | null>(null)
   const [busy, setBusy] = useState(false)
@@ -190,11 +217,11 @@ function AvatarActions({ hasAvatar }: { hasAvatar: boolean }) {
   }
 
   const upload = async (picture: Blob) => {
-    const pending = toast('Uploading picture…', 'info', 30_000)
+    const pending = toast(t('Uploading picture…'), 'info', 30_000)
     try {
       await uploadAvatar(picture)
       setImage(null)
-      toast('Profile picture updated', 'success')
+      toast(t('Profile picture updated'), 'success')
     } finally {
       useToasts.getState().dismiss(pending)
     }
@@ -205,7 +232,7 @@ function AvatarActions({ hasAvatar }: { hasAvatar: boolean }) {
     setBusy(true)
     try {
       await removeAvatar()
-      toast('Profile picture removed', 'success')
+      toast(t('Profile picture removed'), 'success')
     } catch (err) {
       toast(err, 'error')
     } finally {
@@ -225,11 +252,11 @@ function AvatarActions({ hasAvatar }: { hasAvatar: boolean }) {
         aria-hidden="true"
       />
       <button className="btn btn-primary btn-sm" onClick={() => fileRef.current?.click()} disabled={busy}>
-        Upload picture
+        {t('Upload picture')}
       </button>
       {hasAvatar && (
         <button className="btn btn-ghost btn-sm" onClick={remove} disabled={busy}>
-          Remove
+          {t('Remove')}
         </button>
       )}
       {image && <AvatarCropDialog image={image} onCancel={() => setImage(null)} onConfirm={upload} />}
@@ -237,19 +264,30 @@ function AvatarActions({ hasAvatar }: { hasAvatar: boolean }) {
   )
 }
 
+/** Message keys. */
 const KEYBIND_HINTS: Partial<Record<HotkeyAction, string>> = {
-  toggleShare: 'Stops your stream, or opens the share picker.',
+  toggleShare: msg('Stops your stream, or opens the share picker.'),
+}
+
+/** A combination another action already uses (kept as data, so the message follows a language change). */
+interface KeybindConflict {
+  action: HotkeyAction
+  combo: string
+  usedBy: HotkeyAction
+  /** Resetting to the default, rather than recording. */
+  reset: boolean
 }
 
 /** SPEC §13.2: record / clear each action's combination; in-app shortcuts can be reset to their default. */
 function KeybindsSection() {
+  const t = useT()
   const keybinds = useKeybinds()
   const pttBinding = useInputPrefs((s) => s.pttBinding)
   const inputMode = useInputPrefs((s) => s.inputMode)
   const hookStatus = usePtt((s) => s.hookStatus)
   const capturing = usePtt((s) => s.capturing)
   const [recording, setRecording] = useState<HotkeyAction | null>(null)
-  const [error, setError] = useState<{ action: HotkeyAction; text: string } | null>(null)
+  const [error, setError] = useState<KeybindConflict | null>(null)
   const [probe, setProbe] = useState<HotkeyStatus | null>(null)
 
   // Leaving the tab (or closing Settings) mid-recording cancels it.
@@ -288,7 +326,7 @@ function KeybindsSection() {
     }
     const conflict = findConflict(allKeybinds(), action, result)
     if (conflict) {
-      setError({ action, text: `${result.label} is already used by ${actionLabel(conflict)}. Clear it there first.` })
+      setError({ action, combo: result.label, usedBy: conflict, reset: false })
       return
     }
     setKeybind(action, result)
@@ -300,7 +338,7 @@ function KeybindsSection() {
     const def = defaultInAppBinding(action)
     const conflict = findConflict(allKeybinds(), action, def)
     if (conflict) {
-      setError({ action, text: `${def.label} is used by ${actionLabel(conflict)}. Clear it there first.` })
+      setError({ action, combo: def.label, usedBy: conflict, reset: true })
       return
     }
     setKeybind(action, def)
@@ -309,27 +347,29 @@ function KeybindsSection() {
   const anyGlobal = HOTKEY_ACTIONS.some((a) => a.scope === 'global' && bindings[a.id])
   const reason =
     anyGlobal && hookStatus && !hookStatus.active && hookStatus.reason
-      ? `${hookStatus.reason} Until then, these shortcuts only work while Nexo is focused.`
+      ? t('{reason} Until then, these shortcuts only work while Nexo is focused.', { reason: hookStatus.reason })
       : !anyGlobal && probe?.reason
-        ? `${probe.reason} Without it, global shortcuts only work while Nexo is focused.`
+        ? t('{reason} Without it, global shortcuts only work while Nexo is focused.', { reason: probe.reason })
         : null
 
   const row = (action: HotkeyAction) => {
     const b = bindings[action]
     const isRecording = recording === action && capturing
     const inApp = isInAppAction(action)
+    const hintKey = KEYBIND_HINTS[action]
     const hint =
       action === 'ptt'
         ? inputMode === 'ptt'
-          ? 'Hold to talk. Extra modifiers like Shift still work.'
-          : 'Only used in push to talk mode.'
-        : KEYBIND_HINTS[action]
+          ? t('Hold to talk. Extra modifiers like Shift still work.')
+          : t('Only used in push to talk mode.')
+        : hintKey && t(hintKey)
+    const name = t(actionLabel(action))
     const isDefault = inApp && !!b && sameCombo(b, defaultInAppBinding(action))
     return (
       <div key={action} className="kb-item">
         <div className="kb-row">
           <span className="toggle-text">
-            <span>{actionLabel(action)}</span>
+            <span>{name}</span>
             {hint && <span className="muted small">{hint}</span>}
           </span>
           <button
@@ -338,25 +378,30 @@ function KeybindsSection() {
             onClick={() => void record(action)}
             aria-label={
               isRecording
-                ? 'Recording: press a key combination or mouse button. Esc cancels, Backspace clears.'
-                : `Change the ${actionLabel(action)} shortcut`
+                ? t('Recording: press a key combination or mouse button. Esc cancels, Backspace clears.')
+                : t('Change the {action} shortcut', { action: name })
             }
             title={b?.label}
           >
-            {isRecording ? 'Press keys…' : (b?.label ?? 'Not set')}
+            {isRecording ? t('Press keys…') : (b?.label ?? t('Not set'))}
           </button>
           <button type="button" className="btn btn-ghost btn-sm" disabled={!b || isRecording} onClick={() => setKeybind(action, null)}>
-            Clear
+            {t('Clear')}
           </button>
           {inApp && (
             <button type="button" className="btn btn-ghost btn-sm" disabled={isDefault || isRecording} onClick={() => reset(action)}>
-              Reset
+              {t('Reset')}
             </button>
           )}
         </div>
         {error?.action === action && (
           <p className="kb-error" role="alert">
-            {error.text}
+            {error.reset
+              ? t('{combo} is used by {action}. Clear it there first.', { combo: error.combo, action: t(actionLabel(error.usedBy)) })
+              : t('{combo} is already used by {action}. Clear it there first.', {
+                  combo: error.combo,
+                  action: t(actionLabel(error.usedBy)),
+                })}
           </p>
         )}
       </div>
@@ -365,11 +410,11 @@ function KeybindsSection() {
 
   return (
     <section>
-      <h3 className="settings-heading">Keybinds</h3>
+      <h3 className="settings-heading">{t('Keybinds')}</h3>
       <p className="muted small kb-intro">
         {capturing
-          ? 'Press a key or mouse button, with any modifiers. For a modifier alone, press and release it. Esc cancels, Backspace clears.'
-          : 'Click a shortcut to change it. Left and right click can’t be used.'}
+          ? t('Press a key or mouse button, with any modifiers. For a modifier alone, press and release it. Esc cancels, Backspace clears.')
+          : t('Click a shortcut to change it. Left and right click can’t be used.')}
       </p>
       {reason && (
         <div className="callout callout-warn">
@@ -379,15 +424,15 @@ function KeybindsSection() {
       )}
       <div className="kb-group">
         <div className="kb-group-head">
-          <span className="field-label">Global</span>
-          <span className="muted small">Work even while a game has focus. None are set by default.</span>
+          <span className="field-label">{t('Global')}</span>
+          <span className="muted small">{t('Work even while a game has focus. None are set by default.')}</span>
         </div>
         {HOTKEY_ACTIONS.filter((a) => a.scope === 'global').map((a) => row(a.id))}
       </div>
       <div className="kb-group">
         <div className="kb-group-head">
-          <span className="field-label">In Nexo</span>
-          <span className="muted small">Only while Nexo is focused.</span>
+          <span className="field-label">{t('In Nexo')}</span>
+          <span className="muted small">{t('Only while Nexo is focused.')}</span>
         </div>
         {HOTKEY_ACTIONS.filter((a) => a.scope === 'app').map((a) => row(a.id))}
       </div>
@@ -409,8 +454,8 @@ function fastCaptureAtStartup(): Promise<boolean> {
 }
 
 const CAPTURE_ENGINES: { id: CaptureEngine; label: string }[] = [
-  { id: 'native', label: 'Native (beta)' },
-  { id: 'chromium', label: 'Chromium' },
+  { id: 'native', label: msg('Native (beta)') },
+  { id: 'chromium', label: msg('Chromium') },
 ]
 
 /** What the native capture helper found on this PC (Windows). Starts the helper if it isn't running. */
@@ -437,35 +482,47 @@ function useNativeCapabilities(): NativeShareCapabilities | null {
   return caps
 }
 
-function errorText(err: unknown): string {
-  return err instanceof Error && err.message ? err.message : 'The capture helper did not start'
+/** The error's message (main's diagnostics are English), or undefined: the line then says "unknown reason". */
+function errorText(err: unknown): string | undefined {
+  return err instanceof Error && err.message ? err.message : undefined
 }
 
-function nativeCapabilitiesLine(caps: NativeShareCapabilities | null): string {
-  if (!caps) return 'Checking your graphics card…'
-  if (!caps.available) return `Native capture isn't available on this PC: ${caps.reason ?? 'unknown reason'}. Streams use Chromium.`
-  const encoder = caps.encoder ?? 'the hardware encoder'
-  return caps.adapter ? `Streams with ${encoder} on ${caps.adapter}.` : `Streams with ${encoder}.`
+function nativeCapabilitiesLine(t: Translate, caps: NativeShareCapabilities | null): string {
+  if (!caps) return t('Checking your graphics card…')
+  if (!caps.available) {
+    return t("Native capture isn't available on this PC: {reason}. Streams use Chromium.", {
+      reason: caps.reason ?? t('unknown reason'),
+    })
+  }
+  if (!caps.encoder) {
+    return caps.adapter ? t('Streams with the hardware encoder on {gpu}.', { gpu: caps.adapter }) : t('Streams with the hardware encoder.')
+  }
+  return caps.adapter
+    ? t('Streams with {encoder} on {gpu}.', { encoder: caps.encoder, gpu: caps.adapter })
+    : t('Streams with {encoder}.', { encoder: caps.encoder })
 }
 
+/** Labels and titles are message keys. */
 const NOTIFY_LEVELS: { id: NotifyLevel; label: string; title?: string }[] = [
-  { id: 'all', label: 'All messages' },
-  { id: 'mentions', label: 'Only mentions', title: 'Messages with your @name or @everyone, and replies to you' },
-  { id: 'off', label: 'Off' },
+  { id: 'all', label: msg('All messages') },
+  { id: 'mentions', label: msg('Only mentions'), title: msg('Messages with your @name or @everyone, and replies to you') },
+  { id: 'off', label: msg('Off // desktop notifications') },
 ]
 
 /** Stored in renderer localStorage (lib/notify.ts): every notification decision is made in the renderer. */
 function NotificationsSection() {
+  const t = useT()
   const prefs = useNotifyPrefs()
   const soundEffects = useDevicePrefs((s) => s.soundEffects)
-  const flashLabel = window.nexo.platform === 'darwin' ? 'Bounce the Dock icon when you’re mentioned' : 'Flash the taskbar when you’re mentioned'
+  const flashLabel =
+    window.nexo.platform === 'darwin' ? t('Bounce the Dock icon when you’re mentioned') : t('Flash the taskbar when you’re mentioned')
   return (
     <section>
-      <h3 className="settings-heading">Notifications</h3>
+      <h3 className="settings-heading">{t('Notifications')}</h3>
       <div className="toggle-row is-static">
         <span className="toggle-text">
-          <span id="notify-level-label">Desktop notifications</span>
-          <span className="muted small">For channels you're not looking at.</span>
+          <span id="notify-level-label">{t('Desktop notifications')}</span>
+          <span className="muted small">{t("For channels you're not looking at.")}</span>
         </span>
         <div className="vx-seg" role="radiogroup" aria-labelledby="notify-level-label">
           {NOTIFY_LEVELS.map((l) => (
@@ -475,20 +532,18 @@ function NotificationsSection() {
               role="radio"
               aria-checked={prefs.desktop === l.id}
               className={`vx-seg-btn ${prefs.desktop === l.id ? 'is-active' : ''}`}
-              title={l.title}
+              title={l.title && t(l.title)}
               onClick={() => setNotifyPrefs({ desktop: l.id })}
             >
-              {l.label}
+              {t(l.label)}
             </button>
           ))}
         </div>
       </div>
       <label className="toggle-row">
         <span className="toggle-text">
-          <span>Notification sound</span>
-          {!soundEffects && (
-            <span className="muted small">Silent while sound effects are off in Audio & video.</span>
-          )}
+          <span>{t('Notification sound')}</span>
+          {!soundEffects && <span className="muted small">{t('Silent while sound effects are off in Audio & video.')}</span>}
         </span>
         <input
           type="checkbox"
@@ -502,7 +557,7 @@ function NotificationsSection() {
       <label className="toggle-row">
         <span className="toggle-text">
           <span>{flashLabel}</span>
-          <span className="muted small">Only while Nexo is in the background.</span>
+          <span className="muted small">{t('Only while Nexo is in the background.')}</span>
         </span>
         <input
           type="checkbox"
@@ -520,12 +575,12 @@ function NotificationsSection() {
             window.nexo.notifications.show({
               channelId: 'nexo-test',
               title: 'Nexo',
-              body: 'Notifications are working. Unread mentions also show on the taskbar and the tray icon.',
+              body: t('Notifications are working. Unread mentions also show on the taskbar and the tray icon.'),
               icon: null,
             })
           }
         >
-          Send a test notification
+          {t('Send a test notification')}
         </button>
       </div>
     </section>
@@ -533,8 +588,9 @@ function NotificationsSection() {
 }
 
 function AppSection() {
+  const t = useT()
   const [prefs, setPrefs] = useState<AppPrefs | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [loadFailed, setLoadFailed] = useState(false)
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
@@ -545,7 +601,7 @@ function AppSection() {
       .then((p) => alive && setPrefs(p))
       .catch((err: unknown) => {
         console.error('[nexo] prefs.get failed', err)
-        if (alive) setError("Couldn't load the app preferences")
+        if (alive) setLoadFailed(true)
       })
     return () => {
       alive = false
@@ -578,18 +634,18 @@ function AppSection() {
 
   return (
     <section>
-      <h3 className="settings-heading">App</h3>
-      {error ? (
+      <h3 className="settings-heading">{t('App')}</h3>
+      {loadFailed ? (
         <div className="callout callout-warn">
           <AlertIcon size={16} />
-          <span>{error}</span>
+          <span>{t("Couldn't load the app preferences")}</span>
         </div>
       ) : (
         <>
           <label className="toggle-row">
             <span className="toggle-text">
-              <span>Close to the system tray</span>
-              <span className="muted small">Nexo keeps running and stays in voice. Quit from the tray icon.</span>
+              <span>{t('Close to the system tray')}</span>
+              <span className="muted small">{t('Nexo keeps running and stays in voice. Quit from the tray icon.')}</span>
             </span>
             <input
               type="checkbox"
@@ -603,11 +659,13 @@ function AppSection() {
           {showEngine && (
             <div className="toggle-row is-static">
               <span className="toggle-text">
-                <span id="capture-engine-label">Capture engine</span>
+                <span id="capture-engine-label">{t('Capture engine')}</span>
                 <span className="muted small">
-                  Native uses your graphics card, so games keep their frame rate. Falls back to Chromium if it fails.
+                  {t('Native uses your graphics card, so games keep their frame rate. Falls back to Chromium if it fails.')}
                 </span>
-                <span className="muted small">{nativeCapabilitiesLine(nativeCaps)} Applies to your next stream.</span>
+                <span className="muted small">
+                  {t('{status} Applies to your next stream.', { status: nativeCapabilitiesLine(t, nativeCaps) })}
+                </span>
               </span>
               <div className="vx-seg" role="radiogroup" aria-labelledby="capture-engine-label">
                 {CAPTURE_ENGINES.map((e) => (
@@ -620,7 +678,7 @@ function AppSection() {
                     disabled={!prefs || saving}
                     onClick={() => engine !== e.id && void setPref({ captureEngine: e.id })}
                   >
-                    {e.label}
+                    {t(e.label)}
                   </button>
                 ))}
               </div>
@@ -629,10 +687,10 @@ function AppSection() {
           {isWindows && (
             <label className="toggle-row">
               <span className="toggle-text">
-                <span>Fast game capture</span>
+                <span>{t('Fast game capture')}</span>
                 <span className="muted small">
-                  Chromium engine only. Turn it off if your stream shows a black or frozen picture.
-                  {restartNeeded && <strong> Restart Nexo to apply.</strong>}
+                  {t('Chromium engine only. Turn it off if your stream shows a black or frozen picture.')}
+                  {restartNeeded && <strong> {t('Restart Nexo to apply.')}</strong>}
                 </span>
               </span>
               <input
@@ -652,39 +710,59 @@ function AppSection() {
   )
 }
 
-function updateStatusLine(s: UpdateState): { text: string; tone?: 'ok' | 'warn' } {
-  const v = s.version ? `Nexo ${s.version}` : 'A new version'
+function updateStatusLine(t: Translate, s: UpdateState): { text: string; tone?: 'ok' | 'warn' } {
+  // "Nexo 1.4.0", or a phrase when the version is unknown (a separate message: it isn't a name in every language).
+  const version = s.version ?? ''
+  const known = s.version ? 'known' : 'unknown'
   switch (s.status) {
     case 'unsupported':
-      return { text: s.reason ?? 'Updates are not available for this build.' }
+      return { text: s.reason ?? t('Updates are not available for this build.') }
     case 'idle':
-      return { text: 'Nexo checks for updates automatically.' }
+      return { text: t('Nexo checks for updates automatically.') }
     case 'checking':
-      return { text: 'Checking for updates…' }
+      return { text: t('Checking for updates…') }
     case 'up-to-date':
-      return { text: "You're up to date.", tone: 'ok' }
+      return { text: t("You're up to date."), tone: 'ok' }
     case 'available':
       return {
-        text: s.canAutoInstall ? `${v} is available.` : `${v} is available. Download it from the release page.`,
+        text: s.canAutoInstall
+          ? t('{known, select, known {Nexo {version} is available.} other {A new version is available.}}', { known, version })
+          : t(
+              '{known, select, known {Nexo {version} is available.} other {A new version is available.}} Download it from the release page.',
+              { known, version },
+            ),
         tone: 'ok',
       }
     case 'downloading':
-      return { text: `Downloading ${v}… ${s.percent ?? 0}%` }
+      return {
+        text: t('{known, select, known {Downloading Nexo {version}…} other {Downloading the new version…}} {percent}%', {
+          known,
+          version,
+          percent: s.percent ?? 0,
+        }),
+      }
     case 'ready':
-      return { text: `${v} is downloaded. It installs when you restart or quit Nexo.`, tone: 'ok' }
+      return {
+        text: t(
+          '{known, select, known {Nexo {version} is downloaded.} other {The new version is downloaded.}} It installs when you restart or quit Nexo.',
+          { known, version },
+        ),
+        tone: 'ok',
+      }
     case 'error':
-      return { text: `Couldn't check for updates: ${s.error ?? 'unknown error'}`, tone: 'warn' }
+      return { text: t("Couldn't check for updates: {error}", { error: s.error ?? t('unknown error') }), tone: 'warn' }
   }
 }
 
 function UpdatesPanel() {
+  const t = useT()
   const state = useUpdates((s) => s.state)
   const checking = useUpdates((s) => s.checking)
   const inCall = useInCall()
   if (!state) return null
 
   const { downloadUrl, releaseNotesUrl } = state
-  const line = updateStatusLine(state)
+  const line = updateStatusLine(t, state)
   const busy = checking || state.status === 'checking' || state.status === 'downloading'
   const canCheck = state.status !== 'unsupported' && state.status !== 'ready' && !busy
   // A failed background check while an update is known: say so, without hiding the update.
@@ -692,52 +770,53 @@ function UpdatesPanel() {
 
   return (
     <>
-      <h3 className="settings-heading">Updates</h3>
+      <h3 className="settings-heading">{t('Updates')}</h3>
       <dl className="kv">
-        <dt>Version</dt>
+        <dt>{t('Version')}</dt>
         <dd>
           <code>{state.currentVersion}</code>
           {state.testBuild && (
             <span className="muted small">
-              {state.leavingTestBuilds ? ' · test build, switching to regular releases' : ' · test build: updates only to newer test builds'}
+              {' · '}
+              {state.leavingTestBuilds ? t('test build, switching to regular releases') : t('test build: updates only to newer test builds')}
             </span>
           )}
         </dd>
-        <dt>Status</dt>
+        <dt>{t('Status')}</dt>
         <dd className={line.tone ?? ''}>
           {line.text}
-          {staleError && <span className="muted small"> (last check failed: {staleError})</span>}
+          {staleError && <span className="muted small"> {t('(last check failed: {error})', { error: staleError })}</span>}
         </dd>
       </dl>
       <div className="settings-actions">
         {state.status === 'ready' && state.canAutoInstall && (
           <button className="btn btn-primary btn-sm" onClick={() => useUpdates.getState().install()}>
-            {inCall ? 'Restart to update (leaves the call)' : 'Restart to update'}
+            {inCall ? t('Restart to update (leaves the call)') : t('Restart to update')}
           </button>
         )}
         {state.status === 'available' && downloadUrl && (
           <button className="btn btn-primary btn-sm" onClick={() => window.nexo.openExternal(downloadUrl)}>
-            Download
+            {t('Download')}
           </button>
         )}
         {state.status !== 'unsupported' && (
           <button className="btn btn-ghost btn-sm" disabled={!canCheck} onClick={() => void useUpdates.getState().check()}>
-            {busy && state.status !== 'downloading' ? 'Checking…' : 'Check for updates'}
+            {busy && state.status !== 'downloading' ? t('Checking…') : t('Check for updates')}
           </button>
         )}
         {state.testBuild && !state.leavingTestBuilds && state.status !== 'unsupported' && (
           <button
             className="btn btn-ghost btn-sm"
             disabled={busy}
-            title="Installs the newest regular release on the next restart, even if its version number is lower"
+            title={t('Installs the newest regular release on the next restart, even if its version number is lower')}
             onClick={() => void useUpdates.getState().leaveTestBuilds()}
           >
-            Leave test builds
+            {t('Leave test builds')}
           </button>
         )}
         {releaseNotesUrl && (
           <button className="btn btn-ghost btn-sm" onClick={() => window.nexo.openExternal(releaseNotesUrl)}>
-            Release notes
+            {t('Release notes')}
           </button>
         )}
       </div>
@@ -745,7 +824,17 @@ function UpdatesPanel() {
   )
 }
 
+/** Message keys. */
+const CONNECTION_LABELS: Record<ConnectionStatus, string> = {
+  idle: msg('Not connected'),
+  connecting: msg('Connecting…'),
+  connected: msg('Connected'),
+  reconnecting: msg('Reconnecting…'),
+  error: msg('Connection error'),
+}
+
 function ServerSection({ onDone }: { onDone(): void }) {
+  const t = useT()
   const serverName = useApp((s) => s.serverName)
   const serverUrl = useApp((s) => s.serverUrl)
   const connection = useApp((s) => s.connection)
@@ -754,16 +843,16 @@ function ServerSection({ onDone }: { onDone(): void }) {
 
   return (
     <section>
-      <h3 className="settings-heading">Server</h3>
+      <h3 className="settings-heading">{t('Server')}</h3>
       <dl className="kv">
-        <dt>Name</dt>
+        <dt>{t('Name')}</dt>
         <dd>{serverName}</dd>
-        <dt>Address</dt>
+        <dt>{t('Address')}</dt>
         <dd>
           <code>{serverUrl}</code>
         </dd>
-        <dt>Status</dt>
-        <dd className={connection === 'connected' ? 'ok' : 'warn'}>{connection}</dd>
+        <dt>{t('Status')}</dt>
+        <dd className={connection === 'connected' ? 'ok' : 'warn'}>{t(CONNECTION_LABELS[connection])}</dd>
       </dl>
 
       <div className="settings-actions">
@@ -774,35 +863,39 @@ function ServerSection({ onDone }: { onDone(): void }) {
             useApp.getState().changeServer()
           }}
         >
-          Switch server
+          {t('Switch server')}
         </button>
-        <span className="muted small">You stay signed in here.</span>
+        <span className="muted small">{t('You stay signed in here.')}</span>
       </div>
 
       <div className="danger-zone">
         <div>
-          <strong>Log out of this device</strong>
+          <strong>{t('Log out of this device')}</strong>
           <p className="muted small">
-            Deletes this device's key. Without it, <strong>{me?.name}</strong> can't be recovered and you'd join with a new
-            name.
+            {t.rich("Deletes this device's key. Without it, <b>{name}</b> can't be recovered and you'd join with a new name.", {
+              name: me?.name ?? '',
+              b: (c) => <strong>{c}</strong>,
+            })}
           </p>
         </div>
         <button className="btn btn-danger" onClick={() => setConfirmLogout(true)}>
-          <LogoutIcon size={16} /> Log out
+          <LogoutIcon size={16} /> {t('Log out')}
         </button>
       </div>
 
       {confirmLogout && (
         <ConfirmDialog
-          title="Log out of this device?"
+          title={t('Log out of this device?')}
           danger
-          confirmLabel="Log out"
+          confirmLabel={t('Log out')}
           message={
             <div className="callout callout-warn">
               <AlertIcon size={16} />
               <span>
-                Without this device's key, <strong>{me?.name}</strong> can't be signed back in. Your messages stay, but you'll
-                need to join with a different name.
+                {t.rich(
+                  "Without this device's key, <b>{name}</b> can't be signed back in. Your messages stay, but you'll need to join with a different name.",
+                  { name: me?.name ?? '', b: (c) => <strong>{c}</strong> },
+                )}
               </span>
             </div>
           }

@@ -6,12 +6,14 @@ import { useApp } from '../store/app'
 import { useUi } from '../store/ui'
 import { useAppearance } from '../lib/appearance'
 import { useKeybinds } from '../voice/prefs'
+import { useT } from '../i18n'
 import { NexoMark, SearchIcon } from './icons'
 import '../styles/titlebar.css'
 
 const customFrame = window.nexo?.platform === 'win32'
 
 export function TitleBar() {
+  const t = useT()
   const view = useApp((s) => s.view)
   const inServer = useApp((s) => s.view === 'main' && s.me !== null)
   const serverName = useApp((s) => s.serverName)
@@ -31,7 +33,7 @@ export function TitleBar() {
         {inServer && style === 'search' && (
           <button type="button" className="titlebar-jump" onClick={() => useUi.getState().openSwitcher(true)}>
             <SearchIcon size={14} />
-            <span className="titlebar-jump-text">Jump to a channel</span>
+            <span className="titlebar-jump-text">{t('Jump to a channel')}</span>
             {switcherKey && <kbd className="titlebar-jump-key">{switcherKey.label}</kbd>}
           </button>
         )}

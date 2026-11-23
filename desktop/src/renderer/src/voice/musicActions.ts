@@ -10,6 +10,7 @@ import { applyMusicState } from '../store/music'
 import { applyPlugins } from '../store/plugins'
 import type { AnchorRect } from '../store/ui'
 import { toast } from '../lib/toast'
+import { msg, t } from '../i18n'
 
 // ---------------------------------------------------------------------------------------------
 // Errors
@@ -20,19 +21,20 @@ export function isMusicEngineError(err: unknown): err is MusicEngineError {
   return !!err && typeof err === 'object' && (err as { name?: unknown }).name === 'MusicEngineError'
 }
 
+// Message keys (English): kept in state as is and shown with tKnown(), which also translates what main sends.
 const ERROR_TEXT: Record<MusicErrorCode, string> = {
-  'bot-check': "YouTube is asking this device to verify it isn't a bot. Try again later.",
-  unavailable: "This song isn't available here (removed, region-locked or age-restricted).",
-  network: "Couldn't reach YouTube. Check your connection.",
-  engine: 'YouTube changed something Nexo relies on. An app update should fix it.',
+  'bot-check': msg("YouTube is asking this device to verify it isn't a bot. Try again later."),
+  unavailable: msg("This song isn't available here (removed, region-locked or age-restricted)."),
+  network: msg("Couldn't reach YouTube. Check your connection."),
+  engine: msg('YouTube changed something Nexo relies on. An app update should fix it.'),
 }
 
-/** Readable text for a MusicEngineError code. */
+/** Readable text for a MusicEngineError code, in English (a message key: show it with t() or tKnown()). */
 export function musicErrorText(code: MusicErrorCode): string {
   return ERROR_TEXT[code] ?? ERROR_TEXT.engine
 }
 
-/** Readable text for anything a music engine call rejected with. */
+/** Readable text for anything a music engine call rejected with, in English: show it with tKnown(). */
 export function musicErrorMessage(err: unknown): string {
   if (isMusicEngineError(err)) return musicErrorText(err.code)
   if (err instanceof Error && err.message) return err.message
@@ -67,8 +69,8 @@ export async function musicControl(
 }
 
 /** Only the fields the server validates (search results may carry more). */
-function infoOf(t: MusicTrackInfo): MusicTrackInfo {
-  return { videoId: t.videoId, title: t.title, artist: t.artist, album: t.album, durationMs: t.durationMs, artwork: t.artwork }
+function infoOf(x: MusicTrackInfo): MusicTrackInfo {
+  return { videoId: x.videoId, title: x.title, artist: x.artist, album: x.album, durationMs: x.durationMs, artwork: x.artwork }
 }
 
 /**
@@ -76,9 +78,9 @@ function infoOf(t: MusicTrackInfo): MusicTrackInfo {
  * Returns how many were added.
  */
 export async function addTracks(channelId: string, tracks: MusicTrackInfo[], next = false): Promise<number> {
-  const list = tracks.filter((t) => t && t.durationMs > 0).map(infoOf)
+  const list = tracks.filter((x) => x && x.durationMs > 0).map(infoOf)
   if (list.length === 0) {
-    toast('Nothing playable to add', 'error')
+    toast(t('Nothing playable to add'), 'error')
     return 0
   }
   const chunks: MusicTrackInfo[][] = []
@@ -96,8 +98,16 @@ export async function addTracks(channelId: string, tracks: MusicTrackInfo[], nex
     }
   }
   if (added > 0) {
-    const what = added === 1 ? `“${list[0].title}”` : `${added} songs`
-    toast(next ? `${what} plays next` : `Added ${what} to the queue`, 'success', 2500)
+    const title = list[0]!.title
+    const text =
+      added === 1
+        ? next
+          ? t('“{title}” plays next', { title })
+          : t('Added “{title}” to the queue', { title })
+        : next
+          ? t('{count} songs play next', { count: added })
+          : t('Added {count} songs to the queue', { count: added })
+    toast(text, 'success', 2500)
   }
   return added
 }
@@ -127,6 +137,7 @@ export interface OpenCollection {
   artwork: string | null
   loading: boolean
   data: MusicCollectionTracks | null
+  /** In English (a message key or main's text): shown with tKnown(). */
   error: string | null
 }
 
@@ -138,6 +149,7 @@ interface MusicPanelState {
   /** Results of `query` (null before the first search / while it's empty). */
   results: MusicSearchResults | null
   searching: boolean
+  /** In English (a message key or main's text): shown with tKnown(). */
   searchError: string | null
   /** A link was pasted: its tracks (shown instead of search results). */
   collection: OpenCollection | null
@@ -194,12 +206,12 @@ export async function runSearch(query: string): Promise<void> {
     return
   }
   if (!engine) {
-    useMusicPanel.setState({ searching: false, searchError: "This version of Nexo can't search YouTube Music." })
+    useMusicPanel.setState({ searching: false, searchError: msg("This version of Nexo can't search YouTube Music.") })
     return
   }
   if (isMusicLink(q)) {
     useMusicPanel.setState({ searching: false, searchError: null, results: null })
-    await openCollection({ key: q, title: 'Link', artwork: null })
+    await openCollection({ key: q, title: t('Link'), artwork: null })
     return
   }
   useMusicPanel.setState({ searching: true, searchError: null, collection: null })
@@ -223,7 +235,7 @@ export async function openCollection(c: Pick<MusicCollection, 'title' | 'artwork
   let error: string | null = null
   try {
     data = await engine.resolve(c.key)
-    if (!data || data.tracks.length === 0) error = isMusicLink(c.key) ? 'Nothing playable at that link.' : 'Nothing playable in there.'
+    if (!data || data.tracks.length === 0) error = isMusicLink(c.key) ? msg('Nothing playable at that link.') : msg('Nothing playable in there.')
   } catch (err) {
     error = musicErrorMessage(err)
   }

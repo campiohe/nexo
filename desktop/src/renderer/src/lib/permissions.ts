@@ -1,6 +1,7 @@
 // Who may do what (docs/SPEC-ACCOUNTS.md §2). The server enforces every rule; these only gate the UI.
 // A missing `role` means the server predates roles and checks no permissions, so it counts as 'admin'.
 import type { AccessRequest, Message, Role, User } from '@shared/protocol'
+import { msg } from '../i18n/core'
 
 type WithRole = Pick<User, 'role'> | null | undefined
 type Me = Pick<User, 'id' | 'role'> | null | undefined
@@ -19,7 +20,8 @@ export function isStaff(u: WithRole): boolean {
   return roleOf(u) !== 'member'
 }
 
-export const ROLE_LABEL: Record<Role, string> = { owner: 'Owner', admin: 'Admin', member: 'Member' }
+/** Message keys (msg): show them with t(ROLE_LABEL[role]). */
+export const ROLE_LABEL: Record<Role, string> = { owner: msg('Owner'), admin: msg('Admin'), member: msg('Member') }
 
 /** Create, rename and delete channels. */
 export function canManageChannels(me: Me): boolean {

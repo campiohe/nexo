@@ -17,6 +17,7 @@ import {
 } from '../net/accounts'
 import { connect, disconnect } from '../net/socket'
 import { toast } from '../lib/toast'
+import { msg, t } from '../i18n'
 import { useApp } from './app'
 import { resetChatPanels } from './chatPanels'
 import { resetSounds } from './sounds'
@@ -25,13 +26,16 @@ import { resetMusic } from './music'
 import { resetEmulator } from './emulator'
 import { knownServerId, readLogin, rememberServerId, saveLogin, type LoginRead } from './logins'
 
-export const NOTICE_UNREADABLE =
-  "Nexo couldn't read the login saved on this device for this server. If you already have an account there, " +
-  "don't create a new one: pick it below, or enter your name and choose “This is my account”."
-export const NOTICE_NOT_RECOGNIZED =
-  "This device isn't linked to that account anymore. Enter your name and choose “This is my account” to ask an admin to let you in."
-const NOTICE_DENIED = 'Your sign-in request was denied.'
-const NOTICE_EXPIRED = 'Your sign-in request expired or was cancelled. You can send a new one.'
+// Onboarding notices (useApp's onboardingNotice) are kept in English, message keys or the server's text, and
+// translated where shown with tKnown().
+export const NOTICE_UNREADABLE = msg(
+  "Nexo couldn't read the login saved on this device for this server. If you already have an account there, don't create a new one: pick it below, or enter your name and choose “This is my account”.",
+)
+export const NOTICE_NOT_RECOGNIZED = msg(
+  "This device isn't linked to that account anymore. Enter your name and choose “This is my account” to ask an admin to let you in.",
+)
+const NOTICE_DENIED = msg('Your sign-in request was denied.')
+const NOTICE_EXPIRED = msg('Your sign-in request expired or was cancelled. You can send a new one.')
 
 export interface PendingAccessRequest extends CreatedAccessRequest {
   serverUrl: string
@@ -129,8 +133,9 @@ export async function saveNewLogin(serverUrl: string, serverId: string | undefin
   } catch (err) {
     console.error('[nexo] the new login could not be saved on this device', err)
     toast(
-      "Nexo couldn't save your login on this device. You're signed in for now; if Nexo doesn't remember you " +
-        'next time, use “This is my account” instead of making a new account.',
+      t(
+        "Nexo couldn't save your login on this device. You're signed in for now; if Nexo doesn't remember you next time, use “This is my account” instead of making a new account.",
+      ),
       'error',
       30_000,
     )

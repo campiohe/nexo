@@ -3,26 +3,30 @@
 import type { ReactNode } from 'react'
 import { useInCall, useUpdates } from '../lib/updates'
 import { CloseIcon } from './icons'
+import { useT } from '../i18n'
 
 export function UpdateBanner() {
   const state = useUpdates((s) => s.state)
   const dismissed = useUpdates((s) => s.bannerDismissed)
   const inCall = useInCall()
+  const t = useT()
   if (!state || dismissed) return null
 
-  const version = state.version ? `Nexo ${state.version}` : 'A new version of Nexo'
+  const version = state.version
   let body: ReactNode
 
   if (state.status === 'ready' && state.canAutoInstall) {
     body = (
       <>
-        <span className="update-banner-text">{version} is ready</span>
+        <span className="update-banner-text">
+          {version ? t('Nexo {version} is ready', { version }) : t('A new version of Nexo is ready')}
+        </span>
         <button
           className="btn btn-primary btn-xs"
           onClick={() => useUpdates.getState().install()}
-          title={inCall ? 'Nexo restarts to install the update, which leaves the voice call' : undefined}
+          title={inCall ? t('Nexo restarts to install the update, which leaves the voice call') : undefined}
         >
-          {inCall ? 'Restart (leaves the call)' : 'Restart to update'}
+          {inCall ? t('Restart (leaves the call)') : t('Restart to update')}
         </button>
       </>
     )
@@ -30,9 +34,11 @@ export function UpdateBanner() {
     const url = state.downloadUrl
     body = (
       <>
-        <span className="update-banner-text">{version} is available</span>
+        <span className="update-banner-text">
+          {version ? t('Nexo {version} is available', { version }) : t('A new version of Nexo is available')}
+        </span>
         <button className="btn btn-primary btn-xs" onClick={() => window.nexo.openExternal(url)}>
-          Download
+          {t('Download')}
         </button>
       </>
     )
@@ -41,12 +47,14 @@ export function UpdateBanner() {
     body = (
       <>
         <span className="update-banner-text muted">
-          Downloading {version}… {percent}%
+          {version
+            ? t('Downloading Nexo {version}… {percent}%', { version, percent })
+            : t('Downloading a new version of Nexo… {percent}%', { percent })}
         </span>
         <span
           className="update-progress"
           role="progressbar"
-          aria-label="Update download"
+          aria-label={t('Update download')}
           aria-valuemin={0}
           aria-valuemax={100}
           aria-valuenow={percent}
@@ -65,8 +73,8 @@ export function UpdateBanner() {
       <button
         className="icon-btn update-banner-close"
         onClick={() => useUpdates.getState().dismissBanner()}
-        aria-label="Dismiss"
-        title={state.status === 'ready' ? 'Dismiss (the update still installs when you quit Nexo)' : 'Dismiss'}
+        aria-label={t('Dismiss')}
+        title={state.status === 'ready' ? t('Dismiss (the update still installs when you quit Nexo)') : t('Dismiss')}
       >
         <CloseIcon size={14} />
       </button>

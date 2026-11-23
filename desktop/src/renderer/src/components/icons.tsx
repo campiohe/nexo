@@ -172,6 +172,59 @@ export const ReplyIcon = (p: IconProps) => (
   </Svg>
 )
 
+// ---- Settings nav (SettingsModal.tsx) ----
+
+/** Profile: head and shoulders. */
+export const UserIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="12" cy="8" r="4" />
+    <path d="M4 21a8 8 0 0 1 16 0" />
+  </Svg>
+)
+
+/** Appearance: a painter's palette. */
+export const PaletteIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M12 3a9 9 0 0 0 0 18c1 0 1.6-.8 1.6-1.6 0-.5-.2-.8-.4-1.1-.3-.3-.4-.6-.4-1.1 0-.9.7-1.6 1.6-1.6H16a5 5 0 0 0 5-5c0-4.2-4-7.6-9-7.6Z" />
+    <path d="M7.5 12h.01M9.5 7.5h.01M14.5 7.5h.01M17.5 10.5h.01" />
+  </Svg>
+)
+
+/** Language & time: a globe. */
+export const GlobeIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18" />
+  </Svg>
+)
+
+/** Keybinds. */
+export const KeyboardIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="2" y="5" width="20" height="14" rx="2" />
+    <path d="M6 9h.01M10 9h.01M14 9h.01M18 9h.01M8 12.5h.01M12 12.5h.01M16 12.5h.01M8 15.5h8" />
+  </Svg>
+)
+
+/** Plugins: tiles with one being added. */
+export const PluginIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="3" y="3" width="7" height="7" rx="1.5" />
+    <rect x="3" y="14" width="7" height="7" rx="1.5" />
+    <rect x="14" y="14" width="7" height="7" rx="1.5" />
+    <path d="M17.5 3v7M14 6.5h7" />
+  </Svg>
+)
+
+/** Server: two rack units. */
+export const ServerIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="3" y="3" width="18" height="8" rx="2" />
+    <rect x="3" y="13" width="18" height="8" rx="2" />
+    <path d="M7 7h.01M7 17h.01" />
+  </Svg>
+)
+
 /**
  * Nexo mark, the app icon's drawing (resources/icon.svg): a ring with a dot breaking out of it. `tile` draws it
  * on the icon's rounded square, like the taskbar icon; without it, just the glyph in the accent color.

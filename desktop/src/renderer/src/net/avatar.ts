@@ -4,25 +4,35 @@ import type { User } from '@shared/protocol'
 import { AVATAR_ANIMATED_MAX_BYTES, AVATAR_MAX_BYTES } from '@shared/protocol'
 import { useApp } from '../store/app'
 import { settings } from '../store/settings'
+import { msg, t } from '../i18n'
 
 const UPLOAD_TIMEOUT_MS = 30_000
 
 /** Apply a user returned by the server (the `user:upsert` broadcast normally arrives too; this is idempotent). */
-function applyUser(user: User) {
+export function applyUser(user: User) {
   useApp.setState((st) => ({ users: { ...st.users, [user.id]: user }, me: st.me?.id === user.id ? user : st.me }))
 }
 
-async function authed(method: 'PUT' | 'DELETE', body?: Blob): Promise<User> {
+/**
+ * PUT (upload `body`) or DELETE an image of the signed-in user at `path` (/api/avatar, /api/banner) and apply
+ * the user the server returns. `unsupported` is the error shown when an older server answers 404 (a message key).
+ */
+export async function authedImageRequest(
+  path: string,
+  method: 'PUT' | 'DELETE',
+  unsupported: string,
+  body?: Blob,
+): Promise<User> {
   const serverUrl = useApp.getState().serverUrl
-  if (!serverUrl) throw new Error('Not connected to a server')
+  if (!serverUrl) throw new Error(t('Not connected to a server'))
   const token = await settings.getToken(serverUrl)
-  if (!token) throw new Error("This device isn't signed in to the server")
+  if (!token) throw new Error(t("This device isn't signed in to the server"))
 
   const headers: Record<string, string> = { Authorization: `Bearer ${token}` }
   if (body) headers['Content-Type'] = body.type
   let res: Response
   try {
-    res = await fetch(`${serverUrl}/api/avatar`, {
+    res = await fetch(`${serverUrl}${path}`, {
       method,
       headers,
       body,
@@ -30,24 +40,24 @@ async function authed(method: 'PUT' | 'DELETE', body?: Blob): Promise<User> {
       signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
     })
   } catch (err) {
-    if (err instanceof DOMException && err.name === 'TimeoutError') throw new Error('The server took too long to respond')
-    throw new Error(`Can't reach the server at ${serverUrl}`)
+    if (err instanceof DOMException && err.name === 'TimeoutError') throw new Error(t('The server took too long to respond'))
+    throw new Error(t("Can't reach the server at {url}", { url: serverUrl }))
   }
 
   let data: unknown = null
   try {
     data = await res.json()
   } catch {
-    /* not JSON (e.g. an older server without avatar support answers 404 with no body) */
+    /* not JSON (e.g. an older server without avatar / banner support answers 404 with no body) */
   }
   if (!res.ok) {
     const error = data && typeof data === 'object' && 'error' in data && typeof data.error === 'string' ? data.error : null
     if (error) throw new Error(error)
-    if (res.status === 404) throw new Error("This server doesn't support profile pictures yet (update the Nexo server)")
-    throw new Error(`The server rejected the request (HTTP ${res.status})`)
+    if (res.status === 404) throw new Error(t(unsupported))
+    throw new Error(t('The server rejected the request (HTTP {status})', { status: res.status }))
   }
   const user = data && typeof data === 'object' && 'user' in data ? (data.user as User) : null
-  if (!user || typeof user.id !== 'string') throw new Error('Invalid response from the server')
+  if (!user || typeof user.id !== 'string') throw new Error(t('Invalid response from the server'))
   applyUser(user)
   return user
 }
@@ -60,15 +70,20 @@ export function uploadAvatar(image: Blob): Promise<User> {
   if (image.type === 'image/gif') {
     if (image.size > AVATAR_ANIMATED_MAX_BYTES) {
       return Promise.reject(
-        new Error(`Animated profile pictures are limited to ${Math.round(AVATAR_ANIMATED_MAX_BYTES / (1024 * 1024))} MB`),
+        new Error(
+          t('Animated profile pictures are limited to {size} MB', { size: Math.round(AVATAR_ANIMATED_MAX_BYTES / (1024 * 1024)) }),
+        ),
       )
     }
   } else if (image.size > AVATAR_MAX_BYTES) {
-    return Promise.reject(new Error(`Profile pictures are limited to ${Math.round(AVATAR_MAX_BYTES / 1024)} KB`))
+    return Promise.reject(new Error(t('Profile pictures are limited to {size} KB', { size: Math.round(AVATAR_MAX_BYTES / 1024) })))
   }
-  return authed('PUT', image)
+  return authedImageRequest('/api/avatar', 'PUT', NO_AVATARS, image)
 }
 
 export function removeAvatar(): Promise<User> {
-  return authed('DELETE')
+  return authedImageRequest('/api/avatar', 'DELETE', NO_AVATARS)
 }
+
+const NO_AVATARS = msg("This server doesn't support profile pictures yet (update the Nexo server)")
+

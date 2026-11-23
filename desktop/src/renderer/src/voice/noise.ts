@@ -18,17 +18,27 @@ import { RnnoiseWorkletNode } from '@sapphi-red/web-noise-suppressor'
 import rnnoiseWorkletUrl from '@sapphi-red/web-noise-suppressor/rnnoiseWorklet.js?url'
 import type { AudioProcessorOptions, Track, TrackProcessor } from 'livekit-client'
 import { toast } from '@renderer/lib/toast'
+import { msg, t } from '@renderer/i18n'
 import type { NoiseMode } from './devices'
 
 export type { NoiseMode } from './devices'
 
+/** Labels and hints are message keys (msg): show them with t(). */
 export const NOISE_MODES: readonly { id: NoiseMode; label: string; hint: string }[] = [
-  { id: 'off', label: 'Off', hint: 'No noise suppression. Your mic is sent as it is (echo cancellation stays on).' },
-  { id: 'standard', label: 'Standard', hint: 'The browser’s built-in suppressor. Light on CPU, handles steady background hum.' },
+  {
+    id: 'off',
+    label: msg('Off // noise suppression'),
+    hint: msg('No noise suppression. Your mic is sent as it is (echo cancellation stays on).'),
+  },
+  {
+    id: 'standard',
+    label: msg('Standard // noise suppression'),
+    hint: msg('The browser’s built-in suppressor. Light on CPU, handles steady background hum.'),
+  },
   {
     id: 'enhanced',
-    label: 'Enhanced',
-    hint: 'RNNoise, a small neural network running on your PC. Removes keyboard clicks, fans and other noise.',
+    label: msg('Enhanced // noise suppression'),
+    hint: msg('RNNoise, a small neural network running on your PC. Removes keyboard clicks, fans and other noise.'),
   },
 ]
 
@@ -54,7 +64,7 @@ export function reportEnhancedFailure(e: unknown): void {
   if (useNoiseStatus.getState().enhanced !== 'failed') useNoiseStatus.setState({ enhanced: 'failed' })
   if (!failureToasted) {
     failureToasted = true
-    toast('Enhanced noise suppression couldn’t start, so Standard is used instead.', 'error')
+    toast(t('Enhanced noise suppression couldn’t start, so Standard is used instead.'), 'error')
   }
 }
 
@@ -146,7 +156,7 @@ export class RnnoiseGraph {
    * before rethrowing. `onError` fires if the worklet crashes later.
    */
   static async create(onError?: (e: unknown) => void): Promise<RnnoiseGraph> {
-    if (useNoiseStatus.getState().enhanced === 'failed') throw new Error('RNNoise is unavailable')
+    if (useNoiseStatus.getState().enhanced === 'failed') throw new Error('RNNoise is unavailable') // i18n-ignore: internal, never shown
     let ctx: AudioContext | null = null
     try {
       const wasmBinary = await loadRnnoiseWasm()

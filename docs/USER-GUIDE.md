@@ -5,7 +5,7 @@ How to install Nexo, join a server, and use its features. Hosting a server is co
 
 - [Install](#install)
 - [Join a server](#join-a-server)
-- [Profile pictures](#profile-pictures)
+- [Profile pictures and banners](#profile-pictures-and-banners)
 - [Images in chat](#images-in-chat)
 - [Messages](#messages)
 - [Notifications](#notifications)
@@ -21,6 +21,7 @@ How to install Nexo, join a server, and use its features. Hosting a server is co
 - [Music (listen together)](#music-listen-together)
 - [Emulator](#emulator)
 - [Appearance](#appearance)
+- [Language and time](#language-and-time)
 - [App settings](#app-settings)
 - [Updates](#updates)
 - [Test builds](#test-builds)
@@ -65,7 +66,7 @@ No accounts, no email: the app remembers you on this device. To check that you c
 
 ---
 
-## Profile pictures
+## Profile pictures and banners
 
 In **Settings → Profile**, choose **Upload picture** (PNG, JPEG, WebP or GIF), then drag and zoom the
 square crop. The app resizes the picture to 256×256 and uploads it as WebP (≤ 512 KB). **Remove** goes
@@ -75,6 +76,11 @@ back to the colored initials. Everyone sees the change right away.
 160×160 and saves it as a GIF of at most 2 MB, simplifying it (fewer frames or colors, at most 10 seconds)
 when needed and telling you if it did. To save CPU while you play, animated pictures show their first
 frame and only move when you hover over them, on profile cards, and while that person is talking.
+
+**Banner:** the strip at the top of your profile card. In **Settings → Profile → Banner**, pick a style
+(Solid, Flow, Aurora, Waves, Dots or Swirl; the animated ones use your color) or choose **Upload banner**
+(PNG, JPEG, WebP or GIF) and crop it to the card's wide shape. An uploaded banner replaces the style until
+you **Remove** it; animated GIFs stay animated. Banners need a server on v1.3 or later.
 
 ## Images in chat
 
@@ -346,6 +352,15 @@ others), nor a BIOS, and never provides, downloads or links to games or BIOS fil
 
 On Windows, Nexo draws its own title bar in the theme's colors. The minimize, maximize and close buttons
 are the regular Windows ones (Snap Layouts included), and you move the window by dragging the bar.
+
+## Language and time
+
+**Settings → Language & time:**
+
+- **Language:** **System** (your computer's language), **English** or **Português (Brasil)**. It changes
+  right away, without restarting or leaving voice. The tray menu follows it too.
+- **Clock:** **Automatic** (your computer's regional format), **12-hour** or **24-hour**, for every time
+  Nexo shows.
 
 ## App settings
 

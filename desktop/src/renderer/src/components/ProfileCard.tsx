@@ -1,7 +1,7 @@
 // Profile card: clicking someone's name or avatar (message authors, member list, sidebar voice members)
-// opens it next to what was clicked. Banner in their color, avatar with status, name and role, custom
-// status, what they're playing, the voice channel they're in (Join / Go to channel), and actions:
-// Mention and Wake up for others; Edit profile and your status for yourself.
+// opens it next to what was clicked. Their banner (upload or preset, see ProfileBanner), avatar with status,
+// name and role, custom status, what they're playing, the voice channel they're in (Join / Go to channel),
+// and actions: Mention and Wake up for others; Edit profile and your status for yourself.
 // State: store/ui.ts `profileCard`; rendered once by App.tsx (ProfileCardLayer).
 import { useEffect, useState } from 'react'
 import { useApp } from '../store/app'
@@ -14,10 +14,12 @@ import { formatElapsed, useNow } from '../lib/activity'
 import { toast } from '../lib/toast'
 import { Avatar } from './Avatar'
 import { Floating } from './Floating'
+import { ProfileBanner } from './ProfileBanner'
 import { RoleBadge } from './MembersSection'
 import { CustomStatusEditor, StatusOptions } from './StatusMenu'
 import { BellIcon, ChevronIcon, HeadphonesOffIcon, MicOffIcon, PencilIcon, SpeakerIcon } from './icons'
 import { AtIcon, GamepadIcon, StatusDot } from './peopleIcons'
+import { useT } from '../i18n'
 import '../styles/people.css'
 
 export function ProfileCardLayer() {
@@ -47,6 +49,7 @@ function mentionInComposer(name: string): boolean {
 }
 
 function ProfileCard({ userId, anchor, side }: { userId: string; anchor: { left: number; top: number; right: number; bottom: number }; side: 'left' | 'right' | 'top' }) {
+  const t = useT()
   const close = () => useUi.getState().closeProfileCard()
   const user = useApp((s) => s.users[userId])
   const isMe = useApp((s) => s.me?.id === userId)
@@ -87,7 +90,7 @@ function ProfileCard({ userId, anchor, side }: { userId: string; anchor: { left:
 
   function mention() {
     close()
-    if (!mentionInComposer(user.name)) toast('Open a text channel to mention someone', 'info')
+    if (!mentionInComposer(user.name)) toast(t('Open a text channel to mention someone'), 'info')
   }
 
   async function wakeUp() {
@@ -98,8 +101,8 @@ function ProfileCard({ userId, anchor, side }: { userId: string; anchor: { left:
   }
 
   return (
-    <Floating anchor={anchor} side={side} onClose={close} className="pc" label={`Profile of ${user.name}`}>
-      <div className="pc-banner" style={{ background: user.color }} />
+    <Floating anchor={anchor} side={side} onClose={close} className="pc" label={t('Profile of {name}', { name: user.name })}>
+      <ProfileBanner user={user} className="pc-banner" />
       <div className="pc-avatar">
         <Avatar user={user} size={80} online={!!presence} status={presence?.status} animate />
       </div>
@@ -112,20 +115,20 @@ function ProfileCard({ userId, anchor, side }: { userId: string; anchor: { left:
         </div>
         <div className="pc-presence">
           <StatusDot status={presence?.status ?? 'offline'} size={8} />
-          {presence ? STATUS_LABEL[presence.status] : 'Offline'}
+          {presence ? t(STATUS_LABEL[presence.status]) : t('Offline')}
         </div>
         {statusText && <p className="pc-status-text">{statusText}</p>}
 
         {activity && (
           <section className="pc-section">
-            <h4 className="pc-label">Playing</h4>
+            <h4 className="pc-label">{t('Playing')}</h4>
             <div className="pc-row">
               <span className="pc-row-icon">
                 <GamepadIcon size={18} />
               </span>
               <span className="pc-row-text">
                 <strong title={activity.name}>{activity.name}</strong>
-                <span className="pc-row-sub">{formatElapsed(activity.startedAt, now)}</span>
+                <span className="pc-row-sub">{formatElapsed(activity.startedAt, now, t)}</span>
               </span>
             </div>
           </section>
@@ -133,7 +136,7 @@ function ProfileCard({ userId, anchor, side }: { userId: string; anchor: { left:
 
         {voiceState && voiceChannel && (
           <section className="pc-section">
-            <h4 className="pc-label">In voice</h4>
+            <h4 className="pc-label">{t('In voice')}</h4>
             <div className="pc-row">
               <span className="pc-row-icon">
                 <SpeakerIcon size={18} />
@@ -142,14 +145,14 @@ function ProfileCard({ userId, anchor, side }: { userId: string; anchor: { left:
                 <strong title={voiceChannel.name}>{voiceChannel.name}</strong>
                 {(voiceState.deafened || voiceState.muted || voiceState.streaming) && (
                   <span className="pc-row-sub pc-voice-flags">
-                    {voiceState.streaming && <span className="live-pill">LIVE</span>}
+                    {voiceState.streaming && <span className="live-pill">{t('LIVE')}</span>}
                     {voiceState.deafened ? (
                       <>
-                        <HeadphonesOffIcon size={12} /> Deafened
+                        <HeadphonesOffIcon size={12} /> {t('Deafened')}
                       </>
                     ) : voiceState.muted ? (
                       <>
-                        <MicOffIcon size={12} /> Muted
+                        <MicOffIcon size={12} /> {t('Muted')}
                       </>
                     ) : null}
                   </span>
@@ -157,7 +160,7 @@ function ProfileCard({ userId, anchor, side }: { userId: string; anchor: { left:
               </span>
               {(hereInVoice || !isMe) && (
                 <button className={`btn btn-xs ${hereInVoice ? 'btn-ghost' : 'btn-primary'}`} onClick={goToVoice}>
-                  {hereInVoice ? 'Go to channel' : 'Join'}
+                  {hereInVoice ? t('Go to channel') : t('Join')}
                 </button>
               )}
             </div>
@@ -173,7 +176,7 @@ function ProfileCard({ userId, anchor, side }: { userId: string; anchor: { left:
               onClick={() => setStatusOpen((v) => !v)}
             >
               <StatusDot status={presence?.status ?? 'online'} />
-              <span>{presence ? STATUS_LABEL[presence.status] : 'Set status'}</span>
+              <span>{presence ? t(STATUS_LABEL[presence.status]) : t('Set status')}</span>
               <ChevronIcon size={14} className={`pc-chevron ${statusOpen ? 'is-open' : ''}`} />
             </button>
             {statusOpen && (
@@ -190,7 +193,7 @@ function ProfileCard({ userId, anchor, side }: { userId: string; anchor: { left:
                   useUi.getState().openSettings(true, 'profile')
                 }}
               >
-                <PencilIcon size={14} /> Edit profile
+                <PencilIcon size={14} /> {t('Edit profile')}
               </button>
             </div>
           </div>
@@ -198,13 +201,13 @@ function ProfileCard({ userId, anchor, side }: { userId: string; anchor: { left:
           (textChannelOnScreen || canNudge) && (
             <div className="pc-actions">
               {textChannelOnScreen && (
-                <button className="btn btn-ghost btn-sm" onClick={mention} title={`Mention ${user.name} in this channel`}>
-                  <AtIcon size={14} /> Mention
+                <button className="btn btn-ghost btn-sm" onClick={mention} title={t('Mention {name} in this channel', { name: user.name })}>
+                  <AtIcon size={14} /> {t('Mention')}
                 </button>
               )}
               {canNudge && (
-                <button className="btn btn-ghost btn-sm" onClick={() => void wakeUp()} disabled={nudging} title="Get their attention">
-                  <BellIcon size={14} /> {nudging ? 'Waking up…' : 'Wake up'}
+                <button className="btn btn-ghost btn-sm" onClick={() => void wakeUp()} disabled={nudging} title={t('Get their attention')}>
+                  <BellIcon size={14} /> {nudging ? t('Waking up…') : t('Wake up')}
                 </button>
               )}
             </div>

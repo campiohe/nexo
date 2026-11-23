@@ -19,6 +19,7 @@ import {
   type Emoji,
 } from '../lib/emoji'
 import { SearchIcon } from './icons'
+import { msg, useT } from '../i18n'
 
 export interface EmojiPickerProps {
   /** The element it opens next to (e.g. the button that opened it). Clicks on it don't count as "outside". */
@@ -35,12 +36,14 @@ const GAP = 4
 
 interface Section {
   id: string
+  /** A message key (translated where shown). */
   label: string
   /** Emoji to show, already toned. */
   items: { char: string; name: string }[]
 }
 
-export function EmojiPicker({ anchor, onPick, onClose, label = 'Choose an emoji' }: EmojiPickerProps) {
+export function EmojiPicker({ anchor, onPick, onClose, label }: EmojiPickerProps) {
+  const t = useT()
   const ref = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const searchRef = useRef<HTMLInputElement>(null)
@@ -56,12 +59,12 @@ export function EmojiPicker({ anchor, onPick, onClose, label = 'Choose an emoji'
 
   const sections = useMemo<Section[]>(() => {
     const toned = (e: Emoji) => ({ char: withTone(e, tone), name: e.name })
-    if (query.trim()) return [{ id: 'search', label: 'Search results', items: searchEmoji(query).map(toned) }]
+    if (query.trim()) return [{ id: 'search', label: msg('Search results'), items: searchEmoji(query).map(toned) }]
     const out: Section[] = []
     if (recent.length)
       out.push({
         id: 'recent',
-        label: 'Recent',
+        label: msg('Recent'),
         items: recent.map((char) => ({ char, name: findEmoji(char)?.name ?? char })),
       })
     for (const c of emojiCategories()) out.push({ id: c.id, label: c.label, items: c.emojis.map(toned) })
@@ -86,8 +89,8 @@ export function EmojiPicker({ anchor, onPick, onClose, label = 'Choose an emoji'
 
   useEffect(() => {
     const onPointer = (e: PointerEvent) => {
-      const t = e.target
-      if (t instanceof Node && (ref.current?.contains(t) || anchor.contains(t))) return
+      const target = e.target
+      if (target instanceof Node && (ref.current?.contains(target) || anchor.contains(target))) return
       closeRef.current()
     }
     const onKey = (e: globalThis.KeyboardEvent) => {
@@ -216,7 +219,7 @@ export function EmojiPicker({ anchor, onPick, onClose, label = 'Choose an emoji'
   const tabs = query.trim()
     ? []
     : [
-        ...(recent.length ? [{ id: 'recent', label: 'Recent', icon: '🕘' }] : []),
+        ...(recent.length ? [{ id: 'recent', label: msg('Recent'), icon: '🕘' }] : []),
         ...emojiCategories().map((c) => ({ id: c.id, label: c.label, icon: c.icon })),
       ]
   const activeTab = active || tabs[0]?.id
@@ -227,7 +230,7 @@ export function EmojiPicker({ anchor, onPick, onClose, label = 'Choose an emoji'
       ref={ref}
       className="emoji-picker"
       role="dialog"
-      aria-label={label}
+      aria-label={label ?? t('Choose an emoji')}
       style={pos ? { left: pos.left, top: pos.top } : { left: 0, top: 0, visibility: 'hidden' }}
       onContextMenu={(e) => e.preventDefault()}
     >
@@ -242,8 +245,8 @@ export function EmojiPicker({ anchor, onPick, onClose, label = 'Choose an emoji'
               scrollRef.current?.scrollTo({ top: 0 })
             }}
             onKeyDown={onSearchKey}
-            placeholder="Search emoji"
-            aria-label="Search emoji"
+            placeholder={t('Search emoji')}
+            aria-label={t('Search emoji')}
             spellCheck={false}
           />
         </label>
@@ -251,29 +254,29 @@ export function EmojiPicker({ anchor, onPick, onClose, label = 'Choose an emoji'
           <button
             className="ep-tone-btn"
             onClick={() => setToneOpen((o) => !o)}
-            title={`Skin tone: ${SKIN_TONE_LABELS[tone]}`}
-            aria-label={`Skin tone: ${SKIN_TONE_LABELS[tone]}`}
+            title={t('Skin tone: {tone}', { tone: t(SKIN_TONE_LABELS[tone]!) })}
+            aria-label={t('Skin tone: {tone}', { tone: t(SKIN_TONE_LABELS[tone]!) })}
             aria-expanded={toneOpen}
           >
             {toneSample}
           </button>
           {toneOpen && (
-            <div className="ep-tone-menu" role="listbox" aria-label="Skin tone">
-              {SKIN_TONES.map((_, t) => (
+            <div className="ep-tone-menu" role="listbox" aria-label={t('Skin tone')}>
+              {SKIN_TONES.map((_, i) => (
                 <button
-                  key={t}
+                  key={i}
                   role="option"
-                  aria-selected={t === tone}
-                  className={`ep-tone-opt ${t === tone ? 'is-active' : ''}`}
-                  title={SKIN_TONE_LABELS[t]}
-                  aria-label={SKIN_TONE_LABELS[t]}
+                  aria-selected={i === tone}
+                  className={`ep-tone-opt ${i === tone ? 'is-active' : ''}`}
+                  title={t(SKIN_TONE_LABELS[i]!)}
+                  aria-label={t(SKIN_TONE_LABELS[i]!)}
                   onClick={() => {
-                    setTone(t)
-                    setSkinTone(t)
+                    setTone(i)
+                    setSkinTone(i)
                     setToneOpen(false)
                   }}
                 >
-                  {withTone({ char: '✋', name: '', search: '', tone: true }, t)}
+                  {withTone({ char: '✋', name: '', search: '', tone: true }, i)}
                 </button>
               ))}
             </div>
@@ -281,16 +284,16 @@ export function EmojiPicker({ anchor, onPick, onClose, label = 'Choose an emoji'
         </div>
       </div>
       {tabs.length > 0 && (
-        <nav className="ep-tabs" aria-label="Emoji categories">
-          {tabs.map((t) => (
+        <nav className="ep-tabs" aria-label={t('Emoji categories')}>
+          {tabs.map((tab) => (
             <button
-              key={t.id}
-              className={`ep-tab ${t.id === activeTab ? 'is-active' : ''}`}
-              title={t.label}
-              aria-label={t.label}
-              onClick={() => jumpTo(t.id)}
+              key={tab.id}
+              className={`ep-tab ${tab.id === activeTab ? 'is-active' : ''}`}
+              title={t(tab.label)}
+              aria-label={t(tab.label)}
+              onClick={() => jumpTo(tab.id)}
             >
-              {t.icon}
+              {tab.icon}
             </button>
           ))}
         </nav>
@@ -322,7 +325,7 @@ export function EmojiPicker({ anchor, onPick, onClose, label = 'Choose an emoji'
             <span className="ep-foot-name">{preview.name}</span>
           </>
         ) : (
-          <span className="ep-foot-hint">Shift+click to pick several</span>
+          <span className="ep-foot-hint">{t('Shift+click to pick several')}</span>
         )}
       </div>
     </div>,
@@ -332,13 +335,14 @@ export function EmojiPicker({ anchor, onPick, onClose, label = 'Choose an emoji'
 
 /** The grid, memoized so hover previews and tab highlighting don't re-render ~1000 buttons. */
 const EmojiSections = memo(function EmojiSections({ sections }: { sections: Section[] }) {
+  const t = useT()
   if (sections.length === 1 && sections[0].id === 'search' && sections[0].items.length === 0)
-    return <div className="ep-empty">No emoji found</div>
+    return <div className="ep-empty">{t('No emoji found')}</div>
   return (
     <>
       {sections.map((s) => (
-        <section key={s.id} data-section={s.id} className="ep-section" aria-label={s.label}>
-          <h3 className="ep-section-title">{s.label}</h3>
+        <section key={s.id} data-section={s.id} className="ep-section" aria-label={t(s.label)}>
+          <h3 className="ep-section-title">{t(s.label)}</h3>
           <div className="ep-grid">
             {s.items.map((e) => (
               <button key={e.char} className="ep-emoji" data-e={e.char} data-name={e.name} title={e.name} aria-label={e.name}>

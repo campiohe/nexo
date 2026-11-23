@@ -42,3 +42,20 @@
   line-height: 1.35;
 }
 .crop-anim-note .avatar-gif-badge { flex: none; border-color: transparent; }
+
+/* Banner crop (BannerCropDialog): the viewport is the banner itself (no round mask); the preview below shows it
+ * at the profile card's size with the avatar overlapping it, like .pc-banner / .pc-avatar in people.css. */
+.crop-banner .crop { flex-direction: column; gap: 16px; }
+.crop-banner .crop-editor { width: 100%; }
+.crop-banner .crop-previews { align-items: flex-start; gap: 8px; }
+.crop-banner .crop-anim-note { max-width: none; }
+.crop-banner-frame { position: relative; padding-bottom: 48px; }
+.crop-banner-frame .crop-preview { display: block; border-radius: var(--radius) var(--radius) 0 0; }
+.crop-banner-avatar {
+  position: absolute;
+  left: 14px;
+  bottom: 0;
+  padding: 4px;
+  border-radius: 50%;
+  background: var(--bg-1);
+}

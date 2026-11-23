@@ -28,6 +28,7 @@ import {
   useEmuHost,
 } from './host'
 import { ConsoleIcon, dragHasFiles, GameFileInput, LoadProgress } from './EmulatorEntry'
+import { msg, useT } from '../../i18n'
 import '../../styles/emulator.css'
 
 /** One color per controller port (P1 red, P2 blue, P3 yellow, P4 green). */
@@ -44,12 +45,13 @@ export function EmulatorArea({ channelId }: { channelId: string }) {
   const fileInput = useRef<HTMLInputElement>(null)
   const [helpOpen, setHelpOpen] = useState(false)
   const [dropOver, setDropOver] = useState(false)
+  const t = useT()
 
   if (!session) return null
   const isHost = session.hostId === meId
   const canManage = isHost || staff
   const myPort = meId ? session.ports.indexOf(meId) : -1
-  const hostName = isHost ? 'you' : (hostUser?.name ?? 'someone')
+  const hostName = hostUser?.name
 
   const pickFile = () => fileInput.current?.click()
   const onDragOver = (e: DragEvent) => {
@@ -68,7 +70,7 @@ export function EmulatorArea({ channelId }: { channelId: string }) {
   const info = EMU_SYSTEM_INFO[session.system] as (typeof EMU_SYSTEM_INFO)[EmuSystem] | undefined
 
   return (
-    <section className="gm-area emu-area" aria-label="Emulator">
+    <section className="gm-area emu-area" aria-label={t('Emulator')}>
       <header className="gm-head">
         <span className="gm-head-icon">
           <ConsoleIcon size={16} />
@@ -79,25 +81,31 @@ export function EmulatorArea({ channelId }: { channelId: string }) {
         <span className="gm-chip emu-chip-system" title={info?.name}>
           {info?.short ?? String(session.system).toUpperCase()}
         </span>
-        {session.paused ? <span className="gm-chip gm-chip-finished">Paused</span> : <span className="gm-chip gm-chip-playing">Live</span>}
-        <span className="emu-head-host">hosted by {hostName}</span>
+        {session.paused ? (
+          <span className="gm-chip gm-chip-finished">{t('Paused // game')}</span>
+        ) : (
+          <span className="gm-chip gm-chip-playing">{t('Live')}</span>
+        )}
+        <span className="emu-head-host">
+          {isHost ? t('hosted by you') : t('hosted by {name}', { name: hostName ?? t('someone') })}
+        </span>
         <span className="gm-head-spacer" />
         {isHost && (
-          <button className="gm-btn gm-btn-ghost" onClick={pickFile} disabled={!!loading} title="Load another game (any console)">
-            {loading ? 'Loading…' : 'Load another game'}
+          <button className="gm-btn gm-btn-ghost" onClick={pickFile} disabled={!!loading} title={t('Load another game (any console)')}>
+            {loading ? t('Loading…') : t('Load another game')}
           </button>
         )}
         {canManage && (
           <button
             className="gm-btn gm-btn-ghost"
             onClick={() => (isHost ? stopHosting(true) : void stopEmu(channelId))}
-            title="End the game for everyone"
+            title={t('End the game for everyone')}
           >
-            Stop
+            {t('Stop')}
           </button>
         )}
-        <button className="gm-btn gm-btn-ghost" onClick={() => setEmulatorHidden(channelId, true)} title="Show people instead">
-          Hide
+        <button className="gm-btn gm-btn-ghost" onClick={() => setEmulatorHidden(channelId, true)} title={t('Show people instead')}>
+          {t('Hide')}
         </button>
         {isHost && <GameFileInput inputRef={fileInput} channelId={channelId} />}
       </header>
@@ -114,29 +122,29 @@ export function EmulatorArea({ channelId }: { channelId: string }) {
             ) : isHost ? (
               <div className="emu-placeholder">
                 <ConsoleIcon size={40} />
-                <p>Your game isn't running on this device. Load the game file again, or stop the session.</p>
+                <p>{t("Your game isn't running on this device. Load the game file again, or stop the session.")}</p>
                 <button className="gm-btn gm-btn-primary" onClick={pickFile} disabled={!!loading}>
-                  {loading ? 'Loading…' : 'Load a game file'}
+                  {loading ? t('Loading…') : t('Load a game file')}
                 </button>
               </div>
             ) : (
-              <HostStream hostId={session.hostId} hostName={hostUser?.name ?? 'The host'} />
+              <HostStream hostId={session.hostId} hostName={hostName} />
             )}
             {session.paused && (
               <div className="emu-paused" role="status">
                 {isHost ? (
                   <>
-                    <span>Paused</span>
+                    <span>{t('Paused // game')}</span>
                     <button className="gm-btn gm-btn-primary" onClick={togglePause}>
-                      Resume
+                      {t('Resume')}
                     </button>
                   </>
                 ) : (
-                  <span>Paused by the host</span>
+                  <span>{t('Paused by the host')}</span>
                 )}
               </div>
             )}
-            {dropOver && <div className="emu-drop">Drop to load this game</div>}
+            {dropOver && <div className="emu-drop">{t('Drop to load this game')}</div>}
             {isHost && loading && (
               <div className="emu-loading-over">
                 <LoadProgress loading={loading} />
@@ -146,26 +154,37 @@ export function EmulatorArea({ channelId }: { channelId: string }) {
           {isHost ? engine && <HostBar engine={engine} paused={session.paused} /> : <ViewerBar hostId={session.hostId} />}
         </div>
         <aside className="emu-side">
-          <h3 className="gm-side-title">Controllers</h3>
+          <h3 className="gm-side-title">{t('Controllers')}</h3>
           <Ports channelId={channelId} session={session} meId={meId} canManage={canManage} />
           {myPort >= 0 ? (
             <p className="emu-note">
-              You're <strong>player {myPort + 1}</strong>.{' '}
+              {t.rich("You're <b>player {number}</b>.", { number: myPort + 1, b: (c) => <strong>{c}</strong> })}{' '}
               {isHost
-                ? 'Your keys go straight to the game.'
-                : `Your keys go to ${hostUser?.name ?? 'the host'}'s game while this view is open.`}
+                ? t('Your keys go straight to the game.')
+                : hostName
+                  ? t("Your keys go to {name}'s game while this view is open.", { name: hostName })
+                  : t("Your keys go to the host's game while this view is open.")}
             </p>
           ) : (
-            <p className="emu-note">Take a free controller to play. Everyone else watches.</p>
+            <p className="emu-note">{t('Take a free controller to play. Everyone else watches.')}</p>
           )}
           <button className="emu-help-toggle" onClick={() => setHelpOpen((o) => !o)} aria-expanded={helpOpen}>
-            {helpOpen ? 'Hide controls' : 'Show controls'}
+            {helpOpen ? t('Hide controls') : t('Show controls')}
           </button>
           {helpOpen && <ControlsHelp system={session.system} />}
           <p className="emu-note emu-latency">
             {isHost
-              ? "You play without delay. Friends see your stream, so their presses reach the game after a short round trip (about 0.1–0.2 s on a good connection)."
-              : `You see ${hostUser?.name ?? 'the host'}'s stream, so a press takes a round trip to their computer and back: about 0.1–0.2 s on a good connection. Fine for most games, noticeable in fast action games.`}
+              ? t(
+                  'You play without delay. Friends see your stream, so their presses reach the game after a short round trip (about 0.1–0.2 s on a good connection).',
+                )
+              : hostName
+                ? t(
+                    "You see {name}'s stream, so a press takes a round trip to their computer and back: about 0.1–0.2 s on a good connection. Fine for most games, noticeable in fast action games.",
+                    { name: hostName },
+                  )
+                : t(
+                    "You see the host's stream, so a press takes a round trip to their computer and back: about 0.1–0.2 s on a good connection. Fine for most games, noticeable in fast action games.",
+                  )}
           </p>
         </aside>
       </div>
@@ -196,11 +215,12 @@ function HostScreen({ engine }: { engine: EmulatorEngine }) {
  * Everyone else: the host's stream, watched automatically while this view is shown (and no longer when it
  * goes away, unless you were already watching it before).
  */
-function HostStream({ hostId, hostName }: { hostId: string; hostName: string }) {
+function HostStream({ hostId, hostName }: { hostId: string; hostName: string | undefined }) {
   const view = useParticipants((s) => s.list.find((p) => p.identity === hostId))
   const streaming = !!view?.isStreaming
   const watching = useParticipants((s) => !!s.watching[hostId])
   const autoWatched = useRef<string | null>(null)
+  const t = useT()
 
   useEffect(() => {
     if (!streaming || useParticipants.getState().watching[hostId]) return
@@ -221,7 +241,15 @@ function HostStream({ hostId, hostName }: { hostId: string; hostName: string }) 
     return (
       <div className="emu-placeholder">
         <span className="vx-spinner" aria-hidden="true" />
-        <p>{streaming ? `Loading ${hostName}'s stream…` : `Waiting for ${hostName}'s stream…`}</p>
+        <p>
+          {streaming
+            ? hostName
+              ? t("Loading {name}'s stream…", { name: hostName })
+              : t("Loading the host's stream…")
+            : hostName
+              ? t("Waiting for {name}'s stream…", { name: hostName })
+              : t("Waiting for the host's stream…")}
+        </p>
       </div>
     )
   }
@@ -240,44 +268,45 @@ function HostBar({ engine, paused }: { engine: EmulatorEngine; paused: boolean }
   const streaming = useVoice((s) => s.sharing && s.shareEngine === 'emulator')
   const starting = useVoice((s) => s.shareStarting)
   const canSave = typeof engine.saveState === 'function' && typeof engine.loadState === 'function'
+  const t = useT()
   return (
     <footer className="emu-bar">
       <button className="gm-btn" onClick={togglePause}>
-        {paused ? 'Resume' : 'Pause'}
+        {paused ? t('Resume') : t('Pause')}
       </button>
-      <button className="gm-btn" onClick={resetGame} title="The console's reset button">
-        Reset
+      <button className="gm-btn" onClick={resetGame} title={t("The console's reset button")}>
+        {t('Reset // console button')}
       </button>
       {canSave && (
         <>
-          <button className="gm-btn" onClick={() => void quickSave()} title="Remember this moment (until you load another game)">
-            Quick save
+          <button className="gm-btn" onClick={() => void quickSave()} title={t('Remember this moment (until you load another game)')}>
+            {t('Quick save')}
           </button>
-          <button className="gm-btn" onClick={() => void quickLoad()} disabled={!hasSave} title="Go back to the quick save">
-            Quick load
+          <button className="gm-btn" onClick={() => void quickLoad()} disabled={!hasSave} title={t('Go back to the quick save')}>
+            {t('Quick load')}
           </button>
         </>
       )}
       <span className="gm-head-spacer" />
       {streaming ? (
-        <span className="emu-live" title="Your game is your stream in this call">
-          <span className="vx-live-badge is-small">LIVE</span> Streaming
+        <span className="emu-live" title={t('Your game is your stream in this call')}>
+          <span className="vx-live-badge is-small">{t('LIVE')}</span> {t('Streaming')}
         </span>
       ) : (
         <span className="emu-warn">
           {starting ? (
-            'Starting the stream…'
+            t('Starting the stream…')
           ) : (
             <>
-              Not streaming{' '}
+              {t('Not streaming')}{' '}
               <button className="gm-btn" onClick={() => void restreamGame()}>
-                Stream it
+                {t('Stream it')}
               </button>
             </>
           )}
         </span>
       )}
-      <Volume label="Game volume (only for you)" value={volume} onChange={setGameVolume} />
+      <Volume label={t('Game volume (only for you)')} value={volume} onChange={setGameVolume} />
     </footer>
   )
 }
@@ -285,20 +314,22 @@ function HostBar({ engine, paused }: { engine: EmulatorEngine; paused: boolean }
 function ViewerBar({ hostId }: { hostId: string }) {
   const volume = useParticipants((s) => s.streamVolumes[hostId] ?? 1)
   const deafened = useVoice((s) => s.deafened)
+  const t = useT()
   return (
     <footer className="emu-bar">
-      <span className="emu-note">{deafened ? "You're deafened: no game sound." : 'Game sound comes with the stream.'}</span>
+      <span className="emu-note">{deafened ? t("You're deafened: no game sound.") : t('Game sound comes with the stream.')}</span>
       <span className="gm-head-spacer" />
-      <Volume label="Game volume" value={volume} onChange={(v) => setStreamVolume(hostId, v)} />
+      <Volume label={t('Game volume')} value={volume} onChange={(v) => setStreamVolume(hostId, v)} />
     </footer>
   )
 }
 
 function Volume({ label, value, onChange }: { label: string; value: number; onChange(v: number): void }) {
   const pct = Math.round(value * 100)
+  const t = useT()
   return (
-    <label className="emu-volume" title={`${label}: ${pct}%`}>
-      <span className="emu-volume-label">Volume</span>
+    <label className="emu-volume" title={t('{label}: {percent}%', { label, percent: pct })}>
+      <span className="emu-volume-label">{t('Volume')}</span>
       <input
         className="vx-range"
         type="range"
@@ -319,6 +350,7 @@ function Ports({ channelId, session, meId, canManage }: { channelId: string; ses
   const users = useApp((s) => s.users)
   const [menu, setMenu] = useState<number | null>(null)
   const [busy, setBusy] = useState(false)
+  const t = useT()
   const myPort = meId ? session.ports.indexOf(meId) : -1
   const run = async (p: Promise<unknown>) => {
     setBusy(true)
@@ -341,28 +373,28 @@ function Ports({ channelId, session, meId, canManage }: { channelId: string; ses
             </span>
             {uid ? (
               <>
-                <Avatar user={u ?? { id: uid, name: 'Someone', color: '#3a4152' }} size={22} />
+                <Avatar user={u ?? { id: uid, name: t('Someone'), color: '#3a4152' }} size={22} />
                 <span className="emu-port-name">
-                  {u?.name ?? 'Someone'}
-                  {mine && <span className="emu-port-you"> (you)</span>}
+                  {u?.name ?? t('Someone')}
+                  {mine && <span className="emu-port-you"> {t('(you)')}</span>}
                 </span>
-                {uid === session.hostId && !mine && <span className="gm-tag">host</span>}
+                {uid === session.hostId && !mine && <span className="gm-tag">{t('host')}</span>}
               </>
             ) : (
-              <span className="emu-port-name emu-port-free">Free</span>
+              <span className="emu-port-name emu-port-free">{t('Free // controller')}</span>
             )}
             {mine ? (
               <button
                 className="gm-icon-btn emu-port-leave"
                 disabled={busy}
                 onClick={() => void run(takeEmuPort(channelId, null))}
-                title="Give up this controller (watch instead)"
+                title={t('Give up this controller (watch instead)')}
               >
-                Leave
+                {t('Leave // controller')}
               </button>
             ) : !uid ? (
               <button className="gm-btn emu-port-btn" disabled={busy} onClick={() => void run(takeEmuPort(channelId, i))}>
-                {myPort >= 0 ? 'Move' : 'Take'}
+                {myPort >= 0 ? t('Move // controller') : t('Take // controller')}
               </button>
             ) : null}
             {canManage && (
@@ -370,9 +402,9 @@ function Ports({ channelId, session, meId, canManage }: { channelId: string; ses
                 <button
                   className="gm-icon-btn emu-port-more"
                   onClick={() => setMenu(menu === i ? null : i)}
-                  aria-label={`Assign controller ${i + 1}`}
+                  aria-label={t('Assign controller {number}', { number: i + 1 })}
                   aria-expanded={menu === i}
-                  title="Assign this controller"
+                  title={t('Assign this controller')}
                 >
                   ⋯
                 </button>
@@ -415,6 +447,7 @@ function PortMenu({
   const voice = useApp((s) => s.voice)
   const members = voice.filter((v) => v.channelId === session.channelId).map((v) => v.userId)
   const current = session.ports[port] ?? null
+  const t = useT()
 
   useEffect(() => {
     const onDown = (e: PointerEvent) => {
@@ -433,23 +466,23 @@ function PortMenu({
 
   return (
     <div className="emu-menu" role="menu" ref={ref}>
-      <p className="emu-menu-title">Controller {port + 1}</p>
+      <p className="emu-menu-title">{t('Controller {number}', { number: port + 1 })}</p>
       {members
         .filter((id) => id !== current)
         .map((id) => {
           const other = session.ports.indexOf(id)
           return (
             <button key={id} role="menuitem" className="emu-menu-item" onClick={() => onPick(id)}>
-              <Avatar user={users[id] ?? { id, name: 'Someone', color: '#3a4152' }} size={18} />
-              <span className="emu-port-name">{users[id]?.name ?? 'Someone'}</span>
+              <Avatar user={users[id] ?? { id, name: t('Someone'), color: '#3a4152' }} size={18} />
+              <span className="emu-port-name">{users[id]?.name ?? t('Someone')}</span>
               {other >= 0 && <span className="emu-menu-hint">P{other + 1}</span>}
             </button>
           )
         })}
-      {members.filter((id) => id !== current).length === 0 && <p className="emu-menu-empty">Nobody else is in the call.</p>}
+      {members.filter((id) => id !== current).length === 0 && <p className="emu-menu-empty">{t('Nobody else is in the call.')}</p>}
       {current && (
         <button role="menuitem" className="emu-menu-item is-danger" onClick={() => onPick(null)}>
-          Free this controller
+          {t('Free this controller')}
         </button>
       )}
     </div>
@@ -458,14 +491,14 @@ function PortMenu({
 
 // ---------- controls ----------
 
-/** Gamepad names of Nexo's buttons (Xbox-style labels; buttons go by position). */
+/** Gamepad names of Nexo's buttons (Xbox-style labels; buttons go by position). Descriptions are message keys (msg). */
 const PAD_LABEL: Partial<Record<keyof typeof GAME_PAD, string>> = {
   L: 'LB',
   R: 'RB',
   L2: 'LT',
   R2: 'RT',
-  L3: 'left stick click',
-  R3: 'right stick click',
+  L3: msg('left stick click'),
+  R3: msg('right stick click'),
   START: 'Start / Menu',
   SELECT: 'Back / View',
 }
@@ -474,22 +507,24 @@ const isPadButton = (k: string): k is keyof typeof GAME_PAD => k in GAME_PAD
 
 /** One Nexo control → its keyboard keys and gamepad control. */
 function ControlKeys({ control, consoleControl }: { control: string; consoleControl: string }) {
+  const t = useT()
   if (control === 'D-pad') {
     // N64: the keyboard's arrows are the control stick, so its d-pad is only on a gamepad.
-    if (/with a gamepad/i.test(consoleControl)) return <span className="emu-help-pad">d-pad</span>
+    if (/with a gamepad/i.test(consoleControl)) return <span className="emu-help-pad">{t('d-pad')}</span>
     return (
       <>
-        <span className="emu-help-pad">d-pad ·</span> <kbd>Arrows</kbd> <kbd>WASD</kbd>
+        <span className="emu-help-pad">{t('d-pad')} ·</span> <kbd>{t('Arrows')}</kbd> <kbd>WASD</kbd>
       </>
     )
   }
   // (On N64 the keyboard's arrows drive the control stick: its label says so.)
-  if (control === 'Left stick') return <span className="emu-help-pad">left stick</span>
-  if (control === 'Right stick') return <span className="emu-help-pad">right stick</span>
+  if (control === 'Left stick') return <span className="emu-help-pad">{t('left stick')}</span>
+  if (control === 'Right stick') return <span className="emu-help-pad">{t('right stick')}</span>
   if (!isPadButton(control)) return <span className="emu-help-pad">{control}</span>
+  const pad = PAD_LABEL[control]
   return (
     <>
-      <span className="emu-help-pad">{PAD_LABEL[control] ?? control} ·</span> <kbd>{BUTTON_KEYS[control]}</kbd>
+      <span className="emu-help-pad">{pad ? t(pad) : control} ·</span> <kbd>{BUTTON_KEYS[control]}</kbd>
     </>
   )
 }
@@ -497,14 +532,15 @@ function ControlKeys({ control, consoleControl }: { control: string; consoleCont
 /** How this console's pad is played: each console control with the gamepad button and the keyboard keys. */
 function ControlsHelp({ system }: { system: EmuSystem }) {
   const info = EMU_SYSTEM_INFO[system] as (typeof EMU_SYSTEM_INFO)[EmuSystem] | undefined
-  if (!info) return <p className="emu-note">This console's controls aren't known to this version of Nexo.</p>
+  const t = useT()
+  if (!info) return <p className="emu-note">{t("This console's controls aren't known to this version of Nexo.")}</p>
   return (
     <dl className="gm-help emu-help">
-      <p className="gm-help-pad emu-help-head">{info.name}: console button · gamepad · keyboard</p>
+      <p className="gm-help-pad emu-help-head">{t('{console}: console button · gamepad · keyboard', { console: info.name })}</p>
       {info.controls.map(([control, consoleControl]) => (
         <div key={`${control}:${consoleControl}`} className="gm-help-row">
           <dt>
-            <span className="gm-help-label">{consoleControl}</span>
+            <span className="gm-help-label">{t(consoleControl)}</span>
           </dt>
           <dd>
             <ControlKeys control={control} consoleControl={consoleControl} />
@@ -512,12 +548,16 @@ function ControlsHelp({ system }: { system: EmuSystem }) {
         </div>
       ))}
       <p className="gm-help-pad">
-        Gamepad buttons go by position, like on an Xbox pad: A bottom, B right, X left, Y top.{' '}
+        {t('Gamepad buttons go by position, like on an Xbox pad: A bottom, B right, X left, Y top.')}{' '}
         {!info.analog
-          ? 'Gamepads work too (plug one in and press a button); the left stick works as the d-pad.'
+          ? t('Gamepads work too (plug one in and press a button); the left stick works as the d-pad.')
           : system === 'n64'
-            ? "A gamepad's sticks work as the console's: the right stick presses the C buttons. On a keyboard, the arrows / WASD move the control stick."
-            : "A gamepad's sticks work as the console's analog sticks. On a keyboard, the arrows / WASD are the d-pad: most games play fine with it, the few that need the analog sticks need a gamepad."}
+            ? t(
+                "A gamepad's sticks work as the console's: the right stick presses the C buttons. On a keyboard, the arrows / WASD move the control stick.",
+              )
+            : t(
+                "A gamepad's sticks work as the console's analog sticks. On a keyboard, the arrows / WASD are the d-pad: most games play fine with it, the few that need the analog sticks need a gamepad.",
+              )}
       </p>
     </dl>
   )

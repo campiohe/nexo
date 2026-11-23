@@ -22,6 +22,7 @@ import {
   type KeybindCapture,
   type KeybindMods,
 } from '../preload/api'
+import { tm } from './i18n'
 import { platform } from './platform'
 import { isAppUrl } from './security'
 
@@ -58,6 +59,7 @@ const emptyBindings = (): Bindings => ({ ptt: null, toggleMute: null, toggleDeaf
 
 let deps: Deps = { getWindow: () => null, focusWindow: () => {} }
 let hook: UiohookModule | null = null
+/** Why require('uiohook-napi') failed (the error's message), or null. */
 let loadError: string | null = null
 let running = false
 let bindings: Bindings = emptyBindings()
@@ -145,12 +147,21 @@ function isWayland(): boolean {
 /** Reasons the hook can't work on this system, checked before touching the native module. */
 function platformBlocker(): string | null {
   if (platform === 'linux' && isWayland()) {
-    return "Global hotkeys need an X11 session: Wayland doesn't let apps see keys pressed in other windows."
+    return tm("Global hotkeys need an X11 session: Wayland doesn't let apps see keys pressed in other windows.")
   }
   if (platform === 'darwin' && !systemPreferences.isTrustedAccessibilityClient(false)) {
-    return 'Global hotkeys need the Accessibility permission. Allow Nexo in System Settings → Privacy & Security → Accessibility, then set a key again (restart Nexo if it still doesn’t work).'
+    return tm(
+      'Global hotkeys need the Accessibility permission. Allow Nexo in System Settings → Privacy & Security → Accessibility, then set a key again (restart Nexo if it still doesn’t work).',
+    )
   }
   return null
+}
+
+/** Why the hook module isn't loaded, for the UI (in the app language). */
+function loadFailure(): string {
+  return loadError
+    ? tm("Couldn't load the global input hook (uiohook-napi): {error}", { error: loadError })
+    : tm('The global input hook is unavailable.')
 }
 
 function loadHook(): UiohookModule | null {
@@ -165,8 +176,8 @@ function loadHook(): UiohookModule | null {
     mod.uIOhook.on('mouseup', onMouseUp)
     hook = mod
   } catch (err) {
-    loadError = `Couldn't load the global input hook (uiohook-napi): ${errorMessage(err)}`
-    console.warn(`[nexo] ${loadError}`)
+    loadError = errorMessage(err)
+    console.warn(`[nexo] Couldn't load the global input hook (uiohook-napi): ${loadError}`)
   }
   return hook
 }
@@ -176,16 +187,15 @@ function ensureRunning(): HotkeyStatus {
   const blocker = platformBlocker()
   if (blocker) return { active: false, reason: blocker }
   const mod = loadHook()
-  if (!mod) return { active: false, reason: loadError ?? 'The global input hook is unavailable.' }
+  if (!mod) return { active: false, reason: loadFailure() }
   try {
     heldKeys.clear()
     mod.uIOhook.start()
     running = true
     return { active: true }
   } catch (err) {
-    const reason = `Couldn't start the global input hook: ${errorMessage(err)}`
-    console.warn(`[nexo] ${reason}`)
-    return { active: false, reason }
+    console.warn(`[nexo] Couldn't start the global input hook: ${errorMessage(err)}`)
+    return { active: false, reason: tm("Couldn't start the global input hook: {error}", { error: errorMessage(err) }) }
   }
 }
 
@@ -209,7 +219,7 @@ function stopIfIdle(): void {
 
 function currentStatus(): HotkeyStatus {
   if (running && anyBinding()) return { active: true }
-  const reason = platformBlocker() ?? loadError
+  const reason = platformBlocker() ?? (loadError ? loadFailure() : null)
   return reason ? { active: false, reason } : { active: false }
 }
 
@@ -404,7 +414,7 @@ function captureBinding(): Promise<KeybindCapture> {
   // One capture at a time: a second request while one is pending shares its result.
   if (capture) return capture.promise
   const status = ensureRunning()
-  if (!status.active) return Promise.reject(new Error(status.reason ?? 'The global input hook is unavailable.'))
+  if (!status.active) return Promise.reject(new Error(status.reason ?? tm('The global input hook is unavailable.')))
   releaseAll()
   let resolve!: (r: KeybindCapture) => void
   const promise = new Promise<KeybindCapture>((r) => (resolve = r))

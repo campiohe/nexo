@@ -18,6 +18,7 @@ import { usePlugins } from '../../store/plugins'
 import { useApp } from '../../store/app'
 import { startEmulatorStream, stopEmulatorStream, useVoice } from '../../voice/session'
 import { toast } from '../../lib/toast'
+import { t } from '../../i18n'
 
 /** Frames per second of the stream (every console runs at ~60 in NTSC; PAL games at 50 just repeat frames). */
 export const EMU_STREAM_FPS = 60
@@ -111,7 +112,7 @@ function effectiveVolume(): number {
 export async function hostGameFiles(channelId: string, files: File[]): Promise<void> {
   if (files.length === 0 || !canHost(channelId)) return
   if (useEmuHost.getState().loading) {
-    toast('A game is already loading', 'error')
+    toast(t('A game is already loading'), 'error')
     return
   }
   const found = await detectSystem(files)
@@ -135,13 +136,13 @@ export function answerAsk(system: EmuSystem | null): void {
 
 function canHost(channelId: string): boolean {
   if (useVoice.getState().channelId !== channelId) {
-    toast('Join the voice channel to host a game', 'error')
+    toast(t('Join the voice channel to host a game'), 'error')
     return false
   }
   const me = useApp.getState().me?.id
   const existing = useEmulator.getState().byChannel[channelId]
   if (existing && existing.hostId !== me) {
-    toast('Someone is already hosting a game here', 'error')
+    toast(t('Someone is already hosting a game here'), 'error')
     return false
   }
   return true
@@ -174,7 +175,7 @@ async function readFile(file: File, signal: AbortSignal, onBytes: (n: number) =>
       if (signal.aborted) throw new LoadCancelled()
       const { done, value } = await reader.read()
       if (done) break
-      if (filled + value.length > out.length) throw new Error('The file changed while it was being read')
+      if (filled + value.length > out.length) throw new Error(t('The file changed while it was being read'))
       out.set(value, filled)
       filled += value.length
       onBytes(value.length)
@@ -182,7 +183,7 @@ async function readFile(file: File, signal: AbortSignal, onBytes: (n: number) =>
   } finally {
     void reader.cancel().catch(() => {})
   }
-  if (filled !== out.length) throw new Error('The file changed while it was being read')
+  if (filled !== out.length) throw new Error(t('The file changed while it was being read'))
   return out
 }
 
@@ -244,7 +245,7 @@ export async function hostGame(channelId: string, system: EmuSystem, main: File,
     done()
     if (err instanceof LoadCancelled || seq !== loadSeq) return
     console.warn('[emulator] could not start the game', err)
-    toast(err instanceof Error && err.message ? err.message : "Couldn't start that game", 'error')
+    toast(err instanceof Error && err.message ? err.message : t("Couldn't start that game"), 'error')
     return
   }
   if (!stillWanted()) {
@@ -269,7 +270,7 @@ export async function hostGame(channelId: string, system: EmuSystem, main: File,
   engine.onCrash = () => {
     if (useEmuHost.getState().engine !== engine) return
     useEmuHost.setState({ paused: true })
-    toast('The game crashed and stopped. Load it again to keep playing.', 'error')
+    toast(t('The game crashed and stopped. Load it again to keep playing.'), 'error')
   }
   // A held key of the previous game doesn't carry over: the component re-applies the host's pad on change.
   try {
@@ -356,7 +357,7 @@ export async function quickSave(): Promise<void> {
     if (useEmuHost.getState().engine !== engine) return
     saveSlot = state
     useEmuHost.setState({ hasSave: true })
-    toast('Saved', 'success', 1500)
+    toast(t('Saved // emulator quick save'), 'success', 1500)
   } catch (err) {
     toast(err, 'error')
   }
@@ -390,7 +391,7 @@ const offSessions = useEmulator.subscribe((s, prev) => {
   const session = s.byChannel[channelId]
   if (!session || session.hostId !== useApp.getState().me?.id) {
     stopHosting(false)
-    toast('The game was stopped', 'info')
+    toast(t('The game was stopped'), 'info')
     return
   }
   const before = prev.byChannel[channelId]

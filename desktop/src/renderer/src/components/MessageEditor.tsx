@@ -8,10 +8,12 @@ import { useApp } from '../store/app'
 import { useCompose } from '../store/compose'
 import { contentToEditable, editableToContent } from '../lib/mentions'
 import { toast } from '../lib/toast'
+import { useT } from '../i18n'
 
 const MAX_HEIGHT_PX = 320
 
 export function MessageEditor({ msg, onDelete }: { msg: Message; onDelete(m: Message): void }) {
+  const t = useT()
   const ref = useRef<HTMLTextAreaElement>(null)
   // The text as first shown. `@Name` -> `<@id>` isn't always reversible (names that prefix other names, a
   // name followed by letters), so an unchanged editor must close without saving, or it could re-target
@@ -88,19 +90,23 @@ export function MessageEditor({ msg, onDelete }: { msg: Message; onDelete(m: Mes
           disabled={saving}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={onKeyDown}
-          aria-label="Edit message"
+          aria-label={t('Edit message')}
           spellCheck
         />
       </div>
       <div className="message-editor-hint">
-        escape to{' '}
-        <button className="message-editor-link" onClick={close}>
-          cancel
-        </button>{' '}
-        • enter to{' '}
-        <button className="message-editor-link" onClick={() => void save()} disabled={saving}>
-          save
-        </button>
+        {t.rich('escape to <cancel>cancel</cancel> • enter to <save>save</save>', {
+          cancel: (c) => (
+            <button className="message-editor-link" onClick={close}>
+              {c}
+            </button>
+          ),
+          save: (c) => (
+            <button className="message-editor-link" onClick={() => void save()} disabled={saving}>
+              {c}
+            </button>
+          ),
+        })}
         {over && (
           <span className="message-editor-over">
             {' '}

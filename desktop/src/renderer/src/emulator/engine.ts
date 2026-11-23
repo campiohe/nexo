@@ -11,6 +11,7 @@ import { EmulatorError } from './types'
 import { EMU_SYSTEM_INFO } from './systems'
 import { createSnesEngine } from './engine/snes'
 import { baseName, extractZipEntry, isZipBytes, listZip, listZipBytes, type ZipEntry } from './zip'
+import { msg, t } from '../i18n'
 
 const MB = 1024 * 1024
 
@@ -85,7 +86,7 @@ export async function createEmulator(opts: EmulatorOptions): Promise<EmulatorEng
       return createPsxEngine(opts)
     }
     default:
-      throw new EmulatorError("This console isn't supported")
+      throw new EmulatorError(t("This console isn't supported"))
   }
 }
 
@@ -94,7 +95,7 @@ async function loadEngine<T>(system: EmuSystem, load: () => Promise<T>): Promise
     return await load()
   } catch (e) {
     console.error(`[emulator] the ${system} engine failed to load`, e)
-    throw new EmulatorError(`The ${EMU_SYSTEM_INFO[system].name} emulator couldn't start (it failed to load)`)
+    throw new EmulatorError(t("The {console} emulator couldn't start (it failed to load)", { console: EMU_SYSTEM_INFO[system].name }))
   }
 }
 
@@ -103,7 +104,7 @@ async function unzipCartridge(opts: EmulatorOptions): Promise<EmulatorOptions> {
   if (extensionOf(opts.fileName) !== '.zip' && !isZipBytes(opts.rom)) return opts
   const system = opts.system
   const entry = pickZipEntry(listZipBytes(opts.rom), system)
-  if (!entry) throw new EmulatorError(`This .zip file doesn't contain a ${EMU_SYSTEM_INFO[system].name} game`)
+  if (!entry) throw new EmulatorError(t("This .zip file doesn't contain a {console} game", { console: EMU_SYSTEM_INFO[system].name }))
   const rom = await extractZipEntry(opts.rom, entry, MAX_GAME_BYTES[system], tooBig(system))
   return { ...opts, rom, fileName: baseName(entry.name) }
 }
@@ -119,7 +120,9 @@ function pickZipEntry(entries: ZipEntry[], system: EmuSystem): ZipEntry | null {
 }
 
 const tooBig = (system: EmuSystem) =>
-  system === 'psx' ? 'This disc image is too big for a PlayStation game' : `This file is too big to be a ${EMU_SYSTEM_INFO[system].name} game`
+  system === 'psx'
+    ? t('This disc image is too big for a PlayStation game')
+    : t('This file is too big to be a {console} game', { console: EMU_SYSTEM_INFO[system].name })
 
 // ---------------------------------------------------------------------------------------------------------------
 // detectSystem
@@ -132,10 +135,11 @@ export type GameDetection =
   | { kind: 'ask'; systems: EmuSystem[]; main: File; extras: File[] }
   | { kind: 'error'; message: string }
 
+/** `message` is translated already. */
 const err = (message: string): GameDetection => ({ kind: 'error', message })
-const ONE_GAME = 'Pick one game at a time'
-const CUE_WITH_BINS = 'Pick the .cue together with its .bin files'
-const UNZIP_PSX = 'Unzip PlayStation games first, then pick the .cue together with its .bin files'
+const ONE_GAME = msg('Pick one game at a time')
+const CUE_WITH_BINS = msg('Pick the .cue together with its .bin files')
+const UNZIP_PSX = msg('Unzip PlayStation games first, then pick the .cue together with its .bin files')
 
 /**
  * Which console the picked / dropped files are for, by their extensions (and a peek at the headers of .bin files
@@ -148,13 +152,15 @@ const UNZIP_PSX = 'Unzip PlayStation games first, then pick the .cue together wi
  * - .zip alone: by the game files inside (a .bin inside → Mega Drive); PlayStation games must be unzipped.
  */
 export async function detectSystem(files: File[]): Promise<GameDetection> {
-  if (files.length === 0) return err('Pick a game file')
+  if (files.length === 0) return err(t('Pick a game file'))
   for (const f of files) {
     const ext = extensionOf(f.name)
     if (!ALL_ROM_EXTENSIONS.includes(ext)) {
-      return err(`"${f.name}" isn't a game file the emulator reads (${ALL_ROM_EXTENSIONS.join(', ')})`)
+      return err(
+        t(`"{name}" isn't a game file the emulator reads ({extensions})`, { name: f.name, extensions: ALL_ROM_EXTENSIONS.join(', ') }),
+      )
     }
-    if (f.size === 0) return err(`"${f.name}" is empty`)
+    if (f.size === 0) return err(t('"{name}" is empty', { name: f.name }))
   }
   const byExt = (pred: (ext: string) => boolean) => files.filter((f) => pred(extensionOf(f.name)))
   const cues = byExt((e) => e === '.cue')
@@ -164,23 +170,23 @@ export async function detectSystem(files: File[]): Promise<GameDetection> {
   const bins = byExt((e) => e === '.bin')
 
   if (cues.length > 0) {
-    if (cues.length > 1 || discs.some((d) => extensionOf(d.name) !== '.img') || zips.length || carts.length) return err(ONE_GAME)
+    if (cues.length > 1 || discs.some((d) => extensionOf(d.name) !== '.img') || zips.length || carts.length) return err(t(ONE_GAME))
     return detectCue(cues[0], files.filter((f) => f !== cues[0]))
   }
   if (discs.length > 0) {
-    if (discs.length > 1 || zips.length || carts.length) return err(ONE_GAME)
+    if (discs.length > 1 || zips.length || carts.length) return err(t(ONE_GAME))
     const main = discs[0]
     const extras = files.filter((f) => f !== main)
-    if (extras.some((f) => f.size > MAX_EXTRA_BYTES)) return err(ONE_GAME)
+    if (extras.some((f) => f.size > MAX_EXTRA_BYTES)) return err(t(ONE_GAME))
     if (main.size > MAX_GAME_BYTES.psx) return err(tooBig('psx'))
     return { kind: 'game', system: 'psx', main, extras }
   }
   if (zips.length > 0) {
-    if (files.length > 1) return err('Pick the .zip file alone')
+    if (files.length > 1) return err(t('Pick the .zip file alone'))
     return detectZip(zips[0])
   }
   if (carts.length > 0) {
-    if (files.length > 1) return err(ONE_GAME)
+    if (files.length > 1) return err(t(ONE_GAME))
     const main = carts[0]
     const system = CARTRIDGE_EXT[extensionOf(main.name)]
     if (main.size > MAX_GAME_BYTES[system]) return err(tooBig(system))
@@ -190,24 +196,24 @@ export async function detectSystem(files: File[]): Promise<GameDetection> {
 }
 
 async function detectCue(cue: File, others: File[]): Promise<GameDetection> {
-  if (cue.size > MAX_CUE_BYTES) return err("This .cue file isn't a disc's track list")
+  if (cue.size > MAX_CUE_BYTES) return err(t("This .cue file isn't a disc's track list"))
   let listed: string[]
   try {
     listed = cueFiles(await cue.text())
   } catch {
-    return err("This .cue file couldn't be read")
+    return err(t("This .cue file couldn't be read"))
   }
-  if (listed.length === 0) return err("This .cue file doesn't list any track files")
+  if (listed.length === 0) return err(t("This .cue file doesn't list any track files"))
   const picked = new Map(others.map((f) => [f.name.toLowerCase(), f]))
   const missing = listed.filter((name) => !picked.has(baseName(name).toLowerCase()))
-  if (missing.length === listed.length) return err(CUE_WITH_BINS)
+  if (missing.length === listed.length) return err(t(CUE_WITH_BINS))
   if (missing.length > 0) {
     const names = missing.slice(0, 3).map((n) => `"${baseName(n)}"`).join(', ')
-    return err(`${CUE_WITH_BINS} (missing: ${names}${missing.length > 3 ? '…' : ''})`)
+    return err(t('Pick the .cue together with its .bin files (missing: {files})', { files: `${names}${missing.length > 3 ? '…' : ''}` }))
   }
   const tracks = new Set(listed.map((n) => picked.get(baseName(n).toLowerCase())!))
   // Anything else picked must be small (a BIOS), not another game.
-  if (others.some((f) => !tracks.has(f) && f.size > MAX_EXTRA_BYTES)) return err(ONE_GAME)
+  if (others.some((f) => !tracks.has(f) && f.size > MAX_EXTRA_BYTES)) return err(t(ONE_GAME))
   let total = cue.size
   for (const t of tracks) total += t.size
   if (total > MAX_GAME_BYTES.psx) return err(tooBig('psx'))
@@ -236,7 +242,7 @@ async function detectZip(zip: File): Promise<GameDetection> {
   try {
     entries = await listZip(zip)
   } catch (e) {
-    return err(e instanceof EmulatorError ? e.message : 'This .zip file is damaged or uses an unsupported format')
+    return err(e instanceof EmulatorError ? e.message : t('This .zip file is damaged or uses an unsupported format'))
   }
   const carts = entries.filter((e) => extensionOf(e.name) in CARTRIDGE_EXT)
   if (carts.length > 0) {
@@ -250,15 +256,15 @@ async function detectZip(zip: File): Promise<GameDetection> {
     const ext = extensionOf(e.name)
     return ext === '.cue' || DISC_EXT.has(ext)
   })
-  if (discs.length > 0) return err(UNZIP_PSX)
+  if (discs.length > 0) return err(t(UNZIP_PSX))
   const bins = entries.filter((e) => extensionOf(e.name) === '.bin')
   if (bins.length > 0) {
     const biggest = bins.reduce((a, b) => (b.size > a.size ? b : a))
     // A zipped .bin is a Mega Drive cartridge; a disc image that size would be a PlayStation game.
-    if (biggest.size > BIG_BIN_BYTES) return err(UNZIP_PSX)
+    if (biggest.size > BIG_BIN_BYTES) return err(t(UNZIP_PSX))
     return { kind: 'game', system: 'genesis', main: zip, extras: [] }
   }
-  return err("This .zip file doesn't contain a game the emulator reads")
+  return err(t("This .zip file doesn't contain a game the emulator reads"))
 }
 
 type BinKind = 'disc' | 'sega' | 'bios' | 'unknown'
@@ -279,7 +285,7 @@ async function detectBins(bins: File[]): Promise<GameDetection> {
   try {
     kinds = await Promise.all(bins.map(binKind))
   } catch {
-    return err("The file couldn't be read")
+    return err(t("The file couldn't be read"))
   }
   if (bins.length === 1) {
     const [main] = bins
@@ -290,21 +296,60 @@ async function detectBins(bins: File[]): Promise<GameDetection> {
       case 'sega':
         return { kind: 'game', system: 'genesis', main, extras: [] }
       case 'bios':
-        return err('This looks like a PlayStation BIOS file: pick it together with the game files')
+        return err(t('This looks like a PlayStation BIOS file: pick it together with the game files'))
       default:
         return { kind: 'ask', systems: ['genesis', 'psx'], main, extras: [] }
     }
   }
   // Several .bin files without a .cue: one disc image + BIOS files is fine; several tracks need their .cue.
   const discIdx = kinds.flatMap((k, i) => (k === 'disc' ? [i] : []))
-  if (discIdx.length > 1) return err(CUE_WITH_BINS)
-  if (kinds.includes('sega')) return err(ONE_GAME)
+  if (discIdx.length > 1) return err(t(CUE_WITH_BINS))
+  if (kinds.includes('sega')) return err(t(ONE_GAME))
   if (discIdx.length === 1) {
     const main = bins[discIdx[0]]
     const extras = bins.filter((f) => f !== main)
-    if (extras.some((f) => f.size > MAX_EXTRA_BYTES)) return err(CUE_WITH_BINS)
+    if (extras.some((f) => f.size > MAX_EXTRA_BYTES)) return err(t(CUE_WITH_BINS))
     if (main.size > MAX_GAME_BYTES.psx) return err(tooBig('psx'))
     return { kind: 'game', system: 'psx', main, extras }
   }
-  return err(CUE_WITH_BINS)
+  return err(t(CUE_WITH_BINS))
 }
+
+/**
+ * What the engines (./engine/, which stay in English) reject with, as is: marked here so pt-BR/emulator.ts can
+ * translate them. They reach the user through toast(), whose tKnown() looks the exact text up.
+ */
+export const ENGINE_MESSAGES = [
+  msg('This .zip file is damaged or uses an unsupported format'),
+  msg('This .zip file is password-protected'),
+  msg("This .zip file doesn't contain a SNES game"),
+  msg("This .zip file doesn't contain a Mega Drive game"),
+  msg("This .zip file doesn't contain a Nintendo 64 game"),
+  msg('This file is empty'),
+  msg("This file isn't a SNES game"),
+  msg("This file isn't a Mega Drive / Genesis game"),
+  msg("This file isn't a PlayStation game"),
+  msg("This file isn't a Nintendo 64 game"),
+  msg('This file is too big to be a SNES game'),
+  msg('This file is too big to be a Mega Drive game'),
+  msg('This file is too big to be a Nintendo 64 game'),
+  msg("This .cue file doesn't list any track"),
+  msg('This is a PlayStation BIOS, not a game: pick it together with the game'),
+  msg('.mdf images need their .mds: convert the disc to .cue/.bin or .chd'),
+  msg("This SNES game couldn't be loaded (the file may be corrupt)"),
+  msg("This Mega Drive game couldn't be loaded (the file may be corrupt)"),
+  msg("This Nintendo 64 game couldn't be loaded (the file may be corrupt)"),
+  msg("This PlayStation game couldn't be loaded (the disc image may be incomplete or corrupt)"),
+  msg("The SNES emulator couldn't start (its core failed to load)"),
+  msg("The Mega Drive emulator couldn't start (its core failed to load)"),
+  msg("The PlayStation emulator couldn't start (its core failed to load)"),
+  msg("The Nintendo 64 emulator couldn't start (its core failed to load)"),
+  msg("The emulator couldn't create its screen"),
+  msg("The Nintendo 64 emulator couldn't create its screen"),
+  msg("The emulator couldn't start its sound output"),
+  msg("The Nintendo 64 emulator needs WebGL 2, which isn't available (check the graphics driver)"),
+  msg('The game stopped working'),
+  msg('The game has been closed'),
+  msg("The game couldn't be saved"),
+  msg("This save doesn't belong to this game"),
+]

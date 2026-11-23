@@ -34,11 +34,12 @@ import {
   STATUS_TEXT_MAX,
 } from '../../shared/protocol.ts'
 import { MAX_PINS_PER_CHANNEL, SEARCH_QUERY_MAX } from '../../shared/protocol.ts'
+import { isBannerPreset, type BannerPreset } from '../../shared/protocol.ts'
 import { DEFAULT_PLUGINS } from '../../shared/protocol.ts'
 import { streamIdentity } from '../../shared/stream.ts'
 import { loadConfig, type Config } from './config.ts'
 import { isUniqueViolation, openDb, searchWords } from './db.ts'
-import { createAvatarRoutes } from './avatars.ts'
+import { createAvatarRoutes, createBannerRoutes } from './avatars.ts'
 import { createAttachmentRoutes } from './attachments.ts'
 import { createAccountRoutes } from './accounts.ts'
 import { isTailscaleAddress, unwrapAddress } from './address.ts'
@@ -68,6 +69,8 @@ export interface StartOptions extends Partial<Omit<Config, 'livekit'>> {
   log?: ((msg: string) => void) | false
   /** Minimum ms between two profile picture changes by the same user. Default: LIMITS.avatarIntervalMs. */
   avatarIntervalMs?: number
+  /** Minimum ms between two banner changes by the same user. Default: LIMITS.bannerIntervalMs. */
+  bannerIntervalMs?: number
   /** Image uploads per user per minute. Default: LIMITS.attachmentUploadsPerMinute. */
   attachmentUploadsPerMinute?: number
   /** Age at which unsent image uploads are deleted. Default: LIMITS.attachmentPendingTtlMs. */
@@ -150,6 +153,8 @@ export const LIMITS = {
   tokenTtl: '12h',
   /** One profile picture change (upload or delete) per user every 3 s. */
   avatarIntervalMs: 3000,
+  /** One banner change (upload or delete) per user every 3 s. */
+  bannerIntervalMs: 3000,
   /** Chat image uploads per user per minute. */
   attachmentUploadsPerMinute: 20,
   /** Uploads not attached to a message within an hour are deleted… */
@@ -291,6 +296,7 @@ export const PROFILE_ERRORS = {
   invalidColor: 'Invalid color',
   invalidStatusText: 'Invalid status',
   statusTextTooLong: `Status is limited to ${STATUS_TEXT_MAX} characters`,
+  invalidBannerPreset: 'Invalid banner',
   userNotFound: 'User not found',
 } as const
 
@@ -411,6 +417,7 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
     log: logOpt,
     livekit,
     avatarIntervalMs,
+    bannerIntervalMs,
     attachmentUploadsPerMinute,
     attachmentPendingTtlMs,
     attachmentSweepIntervalMs,
@@ -505,6 +512,15 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
     log,
   })
 
+  const bannerRoutes = createBannerRoutes({
+    dataDir: config.dataDir,
+    users,
+    hashToken,
+    onUserUpdated: publishUser,
+    minIntervalMs: bannerIntervalMs ?? LIMITS.bannerIntervalMs,
+    log,
+  })
+
   const attachmentRoutes = createAttachmentRoutes({
     dataDir: config.dataDir,
     users,
@@ -544,6 +560,7 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
       return
     }
     if (avatarRoutes.handle(req, res)) return
+    if (bannerRoutes.handle(req, res)) return
     if (attachmentRoutes.handle(req, res)) return
     if (embedRoutes.handle(req, res)) return
     if (soundRoutes.handle(req, res)) return
@@ -697,6 +714,7 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
     if (!removed) return
     attachmentRoutes.removeFiles(removed.attachmentIds)
     avatarRoutes.removeFile(target.id)
+    bannerRoutes.removeFile(target.id)
     // Their soundboard clips go with them.
     soundRoutes.removeFiles(removed.soundIds)
     for (const soundId of removed.soundIds) io.emit('sound:deleted', { soundId })
@@ -1297,8 +1315,10 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
     // --- profile ---
 
     socket.on('profile:update', guard('profile:update', (p, ack) => {
-      if (!isObj(p) || (p.color === undefined && p.statusText === undefined)) return fail(ack, PROFILE_ERRORS.nothingToUpdate)
-      const patch: { color?: string; statusText?: string | null } = {}
+      if (!isObj(p) || (p.color === undefined && p.statusText === undefined && p.bannerPreset === undefined)) {
+        return fail(ack, PROFILE_ERRORS.nothingToUpdate)
+      }
+      const patch: { color?: string; statusText?: string | null; bannerPreset?: BannerPreset } = {}
       if (p.color !== undefined) {
         if (!isStr(p.color) || !COLOR_RE.test(p.color)) return fail(ack, PROFILE_ERRORS.invalidColor)
         patch.color = p.color.toLowerCase()
@@ -1308,6 +1328,10 @@ export async function start(options: StartOptions = {}): Promise<NexoInstance> {
         const text = p.statusText === null ? '' : normalizeDisplayText(p.statusText)
         if (text.length > STATUS_TEXT_MAX) return fail(ack, PROFILE_ERRORS.statusTextTooLong)
         patch.statusText = text || null
+      }
+      if (p.bannerPreset !== undefined) {
+        if (!isBannerPreset(p.bannerPreset)) return fail(ack, PROFILE_ERRORS.invalidBannerPreset)
+        patch.bannerPreset = p.bannerPreset
       }
       const updated = users.updateProfile(userId, patch)
       if (!updated) return fail(ack, PROFILE_ERRORS.userNotFound)
