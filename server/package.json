@@ -1,7 +1,7 @@
 {
   "name": "@nexo/server",
   "private": true,
-  "version": "1.3.0-test.3",
+  "version": "1.3.0-test.4",
   "license": "MIT",
   "type": "module",
   "scripts": {
