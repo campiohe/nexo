@@ -1,17 +1,36 @@
-// Settings → Appearance: theme, UI zoom, message density, link previews.
-import { useAppearance, ZOOM_STEPS, zoomPercent, type ThemeChoice } from '../lib/appearance'
+// Settings → Appearance: theme, accent, title bar, app icon, UI zoom, message density, link previews.
+import { useId, useRef, type KeyboardEvent } from 'react'
+import {
+  ACCENTS,
+  APP_ICONS,
+  hasAppIconBridge,
+  useAppearance,
+  ZOOM_STEPS,
+  zoomPercent,
+  type AppIconChoice,
+  type ResolvedTheme,
+  type ThemeChoice,
+  type TitleBarStyle,
+} from '../lib/appearance'
+import { ICON_GEOMETRY, iconColors } from '../lib/appIcon'
 import { useLinkPreviewsPref } from '../store/chatPrefs'
 
 const THEMES: { id: ThemeChoice; label: string }[] = [
   { id: 'system', label: 'System' },
   { id: 'dark', label: 'Dark' },
+  { id: 'midnight', label: 'Midnight' },
   { id: 'light', label: 'Light' },
+]
+
+const TITLE_BARS: { id: TitleBarStyle; label: string }[] = [
+  { id: 'search', label: 'With search' },
+  { id: 'minimal', label: 'Minimal' },
 ]
 
 const hasZoomBridge = () => typeof window.nexo?.appearance?.setZoom === 'function'
 
 /** A tiny mock of the app (sidebar, messages, composer) drawn with the given palette's tokens. */
-function MiniApp({ theme }: { theme: 'dark' | 'light' }) {
+function MiniApp({ theme }: { theme: ResolvedTheme }) {
   return (
     <div className="tp-app" data-theme={theme}>
       <div className="tp-side">
@@ -62,6 +81,120 @@ function ThemeCard({ id, label, hint }: { id: ThemeChoice; label: string; hint?:
         {hint && <span className="muted small">{hint}</span>}
       </span>
     </label>
+  )
+}
+
+function AccentRow() {
+  const accent = useAppearance((s) => s.accent)
+  const label = ACCENTS.find((a) => a.id === accent)?.label
+  return (
+    <div className="appearance-group">
+      <span id="accent-label" className="field-label">
+        Accent <span className="appearance-accent-name">{label}</span>
+      </span>
+      <div className="swatches" role="radiogroup" aria-labelledby="accent-label">
+        {ACCENTS.map((a) => (
+          <button
+            key={a.id}
+            type="button"
+            role="radio"
+            aria-checked={accent === a.id}
+            aria-label={a.label}
+            title={a.label}
+            data-accent={a.id}
+            className={`swatch accent-swatch ${accent === a.id ? 'is-selected' : ''}`}
+            onClick={() => useAppearance.getState().setAccent(a.id)}
+          />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function TitleBarRow() {
+  const titleBar = useAppearance((s) => s.titleBar)
+  return (
+    <div className="appearance-group">
+      <span id="titlebar-label" className="field-label">
+        Title bar
+      </span>
+      <div className="vx-seg" role="radiogroup" aria-labelledby="titlebar-label">
+        {TITLE_BARS.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            role="radio"
+            aria-checked={titleBar === t.id}
+            className={`vx-seg-btn ${titleBar === t.id ? 'is-active' : ''}`}
+            onClick={() => useAppearance.getState().setTitleBar(t.id)}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+/** One app icon variant, drawn like lib/appIcon.ts draws it for main (the accent's dark-palette shade in any theme). */
+function AppIconArt({ choice }: { choice: AppIconChoice }) {
+  const mask = `app-icon-${useId().replace(/:/g, '')}`
+  const { tile, ring, cut, dot } = ICON_GEOMETRY
+  const colors = iconColors(choice, 'var(--accent-d)', 'var(--accent-ink-d)')
+  return (
+    <svg className="app-icon-art" viewBox={`${tile.x} ${tile.y} ${tile.size} ${tile.size}`} aria-hidden="true" focusable="false">
+      <defs>
+        <mask id={mask}>
+          <rect width={ICON_GEOMETRY.size} height={ICON_GEOMETRY.size} fill="#fff" />
+          <circle cx={cut.cx} cy={cut.cy} r={cut.r} fill="#000" />
+        </mask>
+      </defs>
+      {/* The outline keeps a tile the color of the page (Mono on Midnight, Paper on Light) visible. */}
+      <rect x={tile.x} y={tile.y} width={tile.size} height={tile.size} rx={tile.radius} fill={colors.tile} stroke="var(--line-strong)" strokeWidth="12" />
+      <circle cx={ring.cx} cy={ring.cy} r={ring.r} fill="none" stroke={colors.ring} strokeWidth={ring.width} mask={`url(#${mask})`} />
+      <circle cx={dot.cx} cy={dot.cy} r={dot.r} fill={colors.dot} />
+    </svg>
+  )
+}
+
+function AppIconRow() {
+  const appIcon = useAppearance((s) => s.appIcon)
+  const group = useRef<HTMLDivElement>(null)
+
+  // Radio group keys: the arrows move the choice (and the focus) through the tiles.
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    const step = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 0
+    if (!step) return
+    e.preventDefault()
+    const i = APP_ICONS.findIndex((a) => a.id === appIcon)
+    const next = (i + step + APP_ICONS.length) % APP_ICONS.length
+    useAppearance.getState().setAppIcon(APP_ICONS[next]!.id)
+    group.current?.querySelectorAll<HTMLButtonElement>('[role="radio"]')[next]?.focus()
+  }
+
+  return (
+    <div className="appearance-group">
+      <span id="app-icon-label" className="field-label">
+        App icon
+      </span>
+      <div ref={group} className="app-icon-options" role="radiogroup" aria-labelledby="app-icon-label" onKeyDown={onKeyDown}>
+        {APP_ICONS.map((a) => (
+          <button
+            key={a.id}
+            type="button"
+            role="radio"
+            aria-checked={appIcon === a.id}
+            tabIndex={appIcon === a.id ? 0 : -1}
+            className={`app-icon-option ${appIcon === a.id ? 'is-selected' : ''}`}
+            onClick={() => useAppearance.getState().setAppIcon(a.id)}
+          >
+            <AppIconArt choice={a.id} />
+            <span className="app-icon-label">{a.label}</span>
+          </button>
+        ))}
+      </div>
+      <span className="muted small">Used for the window, taskbar and tray. Pinned shortcuts keep the default icon.</span>
+    </div>
   )
 }
 
@@ -132,6 +265,13 @@ export function AppearanceSection() {
           ))}
         </div>
       </div>
+
+      <div className="appearance-pair">
+        <AccentRow />
+        <TitleBarRow />
+      </div>
+
+      {hasAppIconBridge() && <AppIconRow />}
 
       {hasZoomBridge() && <ZoomRow />}
 

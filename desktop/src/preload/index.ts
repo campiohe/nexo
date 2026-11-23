@@ -8,6 +8,7 @@ import {
   type ActivitySettings,
   type AppearanceState,
   type ThemeChoice,
+  type WindowChrome,
   type ZoomEvent,
   type CaptureSource,
   type ChatNotification,
@@ -288,9 +289,10 @@ const bridge: NexoBridge = {
 
   appearance: {
     getState: (): Promise<AppearanceState> => ipcRenderer.invoke(IPC.appearanceGet),
-    setTheme: (theme: ThemeChoice, background: string): void => ipcRenderer.send(IPC.appearanceSetTheme, theme, background),
+    setTheme: (theme: ThemeChoice, chrome: WindowChrome): void => ipcRenderer.send(IPC.appearanceSetTheme, theme, chrome),
     setZoom: (factor: number): Promise<number> => ipcRenderer.invoke(IPC.appearanceSetZoom, factor),
     onZoom: (cb: (e: ZoomEvent) => void): (() => void) => subscribe(IPC.appearanceZoom, isZoomEvent, cb),
+    setAppIcon: (png: string | null): Promise<void> => ipcRenderer.invoke(IPC.appearanceSetAppIcon, png),
   },
 
   updates: {

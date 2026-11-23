@@ -1,5 +1,5 @@
 // Small inline SVG icon set (stroke-based, 24px grid, currentColor).
-import type { ReactNode, SVGProps } from 'react'
+import { useId, type ReactNode, type SVGProps } from 'react'
 
 export type IconProps = SVGProps<SVGSVGElement> & { size?: number }
 
@@ -172,17 +172,23 @@ export const ReplyIcon = (p: IconProps) => (
   </Svg>
 )
 
-/** Nexo mark: two interlocking rounded nodes. */
-export const NexoMark = ({ size = 28, ...rest }: IconProps) => (
-  <svg width={size} height={size} viewBox="0 0 32 32" aria-hidden="true" {...rest}>
-    <rect x="2" y="2" width="28" height="28" rx="9" fill="var(--accent)" />
-    <path
-      d="M10 22V10l12 12V10"
-      fill="none"
-      stroke="var(--accent-ink)"
-      strokeWidth="3.2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    />
-  </svg>
-)
+/**
+ * Nexo mark, the app icon's drawing (resources/icon.svg): a ring with a dot breaking out of it. `tile` draws it
+ * on the icon's rounded square, like the taskbar icon; without it, just the glyph in the accent color.
+ */
+export function NexoMark({ size = 28, tile = false, ...rest }: IconProps & { tile?: boolean }) {
+  const mask = `nexo-mark-${useId().replace(/:/g, '')}`
+  return (
+    <svg width={size} height={size} viewBox={tile ? '72 72 880 880' : '210 242 572 572'} aria-hidden="true" focusable="false" {...rest}>
+      <defs>
+        <mask id={mask}>
+          <rect width="1024" height="1024" fill="#fff" />
+          <circle cx="655.81" cy="368.19" r="130" fill="#000" />
+        </mask>
+      </defs>
+      {tile && <rect x="72" y="72" width="880" height="880" rx="196" fill="var(--bg-0)" stroke="var(--line-strong)" strokeWidth="10" />}
+      <circle cx="496" cy="528" r="226" fill="none" stroke="var(--accent)" strokeWidth={tile ? 80 : 92} mask={`url(#${mask})`} />
+      <circle cx="655.81" cy="368.19" r="96" fill="var(--accent)" />
+    </svg>
+  )
+}

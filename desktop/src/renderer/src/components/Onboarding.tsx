@@ -7,7 +7,7 @@ import { SWATCHES, randomSwatch } from '../lib/colors'
 import { DEFAULT_SERVER_URL, isValidServerUrl, normalizeServerUrl } from '../lib/url'
 import { Avatar } from './Avatar'
 import { ColorSwatches } from './ColorSwatches'
-import { AlertIcon, ChevronIcon, NexoMark } from './icons'
+import { AlertIcon, NexoMark } from './icons'
 import { AccessRequestStep, WelcomeBackStep } from './SignInSteps'
 
 const NAME_RE = /^[\p{L}\p{M}\p{N}_.\- ]{2,24}$/u
@@ -104,7 +104,6 @@ export function Onboarding() {
   if (accessRequest || welcome) {
     return (
       <div className="onboarding">
-        <div className="onboarding-glow" aria-hidden="true" />
         {accessRequest ? (
           <AccessRequestStep request={accessRequest} />
         ) : (
@@ -116,14 +115,11 @@ export function Onboarding() {
 
   return (
     <div className="onboarding">
-      <div className="onboarding-glow" aria-hidden="true" />
       <form className="onboarding-card" onSubmit={(e) => void submit(e)} noValidate>
         <div className="onboarding-brand">
-          <NexoMark size={40} />
-          <div>
-            <h1>Welcome to Nexo</h1>
-            <p className="muted">Pick a name and a color. This device will remember you.</p>
-          </div>
+          <NexoMark size={36} tile />
+          <h1>Join a server</h1>
+          <p className="muted">Ask whoever runs it for the address.</p>
         </div>
 
         {notice && (
@@ -145,13 +141,12 @@ export function Onboarding() {
             autoComplete="url"
             disabled={busy}
           />
-          <span className="field-hint">Ask the person hosting the server for this.</span>
         </label>
 
         <div className="onboarding-identity">
-          <Avatar user={{ name: name.trim() || '?', color }} size={56} />
+          <Avatar user={{ name: name.trim() || '?', color }} size={40} />
           <label className="field grow">
-            <span className="field-label">Display name</span>
+            <span className="field-label">Your name</span>
             <input
               ref={nameRef}
               className={`input ${nameTaken ? 'input-invalid' : ''}`}
@@ -171,24 +166,31 @@ export function Onboarding() {
           <ColorSwatches value={color} onChange={setColor} colors={SWATCHES} disabled={busy} />
         </div>
 
-        <div className={`collapsible ${showPassword ? 'is-open' : ''}`}>
-          <button type="button" className="collapsible-toggle" onClick={() => setShowPassword((v) => !v)} aria-expanded={showPassword}>
-            <ChevronIcon size={14} className="collapsible-chevron" />
-            Server password <span className="muted">(only if the host set one)</span>
-          </button>
-          {showPassword && (
+        {showPassword ? (
+          <label className="field">
+            <span className="field-label">Server password</span>
             <input
               ref={passwordRef}
               className={`input ${wrongPassword ? 'input-invalid' : ''}`}
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder="Server password"
               autoComplete="current-password"
               disabled={busy}
             />
-          )}
-        </div>
+          </label>
+        ) : (
+          <button
+            type="button"
+            className="link-btn"
+            onClick={() => {
+              setShowPassword(true)
+              requestAnimationFrame(() => passwordRef.current?.focus())
+            }}
+          >
+            The server has a password
+          </button>
+        )}
 
         {error && (
           <div className="callout callout-error" role="alert">
@@ -220,7 +222,7 @@ export function Onboarding() {
               <span className="spinner" /> Connecting…
             </>
           ) : (
-            'Join server'
+            'Join'
           )}
         </button>
       </form>

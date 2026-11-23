@@ -23,7 +23,7 @@ function intro(me: User): string {
     case 'owner':
       return "You're the owner. You can make people admins and remove accounts."
     case 'admin':
-      return "You're an admin. You can remove members' accounts. Only the owner can change roles or remove admins."
+      return "You're an admin. You can remove members. Only the owner can change roles or remove admins."
     default:
       return 'Admins manage channels and accounts. Ask one if you need something changed.'
   }

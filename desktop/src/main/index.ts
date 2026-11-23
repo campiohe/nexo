@@ -2,9 +2,9 @@
 // secrets, updates, music engine.
 import { app, BrowserWindow, ipcMain, Menu, type MenuItemConstructorOptions } from 'electron'
 import { join, resolve } from 'node:path'
-import icon from '../../resources/icon.png?asset'
 import { IPC } from '../preload/api'
-import { attachAppearance, installAppearance, savedZoom, windowBackground } from './appearance'
+import { installAppIcon, windowIconOption } from './appIcon'
+import { attachAppearance, customTitleBar, installAppearance, savedZoom, titleBarOverlay, windowBackground } from './appearance'
 import { installCapture } from './capture'
 import { devMode, isDev, platform, preloadArguments } from './platform'
 import { getPrefs, installPrefs } from './prefs'
@@ -41,8 +41,12 @@ function createMainWindow(): BrowserWindow {
     // The saved theme's --bg-0 (lib/appearance.ts in the renderer keeps it in sync afterwards).
     backgroundColor: windowBackground(),
     autoHideMenuBar: true,
-    // Windows/macOS take the icon from the executable/bundle; Linux needs it on the window.
-    ...(platform === 'linux' ? { icon } : {}),
+    // Windows: the page draws the title bar (components/TitleBar.tsx) and Windows only the caption buttons, so
+    // Snap Layouts, double-click to maximize and the system menu keep working. Other platforms keep their frame.
+    ...(customTitleBar ? { titleBarStyle: 'hidden' as const, titleBarOverlay: titleBarOverlay() } : {}),
+    // The App icon chosen in Settings (appIcon.ts); otherwise Windows/macOS take the icon from the executable/bundle
+    // and Linux needs it on the window.
+    ...windowIconOption(),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -227,6 +231,7 @@ if (!app.requestSingleInstanceLock()) {
     installSecrets()
     installPrefs()
     installAppearance()
+    installAppIcon()
     installHotkeys({ getWindow: () => mainWindow, focusWindow: raiseMainWindow })
     installNativeShare({ getWindow: () => mainWindow })
     installPresence({ getWindow: () => mainWindow })

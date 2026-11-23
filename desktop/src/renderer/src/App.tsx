@@ -1,4 +1,4 @@
-// App shell: onboarding vs main layout (sidebar | center | members).
+// App shell: title bar over onboarding vs main layout (sidebar | center | members).
 import { useEffect } from 'react'
 import { useApp } from './store/app'
 import { useUi } from './store/ui'
@@ -8,6 +8,7 @@ import { MainLayout } from './components/MainLayout'
 import { SettingsModal } from './components/SettingsModal'
 import { QuickSwitcher } from './components/QuickSwitcher'
 import { Toasts } from './components/Toasts'
+import { TitleBar } from './components/TitleBar'
 import { UserVolumePopover } from '@renderer/components/voice/UserVolumePopover'
 import { domKeyMatches, domMouseMatches, isTypingTarget, typesText } from './lib/keybinds'
 import type { Keybind } from '../../preload/api'
@@ -97,6 +98,8 @@ export function App() {
 
   return (
     <div className="app">
+      <TitleBar />
+      <div className="app-body">
       {view === 'boot' ? (
         <div className="splash" />
       ) : view === 'onboarding' ? (
@@ -120,6 +123,7 @@ export function App() {
       ) : (
         <Splash />
       )}
+      </div>
       <Toasts />
     </div>
   )

@@ -59,58 +59,52 @@ export function VoiceStage({ channelId }: { channelId: string }) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Not connected: join card
+// Not connected: join empty state
 // ---------------------------------------------------------------------------------------------
 
+/**
+ * The only Join button for a voice channel you're not in (the channel header has none). A failed join isn't
+ * repeated here: voice/session.ts toasts every voice error and the sidebar's voice panel keeps it until dismissed.
+ */
 function JoinCard({ channelId }: { channelId: string }) {
   const channelName = useApp((s) => s.channels.find((c) => c.id === channelId)?.name ?? 'Voice')
   const voice = useApp((s) => s.voice)
   const users = useApp((s) => s.users)
   const otherChannelId = useVoice((s) => (s.status !== 'idle' && s.status !== 'error' ? s.channelId : null))
   const otherName = useApp((s) => s.channels.find((c) => c.id === otherChannelId)?.name)
-  const status = useVoice((s) => s.status)
-  const error = useVoice((s) => s.error)
   const members = voice.filter((v) => v.channelId === channelId)
+  const names = members.map((m) => users[m.userId]?.name ?? 'Someone')
+  const streamers = members.filter((m) => m.streaming).map((m) => users[m.userId]?.name ?? 'Someone')
 
   return (
     <div className="vx-stage vx-stage-idle">
       <div className="vx-join">
-        <div className="vx-join-avatars">
-          {members.length === 0 ? (
-            <span className="vx-join-empty-ring" aria-hidden="true" />
-          ) : (
-            members.slice(0, 6).map((m) => <Avatar key={m.userId} user={users[m.userId]} size={52} />)
-          )}
-          {members.length > 6 && <span className="vx-join-more">+{members.length - 6}</span>}
-        </div>
+        {members.length > 0 && (
+          <div className="vx-join-avatars">
+            {members.slice(0, 6).map((m) => (
+              <Avatar key={m.userId} user={users[m.userId]} size={44} />
+            ))}
+            {members.length > 6 && <span className="vx-join-more">+{members.length - 6}</span>}
+          </div>
+        )}
         <h2 className="vx-join-title">{channelName}</h2>
         <p className="vx-join-sub">
           {members.length === 0
-            ? 'Nobody is here yet. Hop in and others will see you in the sidebar.'
-            : members
-                .map((m) => users[m.userId]?.name ?? 'Someone')
-                .slice(0, 4)
-                .join(', ') + (members.length > 4 ? ` and ${members.length - 4} more` : '') + (members.length === 1 ? ' is here' : ' are here')}
+            ? "No one's here yet."
+            : names.slice(0, 4).join(', ') +
+              (members.length > 4 ? ` and ${members.length - 4} more` : '') +
+              (members.length === 1 ? ' is here' : ' are here')}
         </p>
-        {members.some((m) => m.streaming) && (
+        {streamers.length > 0 && (
           <p className="vx-join-live">
             <span className="vx-live-badge">LIVE</span>
-            {members
-              .filter((m) => m.streaming)
-              .map((m) => users[m.userId]?.name ?? 'Someone')
-              .join(', ')}{' '}
-            streaming
+            {streamers.join(', ')} streaming
           </p>
         )}
         <button className="vx-btn vx-btn-primary vx-btn-lg" onClick={() => void useVoice.getState().join(channelId)}>
-          {otherChannelId ? `Switch to ${channelName}` : `Join ${channelName}`}
+          {otherChannelId ? `Switch to ${channelName}` : 'Join voice'}
         </button>
         {otherChannelId && otherName && <p className="vx-join-note">You'll leave {otherName}.</p>}
-        {status === 'error' && error && (
-          <p className="vx-join-error">
-            <AlertIcon size={15} /> {error}
-          </p>
-        )}
       </div>
     </div>
   )
@@ -214,7 +208,7 @@ function Stage() {
       )}
       {status === 'reconnecting' && (
         <div className="vx-stage-banner is-warn">
-          <span className="vx-spinner" /> Connection interrupted — reconnecting…
+          <span className="vx-spinner" /> Connection lost. Reconnecting…
         </div>
       )}
       {audioBlocked && (

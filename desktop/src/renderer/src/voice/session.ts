@@ -473,9 +473,10 @@ function announceLeft(): void {
 // The server forgets voice state when our socket drops; re-announce after every (re)connect.
 onConnected(() => announce())
 
-// Surface every new voice error as a toast as well (the message stays in `useVoice().error`).
+// Surface every new voice error as a toast as well (the message stays in `useVoice().error`), except when voice
+// itself failed (status 'error'): the sidebar's voice panel already shows that one until it's dismissed.
 useVoice.subscribe((s, prev) => {
-  if (s.error && s.error !== prev.error) toast(s.error, 'error')
+  if (s.error && s.error !== prev.error && s.status !== 'error') toast(s.error, 'error')
 })
 
 // ---------------------------------------------------------------------------------------------

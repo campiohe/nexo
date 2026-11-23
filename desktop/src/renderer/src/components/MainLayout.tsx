@@ -1,10 +1,8 @@
 import { useEffect } from 'react'
 import { useApp } from '../store/app'
 import { useUi } from '../store/ui'
-import { useVoice } from '../voice/session'
 import { VoiceStage } from './voice/VoiceStage'
 import { PipLayer } from './voice/PipPlayer'
-import { toast } from '../lib/toast'
 import { canManageChannels } from '../lib/permissions'
 import { Sidebar } from './Sidebar'
 import { TextChannel } from './TextChannel'
@@ -72,7 +70,6 @@ function Center() {
   const toggleMembers = useUi((s) => s.toggleMembers)
   const panel = useChatPanels((s) => s.panel)
   const membersShown = membersOpen && !panel
-  const inThisVoice = useVoice((s) => !!channel && s.channelId === channel.id)
   const canManage = useApp((s) => canManageChannels(s.me))
 
   useEffect(() => {
@@ -86,19 +83,6 @@ function Center() {
           <>
             {channel.type === 'text' ? <HashIcon size={20} className="center-icon" /> : <SpeakerIcon size={20} className="center-icon" />}
             <h1 className="center-title">{channel.name}</h1>
-            {channel.type === 'voice' && !inThisVoice && (
-              <button
-                className="btn btn-primary btn-sm"
-                onClick={() =>
-                  useVoice
-                    .getState()
-                    .join(channel.id)
-                    .catch((err) => toast(err, 'error'))
-                }
-              >
-                Join voice
-              </button>
-            )}
           </>
         )}
         <span className="grow" />
@@ -131,14 +115,11 @@ function Center() {
           <UsersIcon size={18} />
         </button>
         <SearchBox />
-        <kbd className="kbd-hint" title="Jump to a channel">
-          Ctrl K
-        </kbd>
       </header>
       {connection !== 'connected' && (
         <div className="connection-banner" role="status">
           <span className="spinner" />
-          {connection === 'error' ? 'Connection problem — retrying…' : 'Reconnecting…'}
+          {connection === 'error' ? 'Connection problem. Retrying…' : 'Reconnecting…'}
         </div>
       )}
       <AccessRequestBanners />

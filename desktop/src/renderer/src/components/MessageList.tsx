@@ -15,7 +15,7 @@ import { MessageActions } from './MessageActions'
 import { MessageEditor } from './MessageEditor'
 import { Reactions } from './Reactions'
 import { EmojiPicker } from './EmojiPicker'
-import { ArrowDownIcon, HashIcon } from './icons'
+import { ArrowDownIcon } from './icons'
 import { PinIcon } from './chatIcons'
 import { MessageEmbeds } from './EmbedCard'
 import { useChatPanels } from '../store/chatPanels'
@@ -296,11 +296,8 @@ export function MessageList({ channelId }: { channelId: string }) {
         <div className="message-list-content" ref={contentRef}>
           {loaded && !hasMore && (
             <div className="channel-intro">
-              <div className="channel-intro-icon">
-                <HashIcon size={30} />
-              </div>
-              <h2>Welcome to #{channelName}</h2>
-              <p className="muted">This is the beginning of #{channelName}. Say hi!</p>
+              <h2>#{channelName}</h2>
+              <p className="muted">The start of #{channelName}.</p>
             </div>
           )}
           {(loading || !loaded) && (

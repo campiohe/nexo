@@ -2,6 +2,7 @@
 import { installAppearance } from './lib/appearance'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
+import '@fontsource-variable/figtree'
 import './styles/tokens.css'
 import './styles/app.css'
 import './styles/chat.css'

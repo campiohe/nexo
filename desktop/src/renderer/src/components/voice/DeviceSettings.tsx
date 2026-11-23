@@ -94,7 +94,7 @@ export function DeviceSettings() {
         devices={ofKind('audiooutput')}
         value={prefs.audiooutput}
         loaded={loaded}
-        disabledReason={supportsSinkId ? undefined : 'Output selection is not supported here; the system default is used.'}
+        disabledReason={supportsSinkId ? undefined : 'Not supported here. The system default is used.'}
       />
       <SpeakerTest deviceId={prefs.audiooutput} />
       <SoundEffectsToggle />
@@ -382,11 +382,7 @@ function SoundEffectsToggle() {
     <label className="toggle-row">
       <span className="toggle-text">
         <span>Sound effects</span>
-        <span className="muted small">
-          Short sounds when you mute, unmute, deafen or undeafen (also from keybinds while a game has focus), when
-          someone joins or leaves your voice channel, when someone wakes you up while you're muted or deafened,
-          and when someone asks to sign in on a new device. Only you hear them.
-        </span>
+        <span className="muted small">Mute, deafen, joins, leaves, wake-ups and sign-in requests. Only you hear them.</span>
       </span>
       <input
         type="checkbox"
@@ -413,10 +409,7 @@ function SoundboardSection() {
       <label className="toggle-row">
         <span className="toggle-text">
           <span>Play soundboard sounds</span>
-          <span className="muted small">
-            Hear the soundboard clips people play in your voice channel. Not while you're deafened, and never from
-            people you muted for yourself.
-          </span>
+          <span className="muted small">Not while deafened, and never from people you muted.</span>
         </span>
         <input
           type="checkbox"
@@ -513,7 +506,7 @@ function InputModeSection() {
         </div>
         <p className="vx-field-hint">
           {mode === 'ptt'
-            ? 'Your mic is only sent while you hold the key, even when another app (like a game) has focus.'
+            ? 'Your mic is only sent while you hold the key, even in a game.'
             : 'Your mic is sent whenever you are unmuted.'}
         </p>
       </div>

@@ -6,7 +6,15 @@
 .appearance-row { display: flex; align-items: flex-start; gap: 16px; }
 .appearance-zoom-value { flex: none; min-width: 48px; text-align: right; font: 600 13px var(--mono); color: var(--text-0); }
 
-.theme-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.theme-cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+/* The accent column is wider, so its six swatches stay on one line next to the title bar choice. */
+.appearance-pair { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 24px; }
+.appearance-pair .swatches { flex-wrap: nowrap; gap: 8px; }
+.appearance-pair .accent-swatch { flex: none; width: 28px; height: 28px; }
+.appearance-accent-name { margin-left: 4px; color: var(--text-2); font-weight: 600; text-transform: none; letter-spacing: 0; }
+/* Each swatch carries data-accent, so it gets that preset's shades (tokens.css) for the current palette. */
+.accent-swatch { background: var(--accent-d); }
+[data-theme='light'] .accent-swatch { background: var(--accent-l); }
 .theme-card {
   position: relative;
   display: flex;
@@ -55,6 +63,29 @@
 .tp-msg:nth-child(1) .tp-line { width: 70%; }
 .tp-msg:nth-child(2) .tp-line { width: 48%; }
 .tp-composer { height: 10px; margin-top: 2px; border-radius: 3px; background: var(--bg-3); border: 1px solid var(--line); }
+
+/* App icon: one tile per variant (the icon over its label), outlined with the accent when chosen. */
+.app-icon-options { display: flex; flex-wrap: wrap; gap: 10px; }
+.app-icon-option {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  min-width: 84px;
+  padding: 10px 10px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-0);
+  color: var(--text-1);
+  font: inherit;
+  cursor: pointer;
+  transition: border-color 0.15s var(--ease), box-shadow 0.15s var(--ease), color 0.15s var(--ease);
+}
+.app-icon-option:hover { border-color: var(--line-strong); color: var(--text-0); }
+.app-icon-option.is-selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); color: var(--text-0); }
+.app-icon-option:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.app-icon-art { display: block; width: 56px; height: 56px; }
+.app-icon-label { font-size: 13px; font-weight: 600; }
 
 /* ---------- compact message density (<html data-density="compact">) ---------- */
 

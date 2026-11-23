@@ -36,14 +36,12 @@ export function WelcomeBackStep({ serverUrl, accounts }: { serverUrl: string; ac
   return (
     <div className="onboarding-card">
       <div className="onboarding-brand">
-        <NexoMark size={40} />
-        <div>
-          <h1>Welcome back</h1>
-          <p className="muted">
-            {accounts.length > 1 ? 'This device is linked to these accounts' : 'This device is linked to this account'} on{' '}
-            {host(serverUrl)}.
-          </p>
-        </div>
+        <NexoMark size={36} tile />
+        <h1>Welcome back</h1>
+        <p className="muted">
+          {accounts.length > 1 ? 'This device is linked to these accounts' : 'This device is linked to this account'} on{' '}
+          {host(serverUrl)}.
+        </p>
       </div>
 
       <Notice />
@@ -76,7 +74,7 @@ export function WelcomeBackStep({ serverUrl, accounts }: { serverUrl: string; ac
       )}
 
       <button type="button" className="link-btn" onClick={dismissWelcome} disabled={busy}>
-        Not me — create a new account
+        Not you? Create a new account
       </button>
     </div>
   )
@@ -94,11 +92,9 @@ export function AccessRequestStep({ request }: { request: PendingAccessRequest }
   return (
     <div className="onboarding-card">
       <div className="onboarding-brand">
-        <NexoMark size={40} />
-        <div>
-          <h1>Sign-in request sent</h1>
-          <p className="muted">{host(request.serverUrl)}</p>
-        </div>
+        <NexoMark size={36} tile />
+        <h1>Sign-in request sent</h1>
+        <p className="muted">{host(request.serverUrl)}</p>
       </div>
 
       <div className="signin-wait" role="status">
@@ -107,13 +103,12 @@ export function AccessRequestStep({ request }: { request: PendingAccessRequest }
       </div>
 
       <p className="muted signin-help">
-        Ask an admin of this server to approve the sign-in for <strong>{request.name}</strong>, or approve it yourself
-        in Nexo on a device where you're signed in as {request.name}. The request expires in about {minutes}{' '}
-        {minutes === 1 ? 'minute' : 'minutes'}.
+        Ask an admin to approve <strong>{request.name}</strong>, or approve it yourself from a device where you're
+        signed in. It expires in about {minutes} {minutes === 1 ? 'minute' : 'minutes'}.
       </p>
 
-      <button className="btn btn-ghost" type="button" onClick={cancel} disabled={cancelling}>
-        Cancel
+      <button className="btn btn-ghost signin-cancel" type="button" onClick={cancel} disabled={cancelling}>
+        Cancel request
       </button>
     </div>
   )

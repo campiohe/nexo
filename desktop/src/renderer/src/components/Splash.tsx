@@ -13,9 +13,7 @@ export function Splash() {
     return (
       <div className="splash">
         <div className="splash-card">
-          <div className="splash-icon is-error">
-            <AlertIcon size={28} />
-          </div>
+          <AlertIcon size={28} className="splash-icon" />
           <h1>Can't connect</h1>
           <p className="muted">{error ?? 'The connection failed.'}</p>
           {serverUrl && <code className="splash-url">{serverUrl}</code>}
@@ -36,8 +34,11 @@ export function Splash() {
   return (
     <div className="splash">
       <div className="splash-card is-loading">
-        <NexoMark size={56} className="splash-mark" />
-        <p className="muted">Connecting{serverUrl ? ` to ${serverUrl.replace(/^https?:\/\//, '')}` : ''}…</p>
+        <NexoMark size={48} tile />
+        <p className="muted splash-status" role="status">
+          <span className="spinner" aria-hidden="true" />
+          Connecting{serverUrl ? ` to ${serverUrl.replace(/^https?:\/\//, '')}` : ''}…
+        </p>
       </div>
     </div>
   )

@@ -31,17 +31,36 @@ type Tab = SettingsTab
 /** The App section needs the Electron bridge (window.nexo.prefs); it's hidden in a plain browser. */
 const hasPrefs = () => typeof window.nexo?.prefs?.get === 'function'
 
-const TABS: { id: Tab; label: string; available?: () => boolean }[] = [
-  { id: 'profile', label: 'Profile' },
-  { id: 'appearance', label: 'Appearance' },
-  { id: 'av', label: 'Audio & video' },
-  { id: 'keybinds', label: 'Keybinds' },
-  { id: 'notifications', label: 'Notifications', available: hasNativeNotifications },
-  { id: 'activity', label: 'Activity', available: hasActivityBridge },
-  { id: 'app', label: 'App', available: hasPrefs },
-  { id: 'plugins', label: 'Plugins' },
-  { id: 'members', label: 'Members' },
-  { id: 'server', label: 'Server' },
+interface TabDef {
+  id: Tab
+  label: string
+  available?: () => boolean
+}
+
+/** Nav groups; `label: null` is the server group, labelled with the server's name. */
+const GROUPS: { key: string; label: string | null; tabs: TabDef[] }[] = [
+  {
+    key: 'you',
+    label: 'You',
+    tabs: [
+      { id: 'profile', label: 'Profile' },
+      { id: 'appearance', label: 'Appearance' },
+      { id: 'av', label: 'Audio & video' },
+      { id: 'keybinds', label: 'Keybinds' },
+      { id: 'notifications', label: 'Notifications', available: hasNativeNotifications },
+      { id: 'activity', label: 'Activity', available: hasActivityBridge },
+    ],
+  },
+  { key: 'device', label: 'This device', tabs: [{ id: 'app', label: 'App', available: hasPrefs }] },
+  {
+    key: 'server',
+    label: null,
+    tabs: [
+      { id: 'plugins', label: 'Plugins' },
+      { id: 'members', label: 'Members' },
+      { id: 'server', label: 'Server' },
+    ],
+  },
 ]
 
 export function SettingsModal() {
@@ -50,23 +69,37 @@ export function SettingsModal() {
   // In store/ui.ts so other places can open a given section (e.g. the profile card's "Edit profile").
   const tab = useUi((s) => s.settingsTab)
   const setTab = useUi((s) => s.setSettingsTab)
+  const serverName = useApp((s) => s.serverName)
   if (!open) return null
 
   return (
     <Modal title="Settings" onClose={close} width={720} className="settings-modal">
       <div className="settings">
-        <nav className="settings-nav" role="tablist" aria-label="Settings sections">
-          {TABS.filter((t) => !t.available || t.available()).map((t) => (
-            <button
-              key={t.id}
-              role="tab"
-              aria-selected={tab === t.id}
-              className={`settings-tab ${tab === t.id ? 'is-active' : ''}`}
-              onClick={() => setTab(t.id)}
-            >
-              {t.label}
-            </button>
-          ))}
+        <nav className="settings-nav" role="tablist" aria-label="Settings sections" aria-orientation="vertical">
+          {GROUPS.map((g) => {
+            const tabs = g.tabs.filter((t) => !t.available || t.available())
+            if (tabs.length === 0) return null
+            const label = g.label ?? (serverName || 'Server')
+            return (
+              <div key={g.key} className="settings-nav-group" role="presentation">
+                {/* Visual grouping only: a tablist may only own tabs, and each tab's name says enough. */}
+                <span className="settings-nav-label" aria-hidden="true" title={label}>
+                  {label}
+                </span>
+                {tabs.map((t) => (
+                  <button
+                    key={t.id}
+                    role="tab"
+                    aria-selected={tab === t.id}
+                    className={`settings-tab ${tab === t.id ? 'is-active' : ''}`}
+                    onClick={() => setTab(t.id)}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+            )
+          })}
         </nav>
         <div className="settings-panel" role="tabpanel">
           {tab === 'profile' && <ProfileSection />}
@@ -124,7 +157,7 @@ function ProfileSection() {
           <div className="profile-name" style={{ color: me.color }}>
             {me.name}
           </div>
-          <div className="muted small">Your display name is tied to this device.</div>
+          <div className="muted small">Your name is tied to this device.</div>
           <AvatarActions hasAvatar={!!me.avatar} />
         </div>
       </div>
@@ -205,7 +238,7 @@ function AvatarActions({ hasAvatar }: { hasAvatar: boolean }) {
 }
 
 const KEYBIND_HINTS: Partial<Record<HotkeyAction, string>> = {
-  toggleShare: 'Stops your stream, or brings Nexo to the front with the share picker open.',
+  toggleShare: 'Stops your stream, or opens the share picker.',
 }
 
 /** SPEC §13.2: record / clear each action's combination; in-app shortcuts can be reset to their default. */
@@ -288,8 +321,8 @@ function KeybindsSection() {
     const hint =
       action === 'ptt'
         ? inputMode === 'ptt'
-          ? 'Hold to talk. Holding extra modifiers (like Shift) still talks.'
-          : 'Used when Input mode is Push to talk (Audio & video).'
+          ? 'Hold to talk. Extra modifiers like Shift still work.'
+          : 'Only used in push to talk mode.'
         : KEYBIND_HINTS[action]
     const isDefault = inApp && !!b && sameCombo(b, defaultInAppBinding(action))
     return (
@@ -335,8 +368,8 @@ function KeybindsSection() {
       <h3 className="settings-heading">Keybinds</h3>
       <p className="muted small kb-intro">
         {capturing
-          ? 'Hold any modifiers and press a key or mouse button. To bind a modifier alone, press and release it. Esc cancels, Backspace clears.'
-          : 'Click a shortcut to record a new one. Left and right click can’t be used.'}
+          ? 'Press a key or mouse button, with any modifiers. For a modifier alone, press and release it. Esc cancels, Backspace clears.'
+          : 'Click a shortcut to change it. Left and right click can’t be used.'}
       </p>
       {reason && (
         <div className="callout callout-warn">
@@ -345,15 +378,17 @@ function KeybindsSection() {
         </div>
       )}
       <div className="kb-group">
-        <span className="field-label">Global</span>
-        <span className="muted small">
-          Work even while another app, like a game, is focused. None are set by default, so they never clash with your games.
-        </span>
+        <div className="kb-group-head">
+          <span className="field-label">Global</span>
+          <span className="muted small">Work even while a game has focus. None are set by default.</span>
+        </div>
         {HOTKEY_ACTIONS.filter((a) => a.scope === 'global').map((a) => row(a.id))}
       </div>
       <div className="kb-group">
-        <span className="field-label">In Nexo</span>
-        <span className="muted small">Only while the Nexo window is focused.</span>
+        <div className="kb-group-head">
+          <span className="field-label">In Nexo</span>
+          <span className="muted small">Only while Nexo is focused.</span>
+        </div>
         {HOTKEY_ACTIONS.filter((a) => a.scope === 'app').map((a) => row(a.id))}
       </div>
     </section>
@@ -413,9 +448,9 @@ function nativeCapabilitiesLine(caps: NativeShareCapabilities | null): string {
   return caps.adapter ? `Streams with ${encoder} on ${caps.adapter}.` : `Streams with ${encoder}.`
 }
 
-const NOTIFY_LEVELS: { id: NotifyLevel; label: string }[] = [
+const NOTIFY_LEVELS: { id: NotifyLevel; label: string; title?: string }[] = [
   { id: 'all', label: 'All messages' },
-  { id: 'mentions', label: 'Only mentions' },
+  { id: 'mentions', label: 'Only mentions', title: 'Messages with your @name or @everyone, and replies to you' },
   { id: 'off', label: 'Off' },
 ]
 
@@ -427,13 +462,10 @@ function NotificationsSection() {
   return (
     <section>
       <h3 className="settings-heading">Notifications</h3>
-      <div className="toggle-row" style={{ cursor: 'default' }}>
+      <div className="toggle-row is-static">
         <span className="toggle-text">
           <span id="notify-level-label">Desktop notifications</span>
-          <span className="muted small">
-            For messages in channels you're not looking at, or while Nexo is in the background or in the tray. A
-            mention is a message with your @name, @everyone, or a reply to you.
-          </span>
+          <span className="muted small">For channels you're not looking at.</span>
         </span>
         <div className="vx-seg" role="radiogroup" aria-labelledby="notify-level-label">
           {NOTIFY_LEVELS.map((l) => (
@@ -443,6 +475,7 @@ function NotificationsSection() {
               role="radio"
               aria-checked={prefs.desktop === l.id}
               className={`vx-seg-btn ${prefs.desktop === l.id ? 'is-active' : ''}`}
+              title={l.title}
               onClick={() => setNotifyPrefs({ desktop: l.id })}
             >
               {l.label}
@@ -453,10 +486,9 @@ function NotificationsSection() {
       <label className="toggle-row">
         <span className="toggle-text">
           <span>Notification sound</span>
-          <span className="muted small">
-            A soft sound with each notification, a brighter one when you're mentioned. Only you hear them.
-            {!soundEffects && <strong> Sound effects are off (Audio & video), so these are silent too.</strong>}
-          </span>
+          {!soundEffects && (
+            <span className="muted small">Silent while sound effects are off in Audio & video.</span>
+          )}
         </span>
         <input
           type="checkbox"
@@ -470,7 +502,7 @@ function NotificationsSection() {
       <label className="toggle-row">
         <span className="toggle-text">
           <span>{flashLabel}</span>
-          <span className="muted small">Only while Nexo isn't the focused window, until you come back to it.</span>
+          <span className="muted small">Only while Nexo is in the background.</span>
         </span>
         <input
           type="checkbox"
@@ -556,10 +588,8 @@ function AppSection() {
         <>
           <label className="toggle-row">
             <span className="toggle-text">
-              <span>Close button minimizes Nexo to the system tray</span>
-              <span className="muted small">
-                Nexo keeps running (and stays in voice) in the tray. Quit from the tray icon's menu.
-              </span>
+              <span>Close to the system tray</span>
+              <span className="muted small">Nexo keeps running and stays in voice. Quit from the tray icon.</span>
             </span>
             <input
               type="checkbox"
@@ -571,14 +601,13 @@ function AppSection() {
             />
           </label>
           {showEngine && (
-            <div className="toggle-row" style={{ cursor: 'default' }}>
+            <div className="toggle-row is-static">
               <span className="toggle-text">
                 <span id="capture-engine-label">Capture engine</span>
                 <span className="muted small">
-                  Native captures and encodes streams on your graphics card, outside Nexo, so games keep their frame
-                  rate and the stream stays smooth. If it fails, Nexo switches to Chromium on its own.{' '}
-                  {nativeCapabilitiesLine(nativeCaps)} Applies to your next stream.
+                  Native uses your graphics card, so games keep their frame rate. Falls back to Chromium if it fails.
                 </span>
+                <span className="muted small">{nativeCapabilitiesLine(nativeCaps)} Applies to your next stream.</span>
               </span>
               <div className="vx-seg" role="radiogroup" aria-labelledby="capture-engine-label">
                 {CAPTURE_ENGINES.map((e) => (
@@ -602,8 +631,7 @@ function AppSection() {
               <span className="toggle-text">
                 <span>Fast game capture</span>
                 <span className="muted small">
-                  Chromium capture engine only. Keeps stream frames on the GPU, so streams stay smooth while a game
-                  keeps your GPU busy. Turn it off if your stream shows a black or frozen picture.
+                  Chromium engine only. Turn it off if your stream shows a black or frozen picture.
                   {restartNeeded && <strong> Restart Nexo to apply.</strong>}
                 </span>
               </span>
@@ -748,15 +776,15 @@ function ServerSection({ onDone }: { onDone(): void }) {
         >
           Switch server
         </button>
-        <span className="muted small">Keeps this device signed in here, so you can come back later.</span>
+        <span className="muted small">You stay signed in here.</span>
       </div>
 
       <div className="danger-zone">
         <div>
           <strong>Log out of this device</strong>
           <p className="muted small">
-            Removes this device's key for this server. The name <strong>{me?.name}</strong> can't be recovered without it — you'd
-            have to join again with a new name.
+            Deletes this device's key. Without it, <strong>{me?.name}</strong> can't be recovered and you'd join with a new
+            name.
           </p>
         </div>
         <button className="btn btn-danger" onClick={() => setConfirmLogout(true)}>

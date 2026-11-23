@@ -30,7 +30,7 @@ export function PluginsSection() {
   return (
     <section>
       <h3 className="settings-heading">Plugins</h3>
-      <p className="muted small">Built-in extras for this server. Admins turn them on or off for everyone.</p>
+      <p className="muted small plugins-intro">Admins turn these on or off for everyone.</p>
       {!supported && (
         <p className="callout callout-warn">This server's version has no plugins yet. Update the server to use them.</p>
       )}
@@ -40,10 +40,7 @@ export function PluginsSection() {
         </span>
         <span className="plugin-text">
           <span className="plugin-name">YouTube Music</span>
-          <span className="muted small">
-            Listen together in voice channels. Everyone's Nexo plays the same song from YouTube Music, in sync. Each
-            person can change the music volume or turn it off for themselves (Audio & video).
-          </span>
+          <span className="muted small">Listen together in voice, in sync. Volume is per person, in Audio & video.</span>
         </span>
         <input
           type="checkbox"
@@ -62,9 +59,7 @@ export function PluginsSection() {
         <span className="plugin-text">
           <span className="plugin-name">Emulator</span>
           <span className="muted small">
-            Play SNES, Mega Drive, PlayStation and Nintendo 64 games you own together. The host loads a game file from
-            their computer; Nexo streams it to the call and friends play with their own keyboard or gamepad. Nexo
-            doesn't provide games.
+            Play SNES, Mega Drive, PlayStation and Nintendo 64 games together in a call. Bring your own game files.
           </span>
         </span>
         <input
@@ -77,7 +72,6 @@ export function PluginsSection() {
           onChange={(e) => void toggle('emulator', e.target.checked)}
         />
       </label>
-      {supported && !canEdit && <p className="muted small">Only admins can change plugins.</p>}
     </section>
   )
 }

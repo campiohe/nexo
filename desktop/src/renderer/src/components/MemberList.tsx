@@ -1,4 +1,4 @@
-import type { Presence, User, VoiceState } from '@shared/protocol'
+import type { Presence, Role, User, VoiceState } from '@shared/protocol'
 import { DEFAULT_PRESENCE } from '@shared/protocol'
 import { useApp } from '../store/app'
 import { anchorOf, useUi } from '../store/ui'
@@ -8,7 +8,6 @@ import { GamepadIcon } from './peopleIcons'
 import '../styles/people.css'
 import { canMoveMember, hasRoles, roleOf } from '../lib/permissions'
 import { Avatar } from './Avatar'
-import { RoleBadge } from './MembersSection'
 import { SpeakerIcon } from './icons'
 
 export function MemberList() {
@@ -73,7 +72,7 @@ export function MemberList() {
               {u.name}
               {u.id === meId && <span className="member-you"> (you)</span>}
             </span>
-            {roles && role !== 'member' && <RoleBadge role={role} compact />}
+            {roles && role !== 'member' && <RoleMark role={role} />}
           </span>
           {sub ??
             (v && (
@@ -95,15 +94,31 @@ export function MemberList() {
   return (
     <aside className="members" aria-label="Members">
       <div className="members-scroll">
-        <h3 className="members-heading">Online — {on.length}</h3>
+        <h3 className="members-heading">Online · {on.length}</h3>
         <ul className="member-list">{on.map((u) => renderUser(u, true))}</ul>
         {off.length > 0 && (
           <>
-            <h3 className="members-heading">Offline — {off.length}</h3>
+            <h3 className="members-heading">Offline · {off.length}</h3>
             <ul className="member-list">{off.map((u) => renderUser(u, false))}</ul>
           </>
         )}
       </div>
     </aside>
+  )
+}
+
+/** Owner / admin next to a name: a small icon (crown / shield) with an accessible label instead of a pill. */
+function RoleMark({ role }: { role: Exclude<Role, 'member'> }) {
+  const label = role === 'owner' ? 'Server owner' : 'Admin'
+  return (
+    <span className={`member-role is-${role}`} title={label} aria-label={label} role="img">
+      <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+        {role === 'owner' ? (
+          <path d="M3 8l4.5 4L12 5l4.5 7L21 8l-2 11H5L3 8z" />
+        ) : (
+          <path d="M12 3l7 3v5c0 4.5-3 8.2-7 10-4-1.8-7-5.5-7-10V6l7-3z" />
+        )}
+      </svg>
+    </span>
   )
 }

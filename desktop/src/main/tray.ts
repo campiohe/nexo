@@ -41,6 +41,9 @@ let updateReady: string | null = null
 /** Unread mentions (lib/notify.ts in the renderer): the tray icon gets a red dot and the tooltip says so. */
 let mentions = 0
 
+/** Settings → Appearance → App icon (appIcon.ts): the image the tray icon is drawn from; null: the bundled icon.png. */
+let baseIcon: NativeImage | null = null
+
 /** The red of the unread-mention dot (same as the renderer's mention badge). */
 const DOT = { r: 0xf2, g: 0x3f, b: 0x43 }
 
@@ -75,9 +78,12 @@ function withDot(img: NativeImage): NativeImage {
   return nativeImage.createFromBitmap(px, { width, height })
 }
 
-/** icon.png (1024 px) scaled down; @1x/@1.5x/@2x representations so the OS picks a crisp one for its DPI. */
+/**
+ * The app icon (icon.png, 1024 px, or the chosen alternate, 256 px) scaled down; @1x/@1.5x/@2x representations so
+ * the OS picks a crisp one for its DPI.
+ */
 function trayImage(dot = false): NativeImage {
-  const src = nativeImage.createFromPath(icon)
+  const src = baseIcon && !baseIcon.isEmpty() ? baseIcon : nativeImage.createFromPath(icon)
   if (src.isEmpty()) return src
   const scaled = (px: number): NativeImage => {
     const img = src.resize({ width: px, height: px, quality: 'best' })
@@ -182,6 +188,12 @@ export function setTrayMentions(count: number): void {
   if (!tray || tray.isDestroyed()) return
   if (dotChanged) tray.setImage(trayImage(mentions > 0))
   tray.setToolTip(tooltip())
+}
+
+/** Draws the tray icon from this image from now on (null: the bundled icon), keeping the unread dot. */
+export function setTrayBaseIcon(image: NativeImage | null): void {
+  baseIcon = image
+  if (tray && !tray.isDestroyed()) tray.setImage(trayImage(mentions > 0))
 }
 
 /** Shows or hides the "Restart to update" item (version of the downloaded update, or null). */

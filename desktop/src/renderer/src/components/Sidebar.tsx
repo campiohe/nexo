@@ -26,7 +26,7 @@ import { toast } from '../lib/toast'
 import { canManageChannels, canMoveMember } from '../lib/permissions'
 import { Avatar } from './Avatar'
 import { ConfirmDialog } from './Modal'
-import { BellIcon, GearIcon, HashIcon, HeadphonesOffIcon, MicOffIcon, NexoMark, PencilIcon, PlusIcon, SpeakerIcon, TrashIcon, VideoIcon } from './icons'
+import { BellIcon, GearIcon, HashIcon, HeadphonesOffIcon, MicOffIcon, PencilIcon, PlusIcon, SpeakerIcon, TrashIcon, VideoIcon } from './icons'
 
 /**
  * Dragging a voice member onto another voice channel to move them (admins / owner). The dragged user lives
@@ -233,22 +233,15 @@ export function openChannel(channel: Channel) {
 }
 
 export function Sidebar() {
-  const serverName = useApp((s) => s.serverName)
   const channels = useApp((s) => s.channels)
   const text = channels.filter((c) => c.type === 'text')
   const voice = channels.filter((c) => c.type === 'voice')
 
   return (
     <aside className="sidebar">
-      <header className="sidebar-header">
-        <NexoMark size={26} />
-        <span className="sidebar-title" title={serverName}>
-          {serverName}
-        </span>
-      </header>
       <nav className="sidebar-scroll" aria-label="Channels">
-        <ChannelSection type="text" label="Text" channels={text} />
-        <ChannelSection type="voice" label="Voice" channels={voice} />
+        <ChannelSection type="text" label="Text channels" channels={text} />
+        <ChannelSection type="voice" label="Voice channels" channels={voice} />
       </nav>
       <VoiceControls />
       <UserPanel />

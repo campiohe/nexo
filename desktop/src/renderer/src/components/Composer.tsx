@@ -304,7 +304,7 @@ export function Composer({ channelId, channelName }: { channelId: string; channe
     const text = value.trim()
     if ((!text && images.length === 0) || tooLong || sendingRef.current) return
     if (!connected) {
-      toast('Not connected — your message is still in the box.', 'error')
+      toast('Not connected. Your message is still in the box.', 'error')
       return
     }
     sendingRef.current = true
@@ -615,7 +615,7 @@ function PendingThumb({ img, channelId }: { img: PendingImage; channelId: string
       )}
       {img.status === 'error' && (
         <div className="composer-thumb-error">
-          <button className="icon-btn" onClick={() => retryImage(channelId, img.key)} aria-label={`Retry uploading ${img.name}`} title={`${img.error} — retry`}>
+          <button className="icon-btn" onClick={() => retryImage(channelId, img.key)} aria-label={`Retry uploading ${img.name}`} title={`Retry: ${img.error}`}>
             <RetryIcon />
           </button>
         </div>

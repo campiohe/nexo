@@ -1,6 +1,6 @@
 /* Design tokens shared by every renderer component. Add tokens here; don't hardcode colors in components.
  *
- * Themes: <html data-theme="dark|light"> (set before the first paint by lib/appearance.ts). Dark is the default
+ * Themes: <html data-theme="dark|midnight|light"> (set before the first paint by lib/appearance.ts). Dark is the default
  * palette. Each palette block is also matched by any element carrying data-theme, so a subtree can show the other
  * theme (Settings → Appearance previews). Every color token must be defined in BOTH palette blocks. */
 
@@ -9,44 +9,77 @@
   --radius-sm: 6px;
   --radius: 10px;
   --radius-lg: 16px;
-  --font: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+  --font: 'Figtree Variable', 'Segoe UI', system-ui, -apple-system, sans-serif;
   --mono: 'JetBrains Mono', 'Cascadia Code', ui-monospace, monospace;
   --sidebar-w: 248px;
   --members-w: 220px;
   --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
   --header-h: 52px;
+  --titlebar-h: 36px;
 }
 
-/* ---------- dark palette (default) ----------
- * The last selector: overlays drawn on top of video / stream tiles stay dark in the light theme. */
+/* ---------- accent presets ----------
+ * <html data-accent> (lib/appearance.ts). Each preset gives a shade for dark palettes (-d) and one deepened for the
+ * light palette (-l, AA as text on bg-1…bg-3); the palette blocks below pick one, so a preview subtree in the other
+ * theme still gets the right shade. Mint is the default. */
+:root {
+  --accent-d: #43d6a3; --accent-strong-d: #2fc490; --accent-ink-d: #06261b;
+  --accent-l: #0a7d5a; --accent-strong-l: #08694b; --accent-ink-l: #ffffff;
+}
+[data-accent='blue'] {
+  --accent-d: #72a2ff; --accent-strong-d: #5a8ff5; --accent-ink-d: #0a1a3a;
+  --accent-l: #2a5fd3; --accent-strong-l: #214fb3; --accent-ink-l: #ffffff;
+}
+[data-accent='violet'] {
+  --accent-d: #ac8eff; --accent-strong-d: #9a78f5; --accent-ink-d: #1c1033;
+  --accent-l: #6542d2; --accent-strong-l: #5434b5; --accent-ink-l: #ffffff;
+}
+[data-accent='coral'] {
+  --accent-d: #ff8f6c; --accent-strong-d: #f57a55; --accent-ink-d: #2e1006;
+  --accent-l: #be4b26; --accent-strong-l: #a23e1e; --accent-ink-l: #ffffff;
+}
+[data-accent='amber'] {
+  --accent-d: #f2bc50; --accent-strong-d: #e5ab35; --accent-ink-d: #2a1c00;
+  --accent-l: #8d5b00; --accent-strong-l: #774c00; --accent-ink-l: #ffffff;
+}
+[data-accent='rose'] {
+  --accent-d: #f680aa; --accent-strong-d: #ec6797; --accent-ink-d: #2e0a19;
+  --accent-l: #b83467; --accent-strong-l: #9d2a56; --accent-ink-l: #ffffff;
+}
+
+/* ---------- dark palette (default): neutral graphite ----------
+ * The last selector: overlays drawn on top of video / stream tiles stay dark in the light theme. Midnight starts
+ * from this block too (it only overrides the surfaces, below). */
 :root,
 [data-theme='dark'],
+[data-theme='midnight'],
 [data-theme='light'] :is(.vx-tile-label, .vx-tile-btn, .vx-stream:not(.is-unwatched), .vx-tile:fullscreen) {
   color-scheme: dark;
-  --bg-0: #0b0d11;        /* app background / gutters */
-  --bg-1: #12151b;        /* sidebar, panels */
-  --bg-2: #181c24;        /* center pane */
-  --bg-3: #212632;        /* inputs, hover */
-  --bg-4: #2a3040;        /* active / pressed */
-  --line: #262b37;
-  --line-hover: #333a4a;  /* hovered input / control border */
-  --line-strong: #39415a; /* focused / hovered border, scrollbar thumb hover */
-  --text-0: #eef1f6;
-  --text-1: #b4bccb;
-  --text-2: #7c8598;
-  --accent: #3ee6b0;      /* mint */
-  --accent-strong: #1fcf96;
-  --accent-ink: #052019;  /* text on accent */
+  --bg-0: #121212;        /* title bar, app background / gutters */
+  --bg-1: #181818;        /* sidebar, panels */
+  --bg-2: #1e1e1e;        /* center pane */
+  --bg-3: #272727;        /* inputs, hover */
+  --bg-4: #303030;        /* active / pressed */
+  --line: #2a2a2a;
+  --line-hover: #363636;  /* hovered input / control border */
+  --line-strong: #444444; /* focused / hovered border, scrollbar thumb hover */
+  --text-0: #eeeeee;
+  --text-1: #c2c2c2;
+  --text-2: #959595;
+  --accent: var(--accent-d);
+  --accent-strong: var(--accent-strong-d);
+  --accent-ink: var(--accent-ink-d); /* text on accent */
+  --online: #3fcf73;      /* presence: online, voice connected */
   --live: #ff4d6d;        /* LIVE badge, streaming */
   --warn: #ffb547;
   --danger: #ff5c5c;
-  --speaking: #3ee6b0;
+  --speaking: var(--accent);
   --danger-text: #ffb3b3; /* body text inside an error callout */
   --warn-text: #ffe0ad;   /* body text inside a warning callout */
 
-  /* Derived (workstream C) */
-  --accent-soft: rgb(62 230 176 / 0.14);
-  --accent-glow: rgb(62 230 176 / 0.35);
+  /* Derived */
+  --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
+  --accent-glow: color-mix(in srgb, var(--accent) 35%, transparent);
   --live-soft: rgb(255 77 109 / 0.16);
   --danger-soft: rgb(255 92 92 / 0.14);
   --warn-soft: rgb(255 181 71 / 0.14);
@@ -58,11 +91,11 @@
   --focus-glow: rgb(255 255 255 / 0.03);     /* soft halo around a focused composer */
   --edge-highlight: rgb(255 255 255 / 0.12); /* hairline inside color swatches */
   --chip-bg: rgb(0 0 0 / 0.25);
-  --overlay: rgb(5 7 10 / 0.72);             /* modal backdrop */
+  --overlay: rgb(0 0 0 / 0.66);              /* modal backdrop */
   --scrim: rgb(0 0 0 / 0.6);                 /* share picker backdrop */
-  --splash-glow: #141924;
-  --spoiler-bg: #0b0d11;
-  --spoiler-hover: #07080b;
+  --splash-glow: var(--bg-0);
+  --spoiler-bg: #0c0c0c;
+  --spoiler-hover: #060606;
   --spoiler-shown: rgb(255 255 255 / 0.07);
   --mention-tint: 55%;                       /* how much of the user's color a mention's text keeps */
   --shadow: 0 8px 30px rgb(0 0 0 / 0.45);
@@ -73,55 +106,73 @@
 }
 
 /* ---------- light palette ----------
- * Same brand hues, deepened so text meets WCAG AA (4.5:1) on bg-0…bg-3: accent/warn/danger double as text colors. */
+ * Neutral greys; accent/warn/danger are deepened so they meet WCAG AA (4.5:1) as text on bg-1…bg-3. */
 :root[data-theme='light'],
 [data-theme='light'] {
   color-scheme: light;
-  --bg-0: #dde1e7;
-  --bg-1: #edf0f3;
-  --bg-2: #f8f9fa;
-  --bg-3: #e3e7ec;
-  --bg-4: #d3d8e0;
-  --line: #d3d8df;
-  --line-hover: #c3c9d3;
-  --line-strong: #b1b8c4;
-  --text-0: #161a22;
-  --text-1: #3f4756;
-  --text-2: #586172;
-  --accent: #067656;
-  --accent-strong: #05634a;
-  --accent-ink: #ffffff;
+  --bg-0: #e9e9e9;
+  --bg-1: #f3f3f3;
+  --bg-2: #ffffff;
+  --bg-3: #ececec;
+  --bg-4: #e0e0e0;
+  --line: #e2e2e2;
+  --line-hover: #d0d0d0;
+  --line-strong: #bdbdbd;
+  --text-0: #1a1a1a;
+  --text-1: #3e3e3e;
+  --text-2: #666666;
+  --accent: var(--accent-l);
+  --accent-strong: var(--accent-strong-l);
+  --accent-ink: var(--accent-ink-l);
+  --online: #1f8a45;
   --live: #cf1743;
   --warn: #9a5a00;
   --danger: #c22020;
-  --speaking: #0d9f73;
   --danger-text: #9b1c1c;
   --warn-text: #6e4200;
 
-  --accent-soft: rgb(6 118 86 / 0.12);
-  --accent-glow: rgb(6 118 86 / 0.28);
+  --accent-soft: color-mix(in srgb, var(--accent) 12%, transparent);
+  --accent-glow: color-mix(in srgb, var(--accent) 28%, transparent);
   --live-soft: rgb(207 23 67 / 0.12);
   --danger-soft: rgb(194 32 32 / 0.1);
   --warn-soft: rgb(154 90 0 / 0.12);
-  --hover: rgb(22 26 34 / 0.05);
+  --hover: rgb(0 0 0 / 0.045);
   --focus-ring: 0 0 0 2px var(--bg-0), 0 0 0 4px var(--accent);
 
-  --message-hover: rgb(22 26 34 / 0.03);
-  --focus-glow: rgb(22 26 34 / 0.04);
+  --message-hover: rgb(0 0 0 / 0.025);
+  --focus-glow: rgb(0 0 0 / 0.04);
   --edge-highlight: rgb(0 0 0 / 0.1);
-  --chip-bg: rgb(22 26 34 / 0.06);
-  --overlay: rgb(28 33 43 / 0.45);
-  --scrim: rgb(28 33 43 / 0.5);
-  --splash-glow: #ffffff;
-  --spoiler-bg: #c4cad4;
-  --spoiler-hover: #b5bcc8;
-  --spoiler-shown: rgb(22 26 34 / 0.07);
+  --chip-bg: rgb(0 0 0 / 0.06);
+  --overlay: rgb(20 20 20 / 0.45);
+  --scrim: rgb(20 20 20 / 0.5);
+  --splash-glow: var(--bg-0);
+  --spoiler-bg: #c6c6c6;
+  --spoiler-hover: #b8b8b8;
+  --spoiler-shown: rgb(0 0 0 / 0.07);
   --mention-tint: 45%;
-  --shadow: 0 8px 30px rgb(22 30 45 / 0.16);
-  --shadow-pop: 0 6px 20px rgb(22 30 45 / 0.18);
-  --shadow-sm: 0 4px 14px rgb(22 30 45 / 0.12);
-  --shadow-xs: 0 2px 8px rgb(22 30 45 / 0.16);
-  --header-shadow: 0 1px 0 rgb(22 30 45 / 0.04);
+  --shadow: 0 8px 30px rgb(0 0 0 / 0.14);
+  --shadow-pop: 0 6px 20px rgb(0 0 0 / 0.16);
+  --shadow-sm: 0 4px 14px rgb(0 0 0 / 0.1);
+  --shadow-xs: 0 2px 8px rgb(0 0 0 / 0.14);
+  --header-shadow: 0 1px 0 rgb(0 0 0 / 0.04);
+}
+
+/* ---------- midnight palette ----------
+ * Dark with true-black surfaces (OLED); everything else comes from the dark block. */
+:root[data-theme='midnight'],
+[data-theme='midnight'] {
+  --bg-0: #000000;
+  --bg-1: #0b0b0b;
+  --bg-2: #101010;
+  --bg-3: #1b1b1b;
+  --bg-4: #242424;
+  --line: #1d1d1d;
+  --line-hover: #2a2a2a;
+  --line-strong: #383838;
+  --text-1: #c4c4c4;
+  --text-2: #8f8f8f;
+  --spoiler-bg: #1b1b1b;
+  --spoiler-hover: #242424;
 }
 
 /* Dark overlays on media inherit the light page's text color otherwise. */

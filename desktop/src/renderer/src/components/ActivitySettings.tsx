@@ -92,11 +92,8 @@ export function ActivitySection() {
             <span className="toggle-text">
               <span>Share what I'm playing</span>
               <span className="muted small">
-                Shows "Playing <em>game</em>" on your profile, in the member list and under your name in voice. Nexo
-                checks your running programs every 15 seconds and compares them with a list of games, on this
-                computer. Only the game's name is shared, and only while it's running. Your list of programs never
-                leaves this computer.
-                {!isWindows && ' Detection on this system is best effort.'}
+                Only the game's name is shared. Detection runs on this computer and your programs never leave it.
+                {!isWindows && ' Best effort on this system.'}
               </span>
             </span>
             <input
@@ -124,10 +121,7 @@ export function ActivitySection() {
 
           <div className="field">
             <span className="field-label">Your games</span>
-            <span className="field-hint">
-              Nexo recognizes a few hundred popular games. Is yours missing? Start it, then pick it from your running
-              programs and choose the name others see.
-            </span>
+            <span className="field-hint">Missing a game? Start it, then add it from your running programs.</span>
             {settings && settings.customGames.length > 0 && (
               <ul className="activity-games">
                 {settings.customGames.map((g) => (

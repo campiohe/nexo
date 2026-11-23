@@ -331,8 +331,21 @@ others), nor a BIOS, and never provides, downloads or links to games or BIOS fil
 
 ## Appearance
 
-**Settings → Appearance:** **Theme** (System, Dark or Light), **Zoom** (also Ctrl +, Ctrl − and Ctrl 0, or
-Ctrl + mouse wheel; 67–200%), **Compact messages**, and **Show link previews**.
+**Settings → Appearance:**
+
+- **Theme:** System, Dark, Midnight (true black) or Light.
+- **Accent:** the highlight color for buttons, mentions and the speaking ring: Mint, Blue, Violet, Coral,
+  Amber or Rose.
+- **Title bar:** **With search** shows a **Jump to a channel** box at the top of the window (the same as
+  Ctrl K); **Minimal** shows only the server name.
+- **App icon:** Classic, Accent (your accent color), Paper or Mono. It changes the icon on the taskbar,
+  in Alt+Tab and in the tray while Nexo runs. A shortcut pinned to the taskbar or Start menu keeps the
+  default icon.
+- **Zoom** (also Ctrl +, Ctrl − and Ctrl 0, or Ctrl + mouse wheel; 67–200%), **Compact messages** and
+  **Show link previews**.
+
+On Windows, Nexo draws its own title bar in the theme's colors. The minimize, maximize and close buttons
+are the regular Windows ones (Snap Layouts included), and you move the window by dragging the bar.
 
 ## App settings
 
