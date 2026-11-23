@@ -53,7 +53,7 @@
 .gm-icon-btn:hover { background: var(--bg-3); color: var(--text-0); }
 .gm-icon-btn.is-off { color: var(--warn); }
 .gm-note { color: var(--text-2); font: 500 12.5px var(--font); }
-.gm-side-title { margin: 0 0 10px; font: 700 11px var(--font); letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-2); }
+.gm-side-title { margin: 0 0 10px; font: 600 12px var(--font); color: var(--text-2); }
 .gm-tag { padding: 1px 6px; border-radius: 4px; background: var(--accent-soft); color: var(--accent); font: 700 10px var(--font); text-transform: uppercase; }
 .gm-help { margin: 0; display: flex; flex-direction: column; gap: 8px; }
 .gm-help-row { display: flex; flex-direction: column; gap: 2px; }
@@ -192,7 +192,7 @@
   border: 1px solid var(--line); border-radius: var(--radius);
   background: var(--bg-1); box-shadow: var(--shadow-pop);
 }
-.emu-menu-title { margin: 2px 6px 4px; color: var(--text-2); font: 700 10.5px var(--font); letter-spacing: 0.06em; text-transform: uppercase; }
+.emu-menu-title { margin: 2px 6px 4px; color: var(--text-2); font: 600 12px var(--font); }
 .emu-menu-item {
   display: flex; align-items: center; gap: 8px;
   height: 30px; padding: 0 8px;

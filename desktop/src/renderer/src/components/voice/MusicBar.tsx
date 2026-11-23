@@ -71,20 +71,10 @@ export function Artwork({ src, size, className }: { src: string | null; size: nu
 // Stage: bar / pill
 
 export function MusicBar({ channelId }: { channelId: string }) {
-  const t = useT()
   const on = usePlugins((s) => s.plugins.music)
   const state = useMusic((s) => s.byChannel[channelId])
-  if (!on) return null
-  if (!state?.current) {
-    return (
-      <div className="mu-idle">
-        <button className="mu-idle-btn" onClick={(e) => openPanel(channelId, e.currentTarget, 'stage-pill', 'search')}>
-          <MusicIcon size={14} /> {t('Play music')}
-          {state && state.queue.length > 0 && <span className="mu-count">{t('{count} queued', { count: state.queue.length })}</span>}
-        </button>
-      </div>
-    )
-  }
+  // Nothing playing: no bar. Music is started from the toolbar's music button (and the sidebar's voice panel).
+  if (!on || !state?.current) return null
   return <NowPlaying channelId={channelId} state={state} track={state.current} />
 }
 

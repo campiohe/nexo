@@ -8,7 +8,6 @@ export default {
   'you // added by': 'você',
   'someone // added by': 'alguém',
   'Play music': 'Tocar música',
-  '{count} queued': '{count} na fila',
   'Music: {title}': 'Música: {title}',
   'Unknown artist': 'Artista desconhecido',
   'added by {name}': 'adicionada por {name}',

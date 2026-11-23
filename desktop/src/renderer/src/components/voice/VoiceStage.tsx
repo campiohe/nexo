@@ -15,6 +15,7 @@ import type { User } from '@shared/protocol'
 import { useApp } from '@renderer/store/app'
 import { formatList, formatNumber, useT, type Translate } from '@renderer/i18n'
 import { Avatar } from '@renderer/components/Avatar'
+import { ChevronIcon } from '@renderer/components/icons'
 import {
   getSharePreset,
   resumeAudio,
@@ -156,10 +157,15 @@ function Stage() {
     ...list.map((p) => ({ key: `user:${p.identity}`, kind: 'user' as const, view: p })),
   ]
   const focused = focusKey ? tiles.find((t) => t.key === focusKey) ?? null : null
+  // A stream stays big only while you watch it (its track may still be arriving), a camera tile while the camera is
+  // on. Otherwise the tile loses its "Back to grid" button and the big view would be stuck on it.
+  const canStayFocused =
+    !!focused &&
+    (focused.kind === 'stream' ? !!watching[focused.view.identity] && !(focused.view.isLocal && selfNative) : !!focused.view.cameraTrack)
 
   useEffect(() => {
-    if (focusKey && !focused) setFocusKey(null)
-  }, [focusKey, focused])
+    if (focusKey && !canStayFocused) setFocusKey(null)
+  }, [focusKey, canStayFocused])
 
   // A running emulator game takes the main spot (the host's stream shown inside it); people move to the strip.
   const emuShown = useEmuAreaShown(channelId)
@@ -235,16 +241,14 @@ function Stage() {
           <div className="vx-focus-main">
             <EmulatorArea channelId={channelId} />
           </div>
-          <div className="vx-strip" role="list">
+          <PeopleStrip>
             {tiles.filter((t) => !(t.kind === 'stream' && t.view.identity === emuHostId)).map((t) => renderTile(t, 'strip'))}
-          </div>
+          </PeopleStrip>
         </div>
       ) : focused ? (
         <div className="vx-focus">
           <div className="vx-focus-main">{renderTile(focused, 'focus')}</div>
-          <div className="vx-strip" role="list">
-            {tiles.filter((t) => t.key !== focused.key).map((t) => renderTile(t, 'strip'))}
-          </div>
+          <PeopleStrip>{tiles.filter((t) => t.key !== focused.key).map((t) => renderTile(t, 'strip'))}</PeopleStrip>
         </div>
       ) : (
         <div className="vx-grid-wrap" ref={gridRef}>
@@ -277,6 +281,49 @@ function Stage() {
           anchor={{ x: volumeMenu.x, y: volumeMenu.y }}
           onClose={closeVolumeMenu}
         />
+      )}
+    </div>
+  )
+}
+
+const STRIP_KEY = 'nexo:voice-strip-collapsed'
+
+function readStripCollapsed(): boolean {
+  try {
+    return localStorage.getItem(STRIP_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+/**
+ * The row of people under a focused stream or the emulator. An arrow above it hides it, so the main view gets the
+ * room; the choice is remembered on this device. Who's talking stays visible in the sidebar.
+ */
+function PeopleStrip({ children }: { children: ReactNode[] }) {
+  const t = useT()
+  const [collapsed, setCollapsed] = useState(readStripCollapsed)
+  const toggle = () => {
+    const next = !collapsed
+    setCollapsed(next)
+    try {
+      localStorage.setItem(STRIP_KEY, next ? '1' : '0')
+    } catch {
+      /* storage unavailable: lasts for this session */
+    }
+  }
+  const count = children.length
+  if (count === 0) return null
+  return (
+    <div className={`vx-strip-wrap ${collapsed ? 'is-collapsed' : ''}`}>
+      <button type="button" className="vx-strip-toggle" onClick={toggle} aria-expanded={!collapsed}>
+        <ChevronIcon size={14} className="vx-strip-chevron" />
+        {collapsed ? t('{count, plural, one {Show # person} other {Show # people}}', { count }) : t('Hide')}
+      </button>
+      {!collapsed && (
+        <div className="vx-strip" role="list">
+          {children}
+        </div>
       )}
     </div>
   )

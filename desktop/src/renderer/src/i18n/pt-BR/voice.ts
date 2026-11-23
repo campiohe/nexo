@@ -385,4 +385,8 @@ export default {
   'Nudged {name}': 'Você acordou {name}',
   '{name} moved you to {channel}': '{name} moveu você para {channel}',
   '{name} is trying to get your attention': '{name} está tentando chamar sua atenção',
+
+  // ---- VoiceStage.tsx (people strip under a focused stream / the emulator) ----
+  '{count, plural, one {Show # person} other {Show # people}}': '{count, plural, one {Mostrar # pessoa} other {Mostrar # pessoas}}',
+  Hide: 'Ocultar',
 } satisfies Dict

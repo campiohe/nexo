@@ -44,21 +44,6 @@
 }
 .mu-count { color: var(--text-2); font-weight: 500; }
 
-/* ---------- stage: "Play music" pill ---------- */
-.mu-idle { display: flex; justify-content: center; padding: 0 12px; }
-.mu-idle-btn {
-  display: inline-flex; align-items: center; gap: 6px;
-  height: 28px; padding: 0 12px;
-  border: 1px solid var(--line); border-radius: 999px;
-  background: var(--bg-1); color: var(--text-1);
-  font: 600 12.5px var(--font);
-  cursor: pointer;
-  transition: background 0.12s, color 0.12s, border-color 0.12s;
-}
-.mu-idle-btn:hover { background: var(--bg-3); color: var(--text-0); border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); }
-.mu-idle-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.mu-idle-btn svg { color: var(--accent); }
-
 /* ---------- stage: now-playing bar ---------- */
 .mu-bar {
   display: flex; flex-direction: column; gap: 6px;

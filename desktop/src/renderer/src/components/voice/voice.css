@@ -172,6 +172,20 @@
 .vx-focus-main { flex: 1; min-height: 0; display: flex; }
 .vx-focus-main > .vx-tile { flex: 1; }
 .vx-strip { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 2px; flex: none; }
+/* Collapse arrow above the strip (PeopleStrip): a small centered pill; collapsed, only the pill stays. */
+.vx-strip-wrap { flex: none; display: flex; flex-direction: column; align-items: center; gap: 6px; margin-top: -4px; }
+.vx-strip-wrap > .vx-strip { align-self: stretch; }
+.vx-strip-toggle {
+  display: inline-flex; align-items: center; gap: 4px;
+  height: 22px; padding: 0 10px 0 6px;
+  border: 0; border-radius: 11px;
+  background: var(--bg-3); color: var(--text-2);
+  font: 600 12px var(--font);
+  transition: background 0.12s var(--ease), color 0.12s var(--ease);
+}
+.vx-strip-toggle:hover { background: var(--bg-4); color: var(--text-0); }
+.vx-strip-chevron { transform: rotate(90deg); transition: transform 0.15s var(--ease); }
+.vx-strip-wrap.is-collapsed .vx-strip-chevron { transform: rotate(-90deg); }
 .vx-strip > .vx-tile { flex: none; width: 192px; height: 108px; }
 
 .vx-toolbar {
