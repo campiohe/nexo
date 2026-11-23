@@ -280,6 +280,8 @@ export interface Bootstrap {
   plugins?: ServerPlugins
   /** Music sessions of voice channels that have one (MusicState.current or queue non-empty). */
   music?: MusicState[]
+  /** Emulator plugin: the running emulator session of each voice channel that has one. Older servers omit it. */
+  emulator?: EmuSession[]
 }
 
 /** Sent in the socket.io handshake `auth` field. */
@@ -372,7 +374,8 @@ export interface ClientToServerEvents {
   'sound:play': (p: { soundId: string }, ack: Ack<null>) => void
   /**
    * Admins/owner: turn a built-in plugin on or off for the whole server (persisted). Broadcasts `plugins:changed`
-   * when it changed. Turning `music` off ends every music session.
+   * when it changed. Turning `music` off ends every music session; turning `emulator` off closes every
+   * emulator session.
    */
   'plugins:set': (p: { plugin: PluginId; enabled: boolean }, ack: Ack<ServerPlugins>) => void
   /** The server's clock (ms epoch), for MusicState timing. Clients estimate their offset from several RTTs. */
@@ -394,6 +397,28 @@ export interface ClientToServerEvents {
    * (keeps the current track); `stop` clears everything. Rate limited per user. Broadcasts `music:state`
    * (a no-op, e.g. `pause` while paused, only acks the state).
    */
+  /**
+   * Emulator plugin (docs/SPEC.md §5.5). Every `emu:*` request needs the `emulator` plugin on and must come from
+   * the socket that owns the caller's voice state, in that voice channel. `emu:start`: the caller hosts a game
+   * they loaded on their own device (the file never goes through the server; only `title` and `system`) and
+   * takes port 1. One session per voice channel ("Someone is already hosting a game here"); the host may call it
+   * again to change the title (new game loaded). Broadcasts `emu:session`.
+   */
+  'emu:start': (p: { channelId: string; system: EmuSystem; title: string }, ack: Ack<EmuSession>) => void
+  /** Take a free controller port (0-based, < EMU_PORTS), or give yours up (`port: null`). */
+  'emu:port': (p: { channelId: string; port: number | null }, ack: Ack<EmuSession>) => void
+  /** Host / admins: put someone in the channel on a port (or free it: `userId: null`). Moves them off another port. */
+  'emu:assign': (p: { channelId: string; port: number; userId: string | null }, ack: Ack<EmuSession>) => void
+  /** Host: paused for everyone (shown to players; the host's emulator actually pauses). */
+  'emu:pause': (p: { channelId: string; paused: boolean }, ack: Ack<EmuSession>) => void
+  /** Host / admins: end the session. */
+  'emu:stop': (p: { channelId: string }, ack: Ack<null>) => void
+  /**
+   * A player's held buttons (GAME_PAD bits) and, with an analog controller, its stick axes (EmuAxes), sent on every
+   * change. No ack; ignored unless you hold a port in that channel's session; rate limited. Relayed to the host's
+   * voice socket as `emu:input`. `axes` absent = sticks centered (keyboards).
+   */
+  'emu:input': (p: { channelId: string; buttons: number; axes?: EmuAxes }) => void
   'music:control': (
     p: {
       channelId: string
@@ -460,6 +485,13 @@ export interface ServerToClientEvents {
   'plugins:changed': (p: ServerPlugins) => void
   /** A voice channel's music session changed (also sent when it becomes empty: current null, queue []). */
   'music:state': (s: MusicState) => void
+  /** A voice channel's emulator session changed (to everyone; `status: 'closed'` when it ended). */
+  'emu:session': (s: EmuSession) => void
+  /**
+   * To the host's voice socket only: the buttons (and stick axes, when not centered) the player on `port` holds now
+   * (also `buttons: 0` without axes when a player leaves their port). The host applies it to that controller.
+   */
+  'emu:input': (p: { channelId: string; port: number; buttons: number; axes?: EmuAxes }) => void
   /**
    * `userId`'s aggregate presence changed (DEFAULT_PRESENCE when they went back to plain online or went
    * offline). Also sent for yourself: it's what others see, not something to adopt as your own status.
@@ -587,12 +619,14 @@ export const MAX_MESSAGE_LENGTH = 4000
 // (fetch + decodeAudioData), since the renderer CSP's media-src doesn't allow server URLs.
 
 // ---- Plugins (built-in, toggled by admins) ----
-export type PluginId = 'music'
+export type PluginId = 'music' | 'emulator'
 export interface ServerPlugins {
   /** "YouTube Music": listen together in voice channels. */
   music: boolean
+  /** "Emulator": the host plays a console game file they load; friends play along over the stream (§5.5). */
+  emulator: boolean
 }
-export const DEFAULT_PLUGINS: ServerPlugins = { music: false }
+export const DEFAULT_PLUGINS: ServerPlugins = { music: false, emulator: false }
 
 // ---- Music plugin: listen together (docs/SPEC.md) ----
 // Every client in the voice channel fetches and plays the same track itself (YouTube Music via InnerTube in
@@ -646,3 +680,70 @@ export const MUSIC_MAX_ADD = 100
 export const MUSIC_MAX_TRACK_MS = 3 * 60 * 60 * 1000
 /** A voice channel's session is cleared after its voice channel has been empty this long (paused meanwhile). */
 export const MUSIC_IDLE_CLEAR_MS = 30 * 60 * 1000
+
+// ---- Controllers (emulator) ----
+
+/**
+ * Controller buttons (bit flags), as players send them to the emulator. Keyboard: arrows / WASD, A = Space / J / Z,
+ * B = K / X, X = L / C, Y = I / V, L = Q, R = E, Start = Enter, Select = Backspace / right Shift. Gamepads: the
+ * standard mapping. Positions follow the standard gamepad: A bottom, B right, X left, Y top; L / R = the bumpers
+ * (LB / RB), L2 / R2 = the triggers (LT / RT), L3 / R3 = clicking the sticks.
+ */
+export const GAME_PAD = {
+  UP: 1,
+  DOWN: 2,
+  LEFT: 4,
+  RIGHT: 8,
+  A: 16,
+  B: 32,
+  X: 64,
+  Y: 128,
+  L: 256,
+  R: 512,
+  START: 1024,
+  SELECT: 2048,
+  L2: 4096,
+  R2: 8192,
+  L3: 16384,
+  R3: 32768,
+} as const
+export const GAME_PAD_MASK = 65535
+
+/**
+ * Analog sticks of a controller: [left x, left y, right x, right y], each an integer in -127..127 (x: left → right,
+ * y: up → down, like the Gamepad API), with a small dead zone already applied (centered = 0). Systems with analog
+ * sticks (N64, PlayStation) use them; others ignore them.
+ */
+export type EmuAxes = [number, number, number, number]
+
+// ---- Emulator plugin: the host plays a console game, friends play along (docs/SPEC.md §5.5) ----
+// The host's Nexo runs the emulator on a game file loaded from their own disk (never uploaded or downloaded by
+// Nexo) and streams its picture and sound to the voice channel as their stream (LiveKit). Players send their
+// controller state through the server, which relays it to the host; the host's emulator applies it.
+
+/** `snes` Super Nintendo, `genesis` Mega Drive / Genesis, `psx` PlayStation, `n64` Nintendo 64. */
+export type EmuSystem = 'snes' | 'genesis' | 'psx' | 'n64'
+export const EMU_SYSTEMS: readonly EmuSystem[] = ['snes', 'genesis', 'psx', 'n64']
+/**
+ * Controller ports per session (port 0 is player 1): 4 for every system (SNES multitap, Mega Drive 4-player
+ * adapter, PlayStation multitap, N64's own 4 ports). Games that support fewer simply ignore the extra ports.
+ */
+export const EMU_PORTS = 4
+/** `title`: 1..EMU_TITLE_MAX characters after normalizing like other display text. */
+export const EMU_TITLE_MAX = 80
+
+export interface EmuSession {
+  channelId: string
+  /** Runs the emulator and streams it. Always in the voice channel (the session closes when they leave it). */
+  hostId: string
+  system: EmuSystem
+  /** The game's display name, from the host's file name. */
+  title: string
+  /** userId on each controller port (index = port, EMU_PORTS long); null = free. */
+  ports: (string | null)[]
+  paused: boolean
+  /** `closed`: the session ended (clients drop it). */
+  status: 'running' | 'closed'
+  /** Bumped on every change; one server-wide counter that never goes back (like MusicState.rev). */
+  rev: number
+}

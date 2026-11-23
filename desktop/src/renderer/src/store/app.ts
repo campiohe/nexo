@@ -12,6 +12,7 @@ import { chatPanelsMessageDeleted, chatPanelsMessageUpdated, chatPanelsUnpinned,
 import { resetSounds } from './sounds'
 import { resetPlugins } from './plugins'
 import { resetMusic } from './music'
+import { resetEmulator } from './emulator'
 
 export type ConnectionStatus = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'error'
 
@@ -235,6 +236,7 @@ export const useApp = create<AppState>()((set, get) => {
       resetSounds()
       resetPlugins()
       resetMusic()
+      resetEmulator()
       set({ ...emptySession(), view: 'onboarding', onboardingNotice: null })
     },
 
@@ -252,6 +254,7 @@ export const useApp = create<AppState>()((set, get) => {
       resetSounds()
       resetPlugins()
       resetMusic()
+      resetEmulator()
       set({ ...emptySession(), view: 'onboarding', onboardingNotice: null })
     },
 

@@ -81,8 +81,11 @@ export interface StartShareOptions {
   hideNexo?: boolean
 }
 
-/** Which engine streams the active share (docs/SPEC-BETA.md §8.3). */
-export type ShareEngine = 'native' | 'chromium'
+/**
+ * Which engine streams the active share (docs/SPEC-BETA.md §8.3). `emulator`: the Emulator plugin's game
+ * (startEmulatorStream), published like a Chromium share so the rest of the app treats it as our stream.
+ */
+export type ShareEngine = 'native' | 'chromium' | 'emulator'
 
 /** Sender-side numbers for the active screen share, refreshed every couple of seconds. */
 export interface ShareStats {
@@ -171,6 +174,8 @@ interface ActiveShare {
   videoMst: MediaStreamTrack
   video: LocalVideoTrack
   audio: LocalAudioTrack | null
+  /** Emulator stream only: its upscaler and the clone of the engine's video track (stopped with the share). */
+  emulator?: EmulatorFeed
 }
 let share: ActiveShare | null = null
 
@@ -559,7 +564,9 @@ function wireRoom(r: Room): void {
       }
       rebuild()
     })
-    .on(RoomEvent.TrackSubscribed, (track, _pub, p) => {
+    .on(RoomEvent.TrackSubscribed, (track, pub, p) => {
+      // A game streamed by the Emulator plugin is played by the people watching it: no extra buffering.
+      if (isEmulatorPublication(pub)) preferLowLatency(track)
       // Keyed by the owner, so stream volume follows whichever participant carries the stream audio.
       if (track instanceof RemoteAudioTrack) attachAudio(track, ownerIdentity(p.identity))
       rebuild()
@@ -689,6 +696,7 @@ function cleanupLocalMedia(): void {
   stopShareStats()
   if (share) {
     share.videoMst.removeEventListener('ended', onShareEnded)
+    share.emulator?.stop()
     share.stream.getTracks().forEach((t) => t.stop())
     share.video.stop()
     share.audio?.stop()
@@ -1319,11 +1327,16 @@ function canEncodeH264(): boolean {
   }
 }
 
-async function publishScreenVideo(r: Room, video: LocalVideoTrack, preset: SharePreset): Promise<void> {
+async function publishScreenVideo(
+  r: Room,
+  video: LocalVideoTrack,
+  preset: Pick<SharePreset, 'maxBitrate' | 'fps' | 'contentHint'>,
+  name = 'screen',
+): Promise<void> {
   const encoding: VideoEncoding = { maxBitrate: preset.maxBitrate, maxFramerate: preset.fps, priority: 'high' }
   const base: TrackPublishOptions = {
     source: Track.Source.ScreenShare,
-    name: 'screen',
+    name,
     // LiveKit reads `screenShareEncoding` for ScreenShare sources; `videoEncoding` set for completeness.
     screenShareEncoding: encoding,
     videoEncoding: encoding,
@@ -1368,6 +1381,11 @@ async function startChromiumShare(r: Room, opts: StartShareOptions, preset: Shar
   if (room !== r) {
     stream.getTracks().forEach((t) => t.stop())
     useVoice.setState({ shareStarting: false })
+    return
+  }
+  // Cancelled while the picker was open (stopShare, or the Emulator plugin started streaming a game).
+  if (!useVoice.getState().shareStarting || share) {
+    stream.getTracks().forEach((t) => t.stop())
     return
   }
 
@@ -1579,6 +1597,8 @@ async function stopShareInternal(announceChange: boolean, r: Room | null = room)
   stopShareStats()
   if (s) {
     s.videoMst.removeEventListener('ended', onShareEnded)
+    // Emulator stream: stop feeding frames first (the engine itself keeps running).
+    s.emulator?.stop()
     if (r) {
       for (const t of [s.video, s.audio]) {
         if (!t) continue
@@ -1595,6 +1615,318 @@ async function stopShareInternal(announceChange: boolean, r: Room | null = room)
   useVoice.setState({ sharing: false, shareStarting: false, sharePresetId: null, shareEngine: null, shareStats: null, shareCaptureLow: false })
   if (announceChange && wasSharing) announce()
   if (room) scheduleParticipantsRebuild(room)
+}
+
+// ---------------------------------------------------------------------------------------------
+// Emulator stream (Emulator plugin, docs/SPEC.md §5.5)
+// ---------------------------------------------------------------------------------------------
+// The host's game (emulator/engine.ts) goes out as the host's stream: Track.Source.ScreenShare named
+// 'emulator' + ScreenShareAudio, so the LIVE badge, stream tiles, "Watch" and the viewer list work as for a
+// screen share. One stream per person: starting it stops a screen share and a screen share stops it.
+//
+// The engine's canvas is small (SNES 256×224, Mega Drive 320×224, PlayStation / N64 640×480). Encoding that and
+// letting viewers scale it up blurs it (and the codec smears the pixels), so frames are scaled up by an integer
+// factor with nearest neighbor before encoding: the encoder then keeps crisp pixel edges and viewers get a sharp
+// picture about 720–1080 px tall (224 → ×3 = 672, 240 → ×3 = 720, 480 → ×2 = 960; 1280×960 at most).
+
+const EMU_STREAM = { fps: 60, maxBitrate: 4_000_000, contentHint: 'motion' as const }
+/** Scale frames up to about this height... */
+const EMU_TARGET_HEIGHT = 720
+/** ...but never past this one (a factor that would overshoot it is lowered). */
+const EMU_MAX_HEIGHT = 1080
+const EMU_MAX_SCALE = 4
+
+/** Integer upscale factor for a frame `height` px tall: the nearest to EMU_TARGET_HEIGHT that stays ≤ EMU_MAX_HEIGHT. */
+function emulatorStreamScale(height: number): number {
+  const h = Math.max(1, height)
+  let scale = Math.max(1, Math.min(EMU_MAX_SCALE, Math.round(EMU_TARGET_HEIGHT / h)))
+  while (scale > 1 && h * scale > EMU_MAX_HEIGHT) scale--
+  return scale
+}
+
+interface EmulatorFeed {
+  /** The current clone of the engine's video track (what the upscaler reads). */
+  source: MediaStreamTrack
+  /** Null when the browser has no insertable streams: the clone itself is published (native size). */
+  upscaler: Upscaler | null
+  stop(): void
+}
+
+interface Upscaler {
+  /** The published track (integer-scaled frames). */
+  track: MediaStreamTrack
+  /** Read another source track from now on (another game was loaded); the previous one is stopped. */
+  setSource(src: MediaStreamTrack): void
+  stop(): void
+}
+
+type TrackProcessorCtor = new (init: { track: MediaStreamTrack; maxBufferSize?: number }) => {
+  readable: ReadableStream<VideoFrame>
+}
+type TrackGeneratorCtor = new (init: { kind: 'video' }) => MediaStreamTrack & { writable: WritableStream<VideoFrame> }
+
+/**
+ * Source video track → nearest-neighbor, integer-scaled frames on a generated track (insertable streams).
+ * Frame-driven (one output frame per engine frame, no timers), so it adds no latency of its own and keeps
+ * working while the window is in the background. `onEnded`: the source track ended by itself. (A clone outlives
+ * the engine's own track, so the host UI always calls stopEmulatorStream before destroying an engine.)
+ */
+function createUpscaler(first: MediaStreamTrack, onEnded: () => void): Upscaler | null {
+  const w = window as unknown as { MediaStreamTrackProcessor?: TrackProcessorCtor; MediaStreamTrackGenerator?: TrackGeneratorCtor }
+  const Processor = w.MediaStreamTrackProcessor
+  const Generator = w.MediaStreamTrackGenerator
+  if (!Processor || !Generator || typeof OffscreenCanvas === 'undefined' || typeof VideoFrame === 'undefined') return null
+  let generator: InstanceType<TrackGeneratorCtor>
+  let ctx: OffscreenCanvasRenderingContext2D | null
+  const canvas = new OffscreenCanvas(2, 2)
+  try {
+    generator = new Generator({ kind: 'video' })
+    ctx = canvas.getContext('2d', { alpha: false, desynchronized: true })
+  } catch {
+    return null
+  }
+  if (!ctx) return null
+  const writer = generator.writable.getWriter()
+  let stopped = false
+  let current: { track: MediaStreamTrack; reader: ReadableStreamDefaultReader<VideoFrame> } | null = null
+
+  const pump = async (reader: ReadableStreamDefaultReader<VideoFrame>) => {
+    for (;;) {
+      let res: ReadableStreamReadResult<VideoFrame>
+      try {
+        res = await reader.read()
+      } catch {
+        break
+      }
+      if (res.done) break
+      const frame = res.value
+      if (stopped || current?.reader !== reader) {
+        frame.close()
+        break
+      }
+      let out: VideoFrame | null = null
+      try {
+        const fw = frame.displayWidth
+        const fh = frame.displayHeight
+        const scale = emulatorStreamScale(fh)
+        // Even sizes: H.264 encoders want them.
+        const ow = (fw * scale + 1) & ~1
+        const oh = (fh * scale + 1) & ~1
+        if (canvas.width !== ow || canvas.height !== oh) {
+          canvas.width = ow
+          canvas.height = oh
+        }
+        ctx.imageSmoothingEnabled = false
+        ctx.drawImage(frame, 0, 0, fw * scale, fh * scale)
+        out = new VideoFrame(canvas, { timestamp: frame.timestamp })
+      } catch (e) {
+        console.warn('[voice] emulator frame dropped', e)
+      } finally {
+        frame.close()
+      }
+      if (!out) continue
+      try {
+        await writer.write(out)
+      } catch {
+        break // the generated track was stopped
+      } finally {
+        out.close() // no-op when the generator already consumed it
+      }
+    }
+    // The engine's track ended on its own (not swapped out, not stopped): the stream is over.
+    if (!stopped && current?.reader === reader) onEnded()
+  }
+
+  const setSource = (src: MediaStreamTrack) => {
+    const prev = current
+    let reader: ReadableStreamDefaultReader<VideoFrame>
+    try {
+      reader = new Processor({ track: src, maxBufferSize: 1 }).readable.getReader()
+    } catch (e) {
+      console.warn('[voice] emulator upscaler: cannot read the game picture', e)
+      src.stop()
+      return
+    }
+    current = { track: src, reader }
+    if (prev) {
+      void prev.reader.cancel().catch(() => undefined)
+      prev.track.stop()
+    }
+    void pump(reader)
+  }
+
+  setSource(first)
+  if (!current) {
+    generator.stop()
+    return null
+  }
+  return {
+    track: generator,
+    setSource,
+    stop() {
+      if (stopped) return
+      stopped = true
+      const c = current
+      current = null
+      if (c) {
+        void c.reader.cancel().catch(() => undefined)
+        c.track.stop()
+      }
+      void writer.close().catch(() => undefined)
+      generator.stop()
+    },
+  }
+}
+
+/** Invalidates a startEmulatorStream still in progress (stopEmulatorStream, or a newer start). */
+let emuStartSeq = 0
+
+/**
+ * Host (Emulator plugin): publish the engine's picture + sound (EmulatorEngine.mediaStream) as our stream.
+ * Stops an active screen share first. While a game is already being streamed, the new source replaces it
+ * in place (another game was loaded): viewers keep watching without a new subscription. The engine's own
+ * tracks are cloned, never stopped here (so the same engine can be streamed again later); call
+ * stopEmulatorStream before destroying the engine. Rejects with a readable message when it can't stream.
+ */
+export async function startEmulatorStream(source: MediaStream): Promise<void> {
+  const r = room
+  if (!r) throw new Error('Join the voice channel to stream the game')
+  const srcVideo = source.getVideoTracks().find((t) => t.readyState === 'live')
+  if (!srcVideo) throw new Error('The game has no picture to stream')
+  const srcAudio = source.getAudioTracks().find((t) => t.readyState === 'live') ?? null
+  const seq = ++emuStartSeq
+
+  const cur = share
+  if (cur?.emulator?.upscaler && useVoice.getState().shareEngine === 'emulator' && !!cur.audio === !!srcAudio) {
+    if (await swapEmulatorSource(cur, srcVideo, srcAudio)) return
+  }
+  if (share || nativeShareActive() || useVoice.getState().shareStarting) await stopShareInternal(false)
+  if (room !== r) throw new Error('Left the voice channel')
+  if (seq !== emuStartSeq) return // stopped (or restarted) meanwhile
+
+  const sourceClone = srcVideo.clone()
+  const feed: EmulatorFeed = {
+    source: sourceClone,
+    upscaler: null,
+    stop() {
+      this.upscaler?.stop()
+      this.source.stop()
+    },
+  }
+  const ended = () => {
+    if (share?.emulator === feed) void stopShareInternal(true)
+  }
+  feed.upscaler = createUpscaler(sourceClone, ended)
+  const videoMst = feed.upscaler?.track ?? sourceClone
+  videoMst.contentHint = EMU_STREAM.contentHint
+  const audioMst = srcAudio ? srcAudio.clone() : null
+  const stream = new MediaStream(audioMst ? [videoMst, audioMst] : [videoMst])
+  const video = new LocalVideoTrack(videoMst, undefined, true)
+  const audio = audioMst ? new LocalAudioTrack(audioMst, undefined, true) : null
+  share = { stream, videoMst, video, audio, emulator: feed }
+  videoMst.addEventListener('ended', onShareEnded)
+  useVoice.setState({ shareStarting: true, error: null, pickerOpen: false })
+
+  try {
+    await publishScreenVideo(r, video, EMU_STREAM, 'emulator')
+  } catch (e) {
+    if (room !== r || share?.video !== video) return
+    await stopShareInternal(false)
+    throw new Error(`Couldn't stream the game: ${errorMessage(e, 'publishing failed')}`)
+  }
+  if (share?.video !== video) {
+    await r.localParticipant.unpublishTrack(video, true).catch(() => undefined)
+    return
+  }
+  if (audio) {
+    try {
+      await r.localParticipant.publishTrack(audio, {
+        source: Track.Source.ScreenShareAudio,
+        name: 'emulator-audio',
+        audioPreset: AudioPresets.musicHighQualityStereo,
+        dtx: false,
+        red: false,
+        forceStereo: true,
+      })
+    } catch (e) {
+      // Keep the picture going; the game is just silent for viewers.
+      console.warn('[voice] emulator audio publish failed', e)
+      toast(`Game sound: ${errorMessage(e, 'publishing failed')}`, 'error')
+      audio.stop()
+      if (share?.video === video) share.audio = null
+    }
+  }
+  if (share?.video !== video) {
+    await r.localParticipant.unpublishTrack(video, true).catch(() => undefined)
+    if (audio) await r.localParticipant.unpublishTrack(audio, true).catch(() => undefined)
+    return
+  }
+  useVoice.setState({
+    sharing: true,
+    shareStarting: false,
+    sharePresetId: null,
+    shareEngine: 'emulator',
+    shareStats: null,
+    shareCaptureLow: false,
+  })
+  announce()
+}
+
+/** Another game on the same stream: the upscaler reads the new picture, the audio sender gets the new sound. */
+async function swapEmulatorSource(cur: ActiveShare, srcVideo: MediaStreamTrack, srcAudio: MediaStreamTrack | null): Promise<boolean> {
+  const feed = cur.emulator
+  if (!feed?.upscaler) return false
+  try {
+    if (srcAudio && cur.audio) {
+      const next = srcAudio.clone()
+      const prev = cur.audio.mediaStreamTrack
+      await cur.audio.replaceTrack(next, true)
+      if (share !== cur) {
+        next.stop()
+        return true // stopped meanwhile: nothing left to swap
+      }
+      cur.stream.removeTrack(prev)
+      cur.stream.addTrack(next)
+      prev.stop()
+    }
+    const clone = srcVideo.clone()
+    feed.source = clone
+    feed.upscaler.setSource(clone)
+    return true
+  } catch (e) {
+    console.warn('[voice] emulator source swap failed, restarting the stream', e)
+    return false
+  }
+}
+
+/** Host: stop streaming the game (only when the game is what we stream; a screen share is left alone). */
+export async function stopEmulatorStream(): Promise<void> {
+  emuStartSeq++
+  if (share?.emulator) await stopShareInternal(true)
+}
+
+/** Our stream is the Emulator plugin's game (or it is being published). */
+export function isStreamingEmulator(): boolean {
+  return !!share?.emulator
+}
+
+function isEmulatorPublication(pub: RemoteTrackPublication): boolean {
+  return pub.trackName === 'emulator' || pub.trackName === 'emulator-audio'
+}
+
+/**
+ * Viewer side of an emulator stream: people play by watching it, so ask the receiver to keep as little
+ * buffered as Chromium allows (jitter buffer / playout delay floor at 0; network jitter can still add some).
+ */
+function preferLowLatency(track: RemoteTrack): void {
+  const rx = track.receiver as { jitterBufferTarget?: number | null; playoutDelayHint?: number | null } | undefined
+  if (!rx) return
+  try {
+    if ('jitterBufferTarget' in rx) rx.jitterBufferTarget = 0
+    else if ('playoutDelayHint' in rx) rx.playoutDelayHint = 0
+  } catch (e) {
+    console.warn('[voice] could not lower the stream latency', e)
+  }
 }
 
 // ---------------------------------------------------------------------------------------------

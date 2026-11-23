@@ -29,6 +29,7 @@ import { removeSound, resetSounds, setBootstrapSounds, upsertSound } from '../st
 import { chatPanelsMessageDeleted, chatPanelsMessageUpdated, resetChatPanels } from '../store/chatPanels'
 import { applyPlugins, resetPlugins, setBootstrapPlugins } from '../store/plugins'
 import { applyMusicState, forgetMusicChannel, resetMusic, setBootstrapMusic } from '../store/music'
+import { applyEmuSession, forgetEmulatorChannel, handleEmuInput, resetEmulator, setBootstrapEmulator } from '../store/emulator'
 
 export type NexoSocket = Socket<ServerToClientEvents, ClientToServerEvents>
 
@@ -219,6 +220,7 @@ function wire(s: NexoSocket) {
     useApp.setState({ channels, messages, typing })
     forgetChannel(channelId)
     forgetMusicChannel(channelId)
+    forgetEmulatorChannel(channelId)
     if (st.selectedChannelId === channelId) useApp.getState().selectChannel(defaultChannelId(channels, null))
     void import('../voice/session')
       .then(({ useVoice }) => {
@@ -343,6 +345,17 @@ function wire(s: NexoSocket) {
     loadMusicPlayer()
   })
 
+  // ---- emulator plugin (store/emulator.ts: sessions; relayed player input reaches the host's engine) ----
+  s.on('emu:session', (e) => {
+    if (socket !== s) return
+    applyEmuSession(e)
+  })
+
+  s.on('emu:input', (p) => {
+    if (socket !== s) return
+    handleEmuInput(p)
+  })
+
   s.on('voice:nudged', ({ by }) => {
     if (socket !== s) return
     void import('../voice/voiceActions')
@@ -420,6 +433,7 @@ async function handleBootstrap(b: Bootstrap) {
   setBootstrapSounds(b.sounds)
   setBootstrapPlugins(b.plugins)
   setBootstrapMusic(b.music)
+  setBootstrapEmulator(b.emulator)
   if (b.plugins?.music) loadMusicPlayer()
   resetSignIn() // signed in: any onboarding "Welcome back" / sign-in request state is obsolete
   loadReadState(
@@ -481,6 +495,7 @@ async function handleUnknownToken() {
   resetSounds()
   resetPlugins()
   resetMusic()
+  resetEmulator()
   useApp.setState({
     view: 'onboarding',
     connection: 'idle',

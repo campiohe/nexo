@@ -115,9 +115,10 @@ function createMainWindow(): BrowserWindow {
       if (level === 'warning' || level === 'error') console.log(`[renderer:${level}] ${message} (${sourceId}:${lineNumber})`)
     })
   }
-  // The renderer's own `[nexo]` warnings/errors (e.g. a login that couldn't be saved) also go to main.log.
+  // The renderer's own `[nexo]` warnings/errors (e.g. a login that couldn't be saved) and the Emulator's
+  // `[emulator]` ones (a core that crashed) also go to main.log.
   win.webContents.on('console-message', ({ level, message }) => {
-    if ((level === 'warning' || level === 'error') && message.startsWith('[nexo]')) {
+    if ((level === 'warning' || level === 'error') && /^\[(nexo|emulator)\]/.test(message)) {
       logLine(level === 'error' ? 'ERROR' : 'WARN', `[renderer] ${message}`)
     }
   })

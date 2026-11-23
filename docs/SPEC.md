@@ -203,10 +203,12 @@ The visual design is Nexo's own: dark ink background, mint accent, rounded tiles
 - **Link previews:** answers `GET /api/embed` from allowlisted oEmbed providers only, with an in-memory cache
   (§5.3).
 - **Plugins:** built-in features admins/owner turn on or off for the whole server (`ServerPlugins`, stored as
-  JSON in `meta.plugins`; missing or invalid values read as `DEFAULT_PLUGINS`, everything off). Today only
-  `music`.
+  JSON in `meta.plugins`; missing or invalid values read as `DEFAULT_PLUGINS`, everything off): `music`
+  and `emulator`.
 - **Music plugin:** an in-memory `MusicState` per voice channel (queue, current track, timing), advanced on a
   timer; nothing is relayed through voice (§5.4).
+- **Emulator plugin:** an in-memory emulator session per voice channel (host, game title, controller ports); the
+  server relays players' buttons to the host and never sees the game (§5.5).
 
 ### 5.2 Data model (SQLite)
 
@@ -351,6 +353,58 @@ ignore a `music:state` whose `rev` is lower than the one shown; replace all musi
 (re)connect; treat `durationMs` as authoritative (stop at it, the server moves on); show `addedBy` even when the
 account is gone. Search and stream fetching are entirely client-side; the server only validates `MusicTrackInfo`.
 
+### 5.5 Emulator plugin (play along)
+
+**The host runs the game.** In a voice call, the host loads a console game from their own disk; their Nexo runs the
+emulator and publishes its picture and sound as their stream (LiveKit, like a screen share). The others watch that stream and play along with their own controller. The server (`server/src/emulator.ts`)
+only keeps, per voice channel and in memory, an `EmuSession` `{hostId, system, title, ports, paused, status, rev}`
+and relays input; no game data ever goes through it.
+
+**Systems.** `EmuSystem` / `EMU_SYSTEMS`: `snes` Super Nintendo, `genesis` Mega Drive / Genesis, `psx` PlayStation,
+`n64` Nintendo 64. Each has its own engine bundled with the desktop app (`emulator/engine/<system>/`, WebAssembly,
+never fetched from the network) behind `createEmulator`. The host picks one or more files (or drops them); the
+console is told by the extensions (`emulator/engine.ts` `detectSystem`): `.sfc .smc .swc .fig` SNES, `.md .gen .smd`
+Mega Drive, `.z64 .n64 .v64` N64, `.cue` (picked together with the `.bin` / `.img` tracks it lists) or
+`.chd .pbp .iso .img` PlayStation; a lone `.bin` is a PlayStation disc when it starts with a raw CD sector or is over
+16 MB, a Mega Drive game when it has the `SEGA` header, else the host is asked; a `.zip` by the game file inside
+(PlayStation games must be unzipped). Size caps: 16 MB SNES / Mega Drive, 64 MB N64, 850 MB for a PlayStation disc's
+files. Big files are read with a progress bar and can be cancelled. The picture is a fixed-size canvas per session
+(SNES 256×224, Mega Drive 320×224, PlayStation / N64 640×480), always shown 4:3, and streamed at 60 fps after an
+integer nearest-neighbor upscale to about 720–1080 px tall (×3, ×3, ×2).
+
+**Privacy and game files.** The game files never leave the host's device: the game, its extra files (a PlayStation
+disc's track files, a BIOS) are not uploaded, stored or relayed; only the display `title` (from the file name) and
+`system` are sent. Nexo never supplies, downloads or links to game files or BIOS files; people play files they own. A
+PlayStation BIOS is optional: the PlayStation engine has a built-in replacement, and a BIOS file the host owns and
+picks together with the game is used instead (better compatibility).
+
+**Session.** `emu:start` creates the session with the caller as host on port 0 (player 1); one session per voice
+channel ("Someone is already hosting a game here"). The host may call it again after loading another game: the
+title and system change, the session is unpaused and the ports stay. `title` is normalized like status text and must
+be 1..`EMU_TITLE_MAX` = 80 UTF-16 units. There are `EMU_PORTS` = 4 controller ports: anyone in the channel takes a
+free one or gives theirs up (`emu:port`); the host or an admin puts someone in the channel on a port, moving them
+off any other one, or frees it (`emu:assign`); only the host pauses (`emu:pause`: shown to everyone, the host's
+emulator actually pauses); the host or an admin ends it (`emu:stop`). The host leaving the voice channel (leave,
+disconnect, move, account removal) closes the session; a player leaving frees their port. Deleting the channel or
+turning the plugin off closes its sessions. Every change bumps `rev` (one server-wide counter seeded from the clock)
+and is broadcast to everyone as `emu:session` (`status: 'closed'` when it ends); bootstrap `emulator` carries the
+running sessions. Requests come only from the caller's voice-owning socket in that channel ("Join the voice channel
+to play") and share a limit of 40 per user per 10 s ("Slow down").
+
+**Input relay.** A player on a port sends their held buttons (`GAME_PAD` bits: the d-pad, A/B/X/Y by position, L/R
+bumpers, L2/R2 triggers, L3/R3 stick clicks, Start, Select) and, for consoles with sticks (PlayStation, N64) and a
+gamepad, its sticks (`axes`: `EmuAxes` = `[lx, ly, rx, ry]`, integers -127..127, dead zone applied, absent while
+centered) on every change (`emu:input`, no ack, at most 120 per socket per second, beyond that dropped; clients send
+stick-only changes at most ~60 times per second). The server masks the buttons with `GAME_PAD_MASK`; `axes` must be
+an array of exactly 4 finite numbers (rounded and clamped to -127..127; anything else, or all zero, counts as
+centered). It sends `emu:input {channelId, port, buttons, axes?}` (`axes` only when not centered) to the host's
+voice-owning socket only, and only when that port's buttons or sticks changed. Whenever a port is freed (given up,
+reassigned, its player left) the host gets `buttons: 0` without axes for it, so a held button or tilted stick never
+sticks. Each engine maps the Nexo controller onto its console's pad (`emulator/systems.ts`, shown as the controls
+help); keyboards have no sticks, so the N64 engine drives the control stick from the d-pad when no axes come. The host's own controller is applied on their device and never goes through the server (their
+`emu:input` is ignored, as is anyone's without a port). When the host's voice moves to another device, relays go to
+that socket, which first gets every port's held buttons and sticks.
+
 ---
 
 ## 6. Media pipeline
@@ -439,10 +493,16 @@ All shared types live in `shared/protocol.ts`, imported by both the server and t
 | `voice:move` | `{userId, channelId}` (admins/owner; admins can't move the owner; same channel = no-op) | `null` |
 | `voice:nudge` | `{userId}` (target in voice and muted or deafened; not yourself; once per `NUDGE_COOLDOWN_MS` = 15 s per sender → target) | `null` |
 | `sound:play` | `{soundId}` ("Sound not found"; you must be in voice: "Join a voice channel to play sounds"; once per `SOUND_COOLDOWN_MS` = 2 s per user: "Wait a moment before playing another sound"). Sends `sound:played` to the voice-owning socket of everyone in your voice channel, you included | `null` |
-| `plugins:set` | `{plugin, enabled}` (admins/owner: "Only admins can change plugins"; `plugin` not a `PluginId`: "Unknown plugin"; `enabled` not a boolean: "Invalid plugin setting"). Persisted; broadcasts `plugins:changed` when it changed. Turning `music` off ends every music session | `ServerPlugins` |
+| `plugins:set` | `{plugin, enabled}` (admins/owner: "Only admins can change plugins"; `plugin` not a `PluginId`: "Unknown plugin"; `enabled` not a boolean: "Invalid plugin setting"). Persisted; broadcasts `plugins:changed` when it changed. Turning `music` off ends every music session; turning `emulator` off ends every emulator session | `ServerPlugins` |
 | `time:now` | `{}` | `{now}` (server clock, ms epoch) |
 | `music:add` | `{channelId, tracks, next?}`: "The Music plugin is off"; a voice channel ("Voice channel not found"); you must be in it ("Join the voice channel to control its music"). `tracks`: 1..`MUSIC_MAX_ADD` = 100 ("You can add at most 100 tracks at once") valid `MusicTrackInfo` (else the whole call fails: "Invalid track"): `videoId` `/^[A-Za-z0-9_-]{11}$/`, `title` 1..200 and `artist` 0..200 UTF-16 units and `album` null or 0..200 (`''` → null) after normalizing like status text, `durationMs` an integer in 1000..`MUSIC_MAX_TRACK_MS` (3 h); `artwork` an https URL without credentials or port on `ytimg.com`, `*.ytimg.com` or `*.googleusercontent.com`, else null (never an error). Queue at most `MUSIC_MAX_QUEUE` = 200 ("The queue is full (200 tracks)"; a track that starts playing doesn't count). Appended (`next`: right after the current one); the first starts now when nothing plays. Shares the rate limit of `music:control`. Broadcasts `music:state` | `MusicState` |
 | `music:control` | `{channelId, action, positionMs?, queueId?, toIndex?}` (same checks as `music:add`; 20 `music:add`/`music:control` per user per 10 s: "Slow down"). `play`/`pause` at the current position; `seek` to `positionMs` (a finite number, clamped to [0, `durationMs` − 1000]); `skip` plays the next track (stops at the end of the queue); `previous` plays the last played track within 3 s of the current one's start, else restarts it; `remove`/`move` a queued entry by `queueId` ("That track is no longer in the queue"; `move` needs a numeric `toIndex`, clamped); `clear` empties the queue (keeps the current track); `stop` ends the session. Bad action or parameter: "Invalid music action". A no-op (e.g. pause while paused) acks the state without a broadcast | `MusicState` |
+| `emu:start` | `{channelId, system, title}`: "The Emulator plugin is off"; a voice channel ("Voice channel not found") the caller is in from this socket ("Join the voice channel to play"); `system` in `EMU_SYSTEMS` ("Unsupported console"); `title` 1..`EMU_TITLE_MAX` = 80 after normalizing ("Invalid game title"). Creates the session (caller = host on port 0), or (the host only, else "Someone is already hosting a game here") changes its game and unpauses it. 40 `emu:*` requests per user per 10 s ("Slow down"). Broadcasts `emu:session` | `EmuSession` |
+| `emu:port` | `{channelId, port}` (same checks; "No game is running in this channel"): `port` an integer 0..3 ("Invalid controller") that is free ("That controller is taken"), leaving your previous one; `null` gives yours up. A freed port relays `buttons: 0` (no axes) to the host | `EmuSession` |
+| `emu:assign` | `{channelId, port, userId}` (host/admins: "Only the host can do that"): `userId` in that voice channel ("They're not in this voice channel") goes on `port` (off any other; whoever was there loses it); `null` frees it | `EmuSession` |
+| `emu:pause` | `{channelId, paused}` (host only; `paused` a boolean, "Invalid pause setting") | `EmuSession` |
+| `emu:stop` | `{channelId}` (host/admins). Broadcasts the `closed` session | `null` |
+| `emu:input` | `{channelId, buttons, axes?}` (no ack): your held `GAME_PAD` bits on your port, masked with `GAME_PAD_MASK`, and your sticks (`EmuAxes`: exactly 4 finite numbers, rounded and clamped to -127..127; junk or all zero = centered); relayed to the host when either changed; ignored from the host, without a port or from another socket, or with non-integer `buttons`; 120 per socket per second | — |
 | `profile:update` | `{color?, statusText?}`, at least one ("Nothing to update"). `color` `#rrggbb` ("Invalid color"). `statusText` string or null ("Invalid status"): normalized (NFC, whitespace runs → one space, other `\p{C}` removed except the emoji ZWJ, trimmed), `''`/null clears it, longer than `STATUS_TEXT_MAX` = 64 UTF-16 units → "Status is limited to 64 characters". Broadcasts `user:upsert` | `User` |
 | `presence:update` | `{status?, activity?}` (no ack). Omitted fields keep their value; invalid ones are ignored (`status` not in `online`/`idle`/`dnd`; `activity` not `null` or `{name, startedAt}` with a non-empty name and finite `startedAt`). The activity name is normalized like status text and cut to `ACTIVITY_NAME_MAX` = 64; `startedAt` is clamped to [now − 7 days, now]. Per connection (the account's presence is the aggregate over its sockets, see above). 20 updates per socket per minute; excess updates are delayed (merged) until the window allows, not lost. Broadcasts `presence:changed` only when the aggregate changed | — |
 
@@ -450,7 +510,7 @@ All shared types live in `shared/protocol.ts`, imported by both the server and t
 
 | Event | Payload |
 |---|---|
-| `bootstrap` | `{serverName, me, token?, users, online, channels, voice, lastMessageAt, lastMentionAt, presence, sounds, plugins, music, …}` sent on every connect (`presence`: userId → `Presence` for online users whose presence isn't the default; `sounds`: the soundboard, oldest first; `plugins`: `ServerPlugins`; `music`: the `MusicState`s with a current track or a queue) |
+| `bootstrap` | `{serverName, me, token?, users, online, channels, voice, lastMessageAt, lastMentionAt, presence, sounds, plugins, music, …}` sent on every connect (`presence`: userId → `Presence` for online users whose presence isn't the default; `sounds`: the soundboard, oldest first; `plugins`: `ServerPlugins`; `music`: the `MusicState`s with a current track or a queue; `emulator`: the running `EmuSession`s) |
 | `user:upsert` | `User` |
 | `presence` | `string[]` of online user IDs |
 | `presence:changed` | `{userId, presence}` (`DEFAULT_PRESENCE` when they went back to plain online or offline) |
@@ -466,6 +526,8 @@ All shared types live in `shared/protocol.ts`, imported by both the server and t
 | `sound:played` | `{soundId, userId, channelId}` to the voice-owning sockets in that channel only; each client plays it locally (not through anyone's microphone) unless deafened |
 | `plugins:changed` | `ServerPlugins` (an admin turned a plugin on or off) |
 | `music:state` | `MusicState` to everyone, on every change of a voice channel's session (also its empty state when it ends: `current` null, `queue` []) |
+| `emu:session` | `EmuSession` to everyone on every change of a voice channel's emulator session (`status: 'closed'` when it ends) |
+| `emu:input` | `{channelId, port, buttons, axes?}` to the host's voice-owning socket only: the buttons (and sticks, only when not centered) the player on `port` holds now (`buttons: 0` without axes when the port was freed) |
 
 A `Message` carries, besides `content` and `attachments`: `editedAt` (null = never edited), `replyTo` (a
 `ReplyPreview` `{id, userId, content ≤ 200 chars, hasAttachments, deleted}` or null), `reactions`

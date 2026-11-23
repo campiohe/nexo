@@ -19,6 +19,7 @@ How to install Nexo, join a server, and use its features. Hosting a server is co
 - [Picture in picture](#picture-in-picture)
 - [Soundboard](#soundboard)
 - [Music (listen together)](#music-listen-together)
+- [Emulator](#emulator)
 - [Appearance](#appearance)
 - [App settings](#app-settings)
 - [Updates](#updates)
@@ -255,6 +256,78 @@ what's playing under each voice channel.
 If a song can't play for you (YouTube sometimes blocks a song in your region, or asks a device to prove it
 isn't a bot), the bar says so and offers **Retry**; it keeps playing for everyone else. When everyone leaves
 the channel the music pauses, and the queue is cleared after 30 minutes.
+
+## Emulator
+
+An admin turns on **Emulator** in **Settings → Plugins**. It lets you play console games you own together:
+one person (the **host**) runs the game on their computer, Nexo streams it to the voice channel, and friends
+play along with their own keyboard or gamepad. It plays **Super Nintendo (SNES)**, **Mega Drive / Genesis**,
+**PlayStation** and **Nintendo 64** games.
+
+**Host a game.** In a voice channel, click the controller button in the voice toolbar and pick the game file
+you own (or drop it on the game). Nexo tells the console from the file:
+
+| Console | Pick |
+| --- | --- |
+| SNES | `.sfc`, `.smc`, `.swc`, `.fig` or a `.zip` with one |
+| Mega Drive / Genesis | `.md`, `.gen`, `.smd`, `.bin` or a `.zip` with one |
+| Nintendo 64 | `.z64`, `.n64`, `.v64` or a `.zip` with one |
+| PlayStation | the `.cue` **together with all its `.bin` files** (select them all at once in the file picker), or a single `.chd`, `.pbp`, `.iso` or `.img` |
+
+If Nexo can't tell (a `.bin` without a `.cue`), it asks whether it's a Mega Drive or a PlayStation game.
+PlayStation games must be unzipped first. **PlayStation BIOS:** not needed. Nexo has a built-in replacement
+that runs most games. If you own a PlayStation BIOS file (e.g. `scph1001.bin`), pick it together with the game for
+the best compatibility. Nexo doesn't provide one. A disc takes a few seconds to read; a progress bar shows
+it, with **Cancel**.
+
+The game starts on your computer and becomes your stream in the call (you're LIVE, like when you share your
+screen; starting a screen share replaces it, and **Stream it** puts the game back). You're player 1. The bar
+under the game has **Pause** (for everyone), **Reset**, **Quick save** / **Quick load** (one slot, kept until
+you load another game) and your own game **Volume** (it doesn't change what friends hear). **Load another
+game** (or dropping files on the game) switches games, even to another console, without stopping the stream.
+**Stop** ends it for everyone; so does leaving the voice channel.
+
+**Play along.** Everyone in the channel sees the host's game on the stage, with the people in a strip below.
+There are 4 controllers: click **Take** on a free one to play, **Leave** to give it up and just watch. The host
+(or an admin) can put someone on a controller or free it with the **⋯** menu. **Hide** (or the controller button)
+switches back to the people. Your keys only go to the game while it's on screen and you aren't typing.
+
+**Controls.** Nexo uses one controller layout for every console, like an Xbox pad: buttons go by
+**position** (A bottom, B right, X left, Y top), plus the bumpers (L / R), the triggers (L2 / R2) and clicking
+the sticks (L3 / R3). **Show controls** next to the controllers lists what each one does on the game's console.
+
+| Nexo control | Keyboard | Gamepad |
+| --- | --- | --- |
+| D-pad | arrows or **WASD** | d-pad (also the left stick on SNES and Mega Drive) |
+| A (bottom) / B (right) / X (left) / Y (top) | **Space** or **J** / **K** / **L** / **I** (also **Z X C V**) | A / B / X / Y |
+| L / R | **Q** / **E** | LB / RB |
+| L2 / R2 | **U** / **O** | LT / RT |
+| L3 / R3 | **F** / **G** | click the left / right stick |
+| Start / Select | **Enter** / **Backspace** | Start / Back |
+
+- **SNES:** bottom = B, right = A, left = Y, top = X, like on the SNES pad.
+- **Mega Drive:** left = A, bottom = B, right = C; L / top / R = X / Y / Z (6-button games); Select = Mode.
+- **PlayStation:** bottom = ✕, right = ○, left = □, top = △; L / R = L1 / R1, triggers = L2 / R2. A gamepad's
+  sticks are the DualShock's sticks; on a keyboard the arrows are the d-pad, which most games accept (the few
+  that need the analog sticks need a gamepad).
+- **Nintendo 64:** the control stick is the gamepad's left stick, or the **arrows / WASD** on a keyboard. A = A,
+  left = B, LT = Z, L / R = L / R, Start = Start. The **C buttons** are the gamepad's right stick, or top = C-up,
+  right = C-down, RT = C-right and Select = C-left (on a keyboard: **I**, **K**, **O**, **Backspace**). The N64
+  d-pad needs a gamepad.
+
+Plug a gamepad in and press a button to use it.
+
+**Performance.** SNES and Mega Drive games run on any computer. **PlayStation and especially Nintendo 64** games
+need a stronger computer for the host (a recent desktop or gaming laptop): if the game stutters or its sound
+crackles, the host's PC is too slow for that game. Players only watch the stream, so any computer works for them.
+
+**Latency.** The host plays without delay. Everyone else sees the host's stream, so a button press travels to
+the host's computer and the picture comes back: expect about 0.1–0.2 s on a good connection. That's fine for
+most games (RPGs, puzzle, party and turn-based games); in fast action games the players feel it more than the
+host does.
+
+**Your game files stay on your computer.** Nexo never uploads them (only the game's name is shown to the
+others), nor a BIOS, and never provides, downloads or links to games or BIOS files: play files you own.
 
 ## Appearance
 

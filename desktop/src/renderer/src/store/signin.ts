@@ -22,6 +22,7 @@ import { resetChatPanels } from './chatPanels'
 import { resetSounds } from './sounds'
 import { resetPlugins } from './plugins'
 import { resetMusic } from './music'
+import { resetEmulator } from './emulator'
 import { knownServerId, readLogin, rememberServerId, saveLogin, type LoginRead } from './logins'
 
 export const NOTICE_UNREADABLE =
@@ -114,6 +115,7 @@ export function handleNotRecognized(): void {
   resetSounds()
   resetPlugins()
   resetMusic()
+  resetEmulator()
   useApp.setState({ view: 'onboarding', connection: 'idle', connectionError: null, onboardingNotice: NOTICE_NOT_RECOGNIZED })
 }
 

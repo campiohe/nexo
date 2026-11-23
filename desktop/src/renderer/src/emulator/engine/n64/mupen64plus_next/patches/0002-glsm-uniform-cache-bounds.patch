@@ -1,0 +1,234 @@
+Nexo's fix to libretro-common's GL state manager in Mupen64Plus-Next (libretro/mupen64plus-libretro-nx @
+15bada85906593376e8fd697f1b0b3af3a20f512), which GLideN64 makes all its GL calls through in libretro builds.
+
+- glsm.c: its uniform cache, program_uniforms[1024][1024], is indexed by program name and uniform location
+  without bounds checks. Native drivers keep program names small; WebGL in Emscripten names every GL object
+  (textures, buffers, shaders, programs) from one counter, so after about a thousand objects each new shader
+  program's name is past the end: rglCreateProgram zeroed 80 KB of whatever lay ~80 KB × name past the array,
+  and its uniform updates wrote there too. That was the N64's RDRAM: Mario Kart 64's display list was wiped
+  mid-frame as a race started (the graphics plugin then read garbage: a freeze, or "memory access out of bounds"),
+  and other writes corrupted game threads. Out of range now means uncached (GLideN64 caches uniform values
+  itself). Not WebAssembly-specific, so not under NEXO_REENTRANT.
+
+diff --git i/libretro-common/glsm/glsm.c w/libretro-common/glsm/glsm.c
+index b3e8c60..f16a494 100644
+--- i/libretro-common/glsm/glsm.c
++++ w/libretro-common/glsm/glsm.c
+@@ -268,6 +268,17 @@ static struct gl_cached_state gl_state;
+ 
+ static bool copy_image_support = 0;
+ static struct gl_program_uniforms program_uniforms[MAX_UNIFORMS][MAX_UNIFORMS];
++
++/* Nexo: the cache above is indexed by program name and uniform location, which weren't bounds-checked. WebGL
++ * (Emscripten) names all GL objects from one counter, so programs soon get names past MAX_UNIFORMS, and creating
++ * or setting uniforms of one wrote over unrelated memory (Mario Kart 64's display lists at the start of a race).
++ * Out of range: no caching (GLideN64 caches uniform values itself anyway). */
++static struct gl_program_uniforms *glsm_uniform_slot(GLuint program, GLint location)
++{
++   if (program >= MAX_UNIFORMS || location < 0 || location >= MAX_UNIFORMS)
++      return NULL;
++   return &program_uniforms[program][location];
++}
+ static struct gl_framebuffers* framebuffers[MAX_FRAMEBUFFERS];
+ 
+ static GLenum active_texture;
+@@ -1666,9 +1677,8 @@ GLuint rglCreateProgram(void)
+    log_cb(RETRO_LOG_INFO, "glCreateProgram.\n");
+ #endif
+    GLuint temp = glCreateProgram();
+-   int i;
+-   for (i = 0; i < MAX_UNIFORMS; ++i)
+-      memset(&program_uniforms[temp][i], 0, sizeof(struct gl_program_uniforms));
++   if (temp < MAX_UNIFORMS)
++      memset(program_uniforms[temp], 0, sizeof(program_uniforms[temp]));
+    return temp;
+ }
+ 
+@@ -1965,9 +1975,10 @@ void rglUniform1f(GLint location, GLfloat v0)
+ #ifdef GLSM_DEBUG
+    log_cb(RETRO_LOG_INFO, "glUniform1f.\n");
+ #endif
+-   if (program_uniforms[gl_state.program][location].uniform1f != v0) {
++   struct gl_program_uniforms *u = glsm_uniform_slot(gl_state.program, location);
++   if (!u || u->uniform1f != v0) {
+       glUniform1f(location, v0);
+-      program_uniforms[gl_state.program][location].uniform1f = v0;
++      if (u) u->uniform1f = v0;
+    }
+ }
+ 
+@@ -1982,9 +1993,10 @@ void rglUniform1fv(GLint location,  GLsizei count,  const GLfloat *value)
+ #ifdef GLSM_DEBUG
+    log_cb(RETRO_LOG_INFO, "glUniform1fv.\n");
+ #endif
+-   if (program_uniforms[gl_state.program][location].uniform1f != value[0]) {
++   struct gl_program_uniforms *u = glsm_uniform_slot(gl_state.program, location);
++   if (!u || u->uniform1f != value[0]) {
+       glUniform1fv(location, count, value);
+-      program_uniforms[gl_state.program][location].uniform1f = value[0];
++      if (u) u->uniform1f = value[0];
+    }
+ }
+ 
+@@ -1999,9 +2011,10 @@ void rglUniform1iv(GLint location,  GLsizei count,  const GLint *value)
+ #ifdef GLSM_DEBUG
+    log_cb(RETRO_LOG_INFO, "glUniform1iv.\n");
+ #endif
+-   if (program_uniforms[gl_state.program][location].uniform1i != value[0]) {
++   struct gl_program_uniforms *u = glsm_uniform_slot(gl_state.program, location);
++   if (!u || u->uniform1i != value[0]) {
+       glUniform1iv(location, count, value);
+-      program_uniforms[gl_state.program][location].uniform1i = value[0];
++      if (u) u->uniform1i = value[0];
+    }
+ }
+ 
+@@ -2090,9 +2103,10 @@ void rglUniform1i(GLint location, GLint v0)
+ #ifdef GLSM_DEBUG
+    log_cb(RETRO_LOG_INFO, "glUniform1i.\n");
+ #endif
+-   if (program_uniforms[gl_state.program][location].uniform1i != v0) {
++   struct gl_program_uniforms *u = glsm_uniform_slot(gl_state.program, location);
++   if (!u || u->uniform1i != v0) {
+       glUniform1i(location, v0);
+-      program_uniforms[gl_state.program][location].uniform1i = v0;
++      if (u) u->uniform1i = v0;
+    }
+ }
+ 
+@@ -2107,10 +2121,11 @@ void rglUniform2f(GLint location, GLfloat v0, GLfloat v1)
+ #ifdef GLSM_DEBUG
+    log_cb(RETRO_LOG_INFO, "glUniform2f.\n");
+ #endif
+-   if (program_uniforms[gl_state.program][location].uniform2f[0] != v0 || program_uniforms[gl_state.program][location].uniform2f[1] != v1) {
++   struct gl_program_uniforms *u = glsm_uniform_slot(gl_state.program, location);
++   if (!u || u->uniform2f[0] != v0 || u->uniform2f[1] != v1) {
+       glUniform2f(location, v0, v1);
+-      program_uniforms[gl_state.program][location].uniform2f[0] = v0;
+-      program_uniforms[gl_state.program][location].uniform2f[1] = v1;
++      if (u) u->uniform2f[0] = v0;
++      if (u) u->uniform2f[1] = v1;
+    }
+ }
+ 
+@@ -2125,10 +2140,11 @@ void rglUniform2i(GLint location, GLint v0, GLint v1)
+ #ifdef GLSM_DEBUG
+    log_cb(RETRO_LOG_INFO, "glUniform2i.\n");
+ #endif
+-   if (program_uniforms[gl_state.program][location].uniform2i[0] != v0 || program_uniforms[gl_state.program][location].uniform2i[1] != v1) {
++   struct gl_program_uniforms *u = glsm_uniform_slot(gl_state.program, location);
++   if (!u || u->uniform2i[0] != v0 || u->uniform2i[1] != v1) {
+       glUniform2i(location, v0, v1);
+-      program_uniforms[gl_state.program][location].uniform2i[0] = v0;
+-      program_uniforms[gl_state.program][location].uniform2i[1] = v1;
++      if (u) u->uniform2i[0] = v0;
++      if (u) u->uniform2i[1] = v1;
+    }
+ }
+ 
+@@ -2143,10 +2159,11 @@ void rglUniform2fv(GLint location, GLsizei count, const GLfloat *value)
+ #ifdef GLSM_DEBUG
+    log_cb(RETRO_LOG_INFO, "glUniform2fv.\n");
+ #endif
+-   if (program_uniforms[gl_state.program][location].uniform2f[0] != value[0] || program_uniforms[gl_state.program][location].uniform2f[1] != value[1]) {
++   struct gl_program_uniforms *u = glsm_uniform_slot(gl_state.program, location);
++   if (!u || u->uniform2f[0] != value[0] || u->uniform2f[1] != value[1]) {
+       glUniform2fv(location, count, value);
+-      program_uniforms[gl_state.program][location].uniform2f[0] = value[0];
+-      program_uniforms[gl_state.program][location].uniform2f[1] = value[1];
++      if (u) u->uniform2f[0] = value[0];
++      if (u) u->uniform2f[1] = value[1];
+    }
+ }
+ 
+@@ -2161,11 +2178,12 @@ void rglUniform3f(GLint location, GLfloat v0, GLfloat v1, GLfloat v2)
+ #ifdef GLSM_DEBUG
+    log_cb(RETRO_LOG_INFO, "glUniform3f.\n");
+ #endif
+-   if (program_uniforms[gl_state.program][location].uniform3f[0] != v0 || program_uniforms[gl_state.program][location].uniform3f[1] != v1 || program_uniforms[gl_state.program][location].uniform3f[2] != v2) {
++   struct gl_program_uniforms *u = glsm_uniform_slot(gl_state.program, location);
++   if (!u || u->uniform3f[0] != v0 || u->uniform3f[1] != v1 || u->uniform3f[2] != v2) {
+       glUniform3f(location, v0, v1, v2);
+-      program_uniforms[gl_state.program][location].uniform3f[0] = v0;
+-      program_uniforms[gl_state.program][location].uniform3f[1] = v1;
+-      program_uniforms[gl_state.program][location].uniform3f[2] = v2;
++      if (u) u->uniform3f[0] = v0;
++      if (u) u->uniform3f[1] = v1;
++      if (u) u->uniform3f[2] = v2;
+    }
+ }
+ 
+@@ -2180,11 +2198,12 @@ void rglUniform3fv(GLint location, GLsizei count, const GLfloat *value)
+ #ifdef GLSM_DEBUG
+    log_cb(RETRO_LOG_INFO, "glUniform3fv.\n");
+ #endif
+-   if (program_uniforms[gl_state.program][location].uniform3f[0] != value[0] || program_uniforms[gl_state.program][location].uniform3f[1] != value[1] || program_uniforms[gl_state.program][location].uniform3f[2] != value[2]) {
++   struct gl_program_uniforms *u = glsm_uniform_slot(gl_state.program, location);
++   if (!u || u->uniform3f[0] != value[0] || u->uniform3f[1] != value[1] || u->uniform3f[2] != value[2]) {
+       glUniform3fv(location, count, value);
+-      program_uniforms[gl_state.program][location].uniform3f[0] = value[0];
+-      program_uniforms[gl_state.program][location].uniform3f[1] = value[1];
+-      program_uniforms[gl_state.program][location].uniform3f[2] = value[2];
++      if (u) u->uniform3f[0] = value[0];
++      if (u) u->uniform3f[1] = value[1];
++      if (u) u->uniform3f[2] = value[2];
+    }
+ }
+ 
+@@ -2199,12 +2218,13 @@ void rglUniform4i(GLint location, GLint v0, GLint v1, GLint v2, GLint v3)
+ #ifdef GLSM_DEBUG
+    log_cb(RETRO_LOG_INFO, "glUniform4i.\n");
+ #endif
+-   if (program_uniforms[gl_state.program][location].uniform4i[0] != v0 || program_uniforms[gl_state.program][location].uniform4i[1] != v1 || program_uniforms[gl_state.program][location].uniform4i[2] != v2 || program_uniforms[gl_state.program][location].uniform4i[3] != v3) {
++   struct gl_program_uniforms *u = glsm_uniform_slot(gl_state.program, location);
++   if (!u || u->uniform4i[0] != v0 || u->uniform4i[1] != v1 || u->uniform4i[2] != v2 || u->uniform4i[3] != v3) {
+       glUniform4i(location, v0, v1, v2, v3);
+-      program_uniforms[gl_state.program][location].uniform4i[0] = v0;
+-      program_uniforms[gl_state.program][location].uniform4i[1] = v1;
+-      program_uniforms[gl_state.program][location].uniform4i[2] = v2;
+-      program_uniforms[gl_state.program][location].uniform4i[3] = v3;
++      if (u) u->uniform4i[0] = v0;
++      if (u) u->uniform4i[1] = v1;
++      if (u) u->uniform4i[2] = v2;
++      if (u) u->uniform4i[3] = v3;
+    }
+ }
+ 
+@@ -2219,12 +2239,13 @@ void rglUniform4f(GLint location, GLfloat v0, GLfloat v1, GLfloat v2, GLfloat v3
+ #ifdef GLSM_DEBUG
+    log_cb(RETRO_LOG_INFO, "glUniform4f.\n");
+ #endif
+-   if (program_uniforms[gl_state.program][location].uniform4f[0] != v0 || program_uniforms[gl_state.program][location].uniform4f[1] != v1 || program_uniforms[gl_state.program][location].uniform4f[2] != v2 || program_uniforms[gl_state.program][location].uniform4f[3] != v3) {
++   struct gl_program_uniforms *u = glsm_uniform_slot(gl_state.program, location);
++   if (!u || u->uniform4f[0] != v0 || u->uniform4f[1] != v1 || u->uniform4f[2] != v2 || u->uniform4f[3] != v3) {
+       glUniform4f(location, v0, v1, v2, v3);
+-      program_uniforms[gl_state.program][location].uniform4f[0] = v0;
+-      program_uniforms[gl_state.program][location].uniform4f[1] = v1;
+-      program_uniforms[gl_state.program][location].uniform4f[2] = v2;
+-      program_uniforms[gl_state.program][location].uniform4f[3] = v3;
++      if (u) u->uniform4f[0] = v0;
++      if (u) u->uniform4f[1] = v1;
++      if (u) u->uniform4f[2] = v2;
++      if (u) u->uniform4f[3] = v3;
+    }
+ }
+ 
+@@ -2239,12 +2260,13 @@ void rglUniform4fv(GLint location, GLsizei count, const GLfloat *value)
+ #ifdef GLSM_DEBUG
+    log_cb(RETRO_LOG_INFO, "glUniform4fv.\n");
+ #endif
+-   if (program_uniforms[gl_state.program][location].uniform4f[0] != value[0] || program_uniforms[gl_state.program][location].uniform4f[1] != value[1] || program_uniforms[gl_state.program][location].uniform4f[2] != value[2] || program_uniforms[gl_state.program][location].uniform4f[3] != value[3]) {
++   struct gl_program_uniforms *u = glsm_uniform_slot(gl_state.program, location);
++   if (!u || u->uniform4f[0] != value[0] || u->uniform4f[1] != value[1] || u->uniform4f[2] != value[2] || u->uniform4f[3] != value[3]) {
+       glUniform4fv(location, count, value);
+-      program_uniforms[gl_state.program][location].uniform4f[0] = value[0];
+-      program_uniforms[gl_state.program][location].uniform4f[1] = value[1];
+-      program_uniforms[gl_state.program][location].uniform4f[2] = value[2];
+-      program_uniforms[gl_state.program][location].uniform4f[3] = value[3];
++      if (u) u->uniform4f[0] = value[0];
++      if (u) u->uniform4f[1] = value[1];
++      if (u) u->uniform4f[2] = value[2];
++      if (u) u->uniform4f[3] = value[3];
+    }
+ }
+ 
