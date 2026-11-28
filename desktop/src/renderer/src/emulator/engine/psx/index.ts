@@ -194,7 +194,8 @@ class PsxEngine implements EmulatorEngine {
 
   setPad(port: number, buttons: number, axes?: EmuAxes): void {
     if (this.destroyed || !Number.isInteger(port) || port < 0 || port >= EMU_PORTS) return
-    // No axes (keyboard): sticks centered; the d-pad works in both of the DualShock's modes.
+    // No axes (keyboard): sticks centered; the d-pad works in both of the DualShock's modes (and the left stick
+    // presses it in digital mode: pcsx_rearmed/patches/0001).
     const a = axes ?? [0, 0, 0, 0]
     this.core!._nexo_set_pad(
       port,

@@ -8,11 +8,13 @@
 // one the core's built-in HLE BIOS runs the game). Memory card 1 lives in memory, formatted and empty at every
 // load and lost when the game is closed (save states don't include it); memory card 2 is unplugged.
 //
-// Controllers: every pad is a DualShock (digital games read its buttons; analog games switch it to analog mode
-// themselves, or the player presses L1+R1+Select like the real ANALOG button). With the multitap (default) the
-// tap sits in PSX port 1: Nexo ports 0..3 are tap slots A..D (libretro ports 0..3), and PSX port 2 (libretro
-// port 4) mirrors Nexo port 1, so 2-player games that don't know the multitap still see player 2 on port 2
-// (the tap passes slot A through to them). Without it, Nexo ports 0/1 are PSX ports 1/2.
+// Controllers: every pad is a DualShock. It starts in digital mode, like the real one (patches/0001: upstream
+// switched it to analog on its own, and digital-only games then ignored it), where the left stick also presses the
+// d-pad; analog games switch it to analog mode themselves, or the player presses L1+R1+Select like the real ANALOG
+// button. With the multitap (default) the tap sits in PSX port 1: Nexo ports 0..3 are tap slots A..D (libretro
+// ports 0..3), and PSX port 2 (libretro port 4) mirrors Nexo port 1, so 2-player games that don't know the
+// multitap still see player 2 on port 2 (the tap passes slot A through to them). Without it, Nexo ports 0/1 are
+// PSX ports 1/2.
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>

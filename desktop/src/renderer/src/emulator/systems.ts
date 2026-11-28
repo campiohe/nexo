@@ -62,7 +62,7 @@ export const EMU_SYSTEM_INFO: Record<EmuSystem, EmuSystemInfo> = {
     analog: true,
     controls: [
       ['D-pad', msg('D-pad')],
-      ['Left stick', msg('Left stick (DualShock)')],
+      ['Left stick', msg('Left stick (the d-pad in games without analog)')],
       ['Right stick', msg('Right stick (DualShock)')],
       ['A', msg('✕ Cross')],
       ['B', msg('○ Circle')],
@@ -75,7 +75,7 @@ export const EMU_SYSTEM_INFO: Record<EmuSystem, EmuSystemInfo> = {
       ['L3', 'L3'],
       ['R3', 'R3'],
       ['START', 'Start'],
-      ['SELECT', 'Select'],
+      ['SELECT', msg('Select (L1 + R1 + Select: the ANALOG button)')],
     ],
   },
   n64: {

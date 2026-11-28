@@ -4,16 +4,18 @@
 # embedded (SINGLE_FILE: the packaged app loads the renderer from file://, where fetch() can't read a .wasm file).
 #
 # The core is built by its own Makefile.libretro (platform=emscripten: interpreter CPU, no threads, the "neon"
-# software GPU with its SSE paths mapped to WebAssembly SIMD, libchdr for .chd, zlib for .pbp); no patches.
+# software GPU with its SSE paths mapped to WebAssembly SIMD, libchdr for .chd, zlib for .pbp), with the patches in
+# ./patches.
 #
 # Output: desktop/src/renderer/public/emulator/pcsx_rearmed/pcsx_rearmed.js (+ LICENSE.txt), copied as-is into
 # out/renderer/emulator/pcsx_rearmed/ by Vite and loaded at runtime with import() (engine/psx/core.ts).
 #
 # GPL: the module is a GPL-2.0 work. Nexo ships it as a separate file next to its MIT code; whoever distributes a
-# Nexo build must also offer the corresponding source: the pinned commit below, this script and nexo_frontend.c.
+# Nexo build must also offer the corresponding source: the pinned commit below, the patches, this script and
+# nexo_frontend.c.
 #
 # Usage: desktop/src/renderer/src/emulator/engine/psx/pcsx_rearmed/build.sh [path to a pcsx_rearmed checkout]
-# (the checkout gets built in place). Needs emcc on PATH, or Docker (then it runs itself inside the emscripten/emsdk
+# (the checkout gets patched, once, and built in place; it must be at the pinned commit). Needs emcc on PATH, or Docker (then it runs itself inside the emscripten/emsdk
 # image).
 set -euo pipefail
 
@@ -38,6 +40,19 @@ if ! command -v emcc >/dev/null 2>&1; then
     -e HOME=/tmp "$EMSDK_IMAGE" bash "$HERE/build.sh" "$SRC"
 fi
 
+if [[ "$(git -C "$SRC" rev-parse HEAD)" != "$PCSX_COMMIT" ]]; then
+  echo "error: $SRC isn't at $PCSX_COMMIT" >&2
+  exit 1
+fi
+for p in "$HERE"/patches/*.patch; do
+  if git -C "$SRC" apply --check "$p" 2>/dev/null; then
+    git -C "$SRC" apply "$p"
+  elif ! git -C "$SRC" apply --reverse --check "$p" 2>/dev/null; then
+    echo "error: $p doesn't apply to $SRC" >&2
+    exit 1
+  fi # else: already applied
+done
+
 # The core as a static archive (pcsx_rearmed_libretro_emscripten.bc, an `ar` archive despite its name).
 emmake make -C "$SRC" -f Makefile.libretro platform=emscripten CFLAGS_OPT=-O3 -j"$(nproc)" >/dev/null
 OBJ="$(mktemp -d)"
@@ -57,9 +72,10 @@ emcc -O3 -msimd128 -I"$SRC/deps/libretro-common/include" "$HERE/nexo_frontend.c"
 {
   echo "PCSX ReARMed (libretro port), built for Nexo's Emulator plugin from $PCSX_REPO"
   echo "commit $PCSX_COMMIT with $EMSDK_IMAGE by"
-  echo "desktop/src/renderer/src/emulator/engine/psx/pcsx_rearmed/build.sh, linked with Nexo's libretro frontend"
-  echo "(nexo_frontend.c in the same folder). This module is distributed under the GNU General Public License"
-  echo "version 2 (below); its complete corresponding source is that commit plus those two files."
+  echo "desktop/src/renderer/src/emulator/engine/psx/pcsx_rearmed/build.sh with the patches in its patches/ folder,"
+  echo "linked with Nexo's libretro frontend (nexo_frontend.c in the same folder). This module is distributed under"
+  echo "the GNU General Public License version 2 (below); its complete corresponding source is that commit plus those"
+  echo "files."
   echo
   echo "Bundled third-party code keeps its own license: libchdr (BSD-3-Clause, deps/libchdr/LICENSE.txt),"
   echo "Zstandard (BSD), LZMA SDK (public domain), zlib (zlib license, Emscripten port), libretro-common"

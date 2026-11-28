@@ -313,9 +313,11 @@ the sticks (L3 / R3). **Show controls** next to the controllers lists what each 
 
 - **SNES:** bottom = B, right = A, left = Y, top = X, like on the SNES pad.
 - **Mega Drive:** left = A, bottom = B, right = C; L / top / R = X / Y / Z (6-button games); Select = Mode.
-- **PlayStation:** bottom = ✕, right = ○, left = □, top = △; L / R = L1 / R1, triggers = L2 / R2. A gamepad's
-  sticks are the DualShock's sticks; on a keyboard the arrows are the d-pad, which most games accept (the few
-  that need the analog sticks need a gamepad).
+- **PlayStation:** bottom = ✕, right = ○, left = □, top = △; L / R = L1 / R1, triggers = L2 / R2. The controller
+  is a DualShock that starts in digital mode, like the real one: there the gamepad's left stick moves the d-pad.
+  Games made for the sticks turn analog mode on themselves; in others, **L1 + R1 + Select** (keyboard **Q + E +
+  Backspace**) is the DualShock's ANALOG button. On a keyboard the arrows are the d-pad, which most games accept
+  (the few that need the analog sticks need a gamepad).
 - **Nintendo 64:** the control stick is the gamepad's left stick, or the **arrows / WASD** on a keyboard. A = A,
   left = B, LT = Z, L / R = L / R, Start = Start. The **C buttons** are the gamepad's right stick, or top = C-up,
   right = C-down, RT = C-right and Select = C-left (on a keyboard: **I**, **K**, **O**, **Backspace**). The N64
