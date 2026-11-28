@@ -1,6 +1,7 @@
 // A floating card next to an element (profile card, status menu): portaled to <body>, placed on the
 // preferred side of the anchor (flipped / clamped to stay in the viewport), closed on outside click,
-// Escape, resize and window blur. Same behaviour as components/voice/UserVolumePopover.tsx.
+// Escape, resize and window blur. Same behaviour as components/voice/UserVolumePopover.tsx. Over a Modal, Escape
+// closes the card first (Modal.tsx skips it while one is open).
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import type { AnchorRect } from '../store/ui'
@@ -8,9 +9,15 @@ import type { AnchorRect } from '../store/ui'
 const MARGIN = 8
 const GAP = 8
 
+/** Cards open right now. */
+let openCount = 0
+/** A floating card is open (it takes Escape before a Modal under it). */
+export const isFloatingOpen = (): boolean => openCount > 0
+
 interface FloatingProps {
   anchor: AnchorRect
-  side: 'left' | 'right' | 'top'
+  /** top / bottom: left-aligned with the anchor, flipped to the other side when there's no room. */
+  side: 'left' | 'right' | 'top' | 'bottom'
   onClose(): void
   className?: string
   label: string
@@ -37,6 +44,10 @@ export function Floating({ anchor, side, onClose, className, label, children }: 
         left = anchor.left
         top = anchor.top - height - GAP
         if (top < MARGIN) top = anchor.bottom + GAP
+      } else if (side === 'bottom') {
+        left = anchor.left
+        top = anchor.bottom + GAP
+        if (top + height > vh - MARGIN && anchor.top - height - GAP >= MARGIN) top = anchor.top - height - GAP
       } else {
         left = side === 'right' ? anchor.right + GAP : anchor.left - width - GAP
         if (side === 'right' && left + width > vw - MARGIN) left = anchor.left - width - GAP
@@ -54,6 +65,7 @@ export function Floating({ anchor, side, onClose, className, label, children }: 
   }, [anchor.left, anchor.top, anchor.right, anchor.bottom, side])
 
   useEffect(() => {
+    openCount++
     const onPointer = (e: PointerEvent) => {
       if (ref.current && e.target instanceof Node && ref.current.contains(e.target)) return
       closeRef.current()
@@ -71,6 +83,7 @@ export function Floating({ anchor, side, onClose, className, label, children }: 
     window.addEventListener('resize', onResize)
     window.addEventListener('blur', onResize)
     return () => {
+      openCount--
       document.removeEventListener('pointerdown', onPointer, true)
       window.removeEventListener('keydown', onKey, true)
       window.removeEventListener('resize', onResize)

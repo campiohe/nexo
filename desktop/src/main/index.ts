@@ -212,7 +212,9 @@ if (!app.requestSingleInstanceLock()) {
   app.quit()
 } else {
   // App name / userData folder ("Nexo") come from productName in package.json.
-  if (platform === 'win32') app.setAppUserModelId('app.nexo.desktop')
+  // Development runs get their own ID: a shortcut to the dev Electron carrying the installed app's ID makes Windows
+  // show the installed Nexo on the taskbar as "Electron", with Electron's icon.
+  if (platform === 'win32') app.setAppUserModelId(app.isPackaged ? 'app.nexo.desktop' : 'app.nexo.desktop.dev')
 
   app.on('second-instance', focusMainWindow)
   // Covers the tray Quit item, Cmd+Q / the macOS app menu, app.quit() and autoUpdater restarts.

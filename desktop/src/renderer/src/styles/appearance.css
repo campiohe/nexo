@@ -7,14 +7,57 @@
 .appearance-zoom-value { flex: none; min-width: 48px; text-align: right; font: 600 13px var(--mono); color: var(--text-0); }
 
 .theme-cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
-/* The accent column is wider, so its six swatches stay on one line next to the title bar choice. */
+/* The accent column is wider, so its seven swatches stay on one line next to the title bar choice; they shrink
+ * (instead of wrapping) when the modal is narrower, e.g. at a high UI zoom. */
 .appearance-pair { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 24px; }
-.appearance-pair .swatches { flex-wrap: nowrap; gap: 8px; }
-.appearance-pair .accent-swatch { flex: none; width: 28px; height: 28px; }
+.appearance-pair .swatches { flex-wrap: nowrap; align-items: center; gap: 6px; }
+.appearance-pair .accent-swatch { flex: 0 1 28px; min-width: 0; width: auto; height: auto; aspect-ratio: 1; }
 .appearance-accent-name { margin-left: 4px; color: var(--text-2); font-weight: 600; text-transform: none; letter-spacing: 0; }
-/* Each swatch carries data-accent, so it gets that preset's shades (tokens.css) for the current palette. */
+/* Each swatch carries data-accent, so it gets that preset's shades (tokens.css) for the current palette. The custom
+ * one sets them inline (AccentPicker.tsx). */
 .accent-swatch { background: var(--accent-d); }
 [data-theme='light'] .accent-swatch { background: var(--accent-l); }
+/* No custom color yet: a neutral swatch with a "+". */
+.accent-swatch.is-empty { background: var(--bg-3); color: var(--text-1); box-shadow: inset 0 0 0 1px var(--line-strong); }
+.accent-swatch.is-empty:hover { color: var(--text-0); }
+
+/* Custom accent picker (AccentPicker.tsx), in a .floating popover under the swatch. */
+.accent-picker { width: 224px; padding: 12px; }
+.cp { display: flex; flex-direction: column; gap: 12px; }
+.cp-sv,
+.cp-hue { position: relative; touch-action: none; cursor: crosshair; }
+.cp-sv {
+  height: 136px;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(to top, #000, transparent), linear-gradient(to right, #fff, var(--cp-hue));
+  box-shadow: inset 0 0 0 1px var(--edge-highlight);
+}
+.cp-hue {
+  height: 12px;
+  border-radius: 6px;
+  background: linear-gradient(to right, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00);
+  box-shadow: inset 0 0 0 1px var(--edge-highlight);
+  cursor: pointer;
+}
+.cp-hue .cp-thumb { top: 50%; }
+.cp-thumb {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 0.35), 0 1px 3px rgb(0 0 0 / 0.3);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+.cp-sv:focus-visible,
+.cp-hue:focus-visible { box-shadow: var(--focus-ring); }
+.cp-sv:focus-visible { border-radius: var(--radius-sm); }
+.cp-hue:focus-visible { border-radius: 6px; }
+.cp-hex { position: relative; display: block; }
+.cp-hex-hash { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--text-2); font: 13px var(--mono); pointer-events: none; }
+.cp-hex .input { height: 32px; padding-left: 22px; font: 13px var(--mono); }
+.cp-note { margin: 10px 0 0; color: var(--text-2); font-size: 12px; line-height: 1.4; }
 .theme-card {
   position: relative;
   display: flex;

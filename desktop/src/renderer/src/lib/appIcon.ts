@@ -1,5 +1,5 @@
 // Settings → Appearance → App icon: the variants of the Nexo icon (resources/icon.svg: a ring with a dot breaking out
-// of it, on a rounded-square tile) and the PNG main applies to the window, taskbar and tray (main/appIcon.ts).
+// of it, on a rounded-square tile) and the PNG main applies to the window, tray and shortcuts (main/appIcon.ts).
 
 import { msg } from '../i18n/core'
 

@@ -346,9 +346,9 @@ others), nor a BIOS, and never provides, downloads or links to games or BIOS fil
   Amber or Rose.
 - **Title bar:** **With search** shows a **Jump to a channel** box at the top of the window (the same as
   Ctrl K); **Minimal** shows only the server name.
-- **App icon:** Classic, Accent (your accent color), Paper or Mono. It changes the icon on the taskbar,
-  in Alt+Tab and in the tray while Nexo runs. A shortcut pinned to the taskbar or Start menu keeps the
-  default icon.
+- **App icon:** Classic, Accent (your accent color), Paper or Mono. It changes the icon in the title bar,
+  the tray and Alt+Tab right away. On Windows, Nexo also changes its Start menu, desktop and pinned shortcuts:
+  the taskbar shows the new icon the next time Nexo starts.
 - **Zoom** (also Ctrl +, Ctrl − and Ctrl 0, or Ctrl + mouse wheel; 67–200%), **Compact messages** and
   **Show link previews**.
 

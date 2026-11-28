@@ -5,6 +5,7 @@
 import { create } from 'zustand'
 import { THEME_CHOICES, ZOOM_STEPS, type ThemeChoice, type WindowChrome, type ZoomEvent } from '../../../preload/api'
 import { APP_ICONS, renderAppIcon, usesAccent, type AppIconChoice } from './appIcon'
+import { ACCENT_VARS, deriveAccent, parseHex, type AccentShades } from './accentColor'
 import { formatNumber, msg, t } from '../i18n'
 import { toast, useToasts } from './toast'
 
@@ -23,13 +24,18 @@ export const ACCENTS = [
   { id: 'amber', label: msg('Amber') },
   { id: 'rose', label: msg('Rose') },
 ] as const
-export type AccentChoice = (typeof ACCENTS)[number]['id']
+export type AccentPreset = (typeof ACCENTS)[number]['id']
+/** A preset, or 'custom': the color in the store's customAccent (its shades set inline on <html>, lib/accentColor.ts). */
+export type AccentChoice = AccentPreset | 'custom'
+export const CUSTOM_ACCENT_LABEL = msg('Custom // accent color')
 
 /** What the title bar shows besides the server name: the jump-to-channel box, or nothing. */
 export type TitleBarStyle = 'search' | 'minimal'
 
 const KEY_THEME = 'nexo:theme'
 const KEY_ACCENT = 'nexo:accent'
+/** The last custom accent (#rrggbb), kept while a preset is chosen so the custom swatch remembers it. */
+const KEY_ACCENT_CUSTOM = 'nexo:accent-custom'
 const KEY_TITLEBAR = 'nexo:titlebar'
 const KEY_DENSITY = 'nexo:density'
 const KEY_APP_ICON = 'nexo:app-icon'
@@ -57,9 +63,15 @@ function readTheme(): ThemeChoice {
   return THEME_CHOICES.includes(v as ThemeChoice) ? (v as ThemeChoice) : 'system'
 }
 
-function readAccent(): AccentChoice {
+function readCustomAccent(): string | null {
+  const v = lsGet(KEY_ACCENT_CUSTOM)
+  return v ? parseHex(v) : null
+}
+
+function readAccent(custom: string | null): AccentChoice {
   const v = lsGet(KEY_ACCENT)
-  return ACCENTS.some((a) => a.id === v) ? (v as AccentChoice) : 'mint'
+  if (v === 'custom') return custom ? 'custom' : 'mint'
+  return ACCENTS.some((a) => a.id === v) ? (v as AccentPreset) : 'mint'
 }
 
 function readTitleBar(): TitleBarStyle {
@@ -136,8 +148,30 @@ function accentChanged(): void {
   if (usesAccent(appIcon)) syncAppIcon(appIcon)
 }
 
-function applyAccent(accent: AccentChoice): void {
-  document.documentElement.dataset.accent = accent
+/** Icon redraws wait for the custom color to settle: dragging in the picker changes it every frame. */
+const ACCENT_SETTLE_MS = 300
+let accentSettleTimer: ReturnType<typeof setTimeout> | null = null
+
+/** accentChanged() now (preset), or once the custom color stops changing for ACCENT_SETTLE_MS. */
+function accentChangedAfter(settle: boolean): void {
+  if (accentSettleTimer !== null) clearTimeout(accentSettleTimer)
+  accentSettleTimer = null
+  if (!settle) return accentChanged()
+  accentSettleTimer = setTimeout(() => {
+    accentSettleTimer = null
+    accentChanged()
+  }, ACCENT_SETTLE_MS)
+}
+
+/** <html data-accent>; a custom accent also sets its six shades inline (they win over tokens.css's presets). */
+function applyAccent(accent: AccentChoice, custom: string | null): void {
+  const root = document.documentElement
+  root.dataset.accent = accent
+  const shades = accent === 'custom' && custom ? deriveAccent(custom) : null
+  for (const key of Object.keys(ACCENT_VARS) as (keyof AccentShades)[]) {
+    if (shades) root.style.setProperty(ACCENT_VARS[key], shades[key])
+    else root.style.removeProperty(ACCENT_VARS[key])
+  }
 }
 
 function applyDensity(density: Density): void {
@@ -149,6 +183,8 @@ interface AppearanceStore {
   /** The palette in use (follows the OS while theme is 'system'). */
   resolved: ResolvedTheme
   accent: AccentChoice
+  /** The last custom accent (#rrggbb), also while a preset is chosen; null until one was picked. */
+  customAccent: string | null
   titleBar: TitleBarStyle
   /** Window / taskbar / tray icon variant. */
   appIcon: AppIconChoice
@@ -156,7 +192,10 @@ interface AppearanceStore {
   /** Current zoom factor; null until main answered (or without the Electron bridge). */
   zoom: number | null
   setTheme(theme: ThemeChoice): void
+  /** A preset, or 'custom' to go back to customAccent (ignored while there's none). */
   setAccent(accent: AccentChoice): void
+  /** Choose a custom accent (any hex parseHex takes). Cheap enough to call on every pointer move. */
+  setCustomAccent(hex: string): void
   setTitleBar(style: TitleBarStyle): void
   setAppIcon(choice: AppIconChoice): void
   setDensity(density: Density): void
@@ -165,16 +204,18 @@ interface AppearanceStore {
 
 // ---- before the first paint ----
 const initialTheme = readTheme()
-const initialAccent = readAccent()
+const initialCustomAccent = readCustomAccent()
+const initialAccent = readAccent(initialCustomAccent)
 const initialDensity = readDensity()
 const initialResolved = applyTheme(initialTheme)
-applyAccent(initialAccent)
+applyAccent(initialAccent, initialCustomAccent)
 applyDensity(initialDensity)
 
 export const useAppearance = create<AppearanceStore>()((set, get) => ({
   theme: initialTheme,
   resolved: initialResolved,
   accent: initialAccent,
+  customAccent: initialCustomAccent,
   titleBar: readTitleBar(),
   appIcon: readAppIcon(),
   density: initialDensity,
@@ -185,10 +226,23 @@ export const useAppearance = create<AppearanceStore>()((set, get) => ({
     syncMain(theme)
   },
   setAccent: (accent) => {
+    const { customAccent } = get()
+    if (accent === 'custom' && !customAccent) return
     lsSet(KEY_ACCENT, accent)
-    applyAccent(accent)
+    applyAccent(accent, customAccent)
     set({ accent })
-    accentChanged()
+    accentChangedAfter(false)
+  },
+  setCustomAccent: (hex) => {
+    const customAccent = parseHex(hex)
+    if (!customAccent) return
+    const s = get()
+    if (s.accent === 'custom' && s.customAccent === customAccent) return
+    lsSet(KEY_ACCENT_CUSTOM, customAccent)
+    lsSet(KEY_ACCENT, 'custom')
+    applyAccent('custom', customAccent)
+    set({ accent: 'custom', customAccent })
+    accentChangedAfter(true)
   },
   setTitleBar: (titleBar) => {
     lsSet(KEY_TITLEBAR, titleBar)

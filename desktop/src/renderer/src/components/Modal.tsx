@@ -1,6 +1,7 @@
 import { useEffect, useRef, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { CloseIcon } from './icons'
+import { isFloatingOpen } from './Floating'
 import { useT } from '../i18n'
 
 interface ModalProps {
@@ -49,7 +50,8 @@ export function Modal({ title, onClose, children, footer, width = 440, className
     const self = {}
     openModals.push(self)
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && openModals[openModals.length - 1] === self) {
+      // A floating card over the modal (e.g. a color picker) closes first: Floating.tsx handles that Escape.
+      if (e.key === 'Escape' && openModals[openModals.length - 1] === self && !isFloatingOpen()) {
         e.stopPropagation()
         closeRef.current()
       }

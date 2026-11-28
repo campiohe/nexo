@@ -21,8 +21,11 @@
 /* ---------- accent presets ----------
  * <html data-accent> (lib/appearance.ts). Each preset gives a shade for dark palettes (-d) and one deepened for the
  * light palette (-l, AA as text on bg-1…bg-3); the palette blocks below pick one, so a preview subtree in the other
- * theme still gets the right shade. Mint is the default. */
-:root {
+ * theme still gets the right shade. Mint is the default. 'custom' has no block: lib/appearance.ts sets the six variables
+ * inline on <html>, derived from the picked color (lib/accentColor.ts). */
+/* Also matched by [data-accent='mint'], so the Mint swatch keeps its color while another accent is in use. */
+:root,
+[data-accent='mint'] {
   --accent-d: #43d6a3; --accent-strong-d: #2fc490; --accent-ink-d: #06261b;
   --accent-l: #0a7d5a; --accent-strong-l: #08694b; --accent-ink-l: #ffffff;
 }
