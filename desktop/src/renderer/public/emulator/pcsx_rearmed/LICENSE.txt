@@ -1,8 +1,9 @@
 PCSX ReARMed (libretro port), built for Nexo's Emulator plugin from https://github.com/libretro/pcsx_rearmed.git
 commit 121fe97af5adcad840893b96b233d8f3bb9c8412 with emscripten/emsdk:4.0.10 by
-desktop/src/renderer/src/emulator/engine/psx/pcsx_rearmed/build.sh, linked with Nexo's libretro frontend
-(nexo_frontend.c in the same folder). This module is distributed under the GNU General Public License
-version 2 (below); its complete corresponding source is that commit plus those two files.
+desktop/src/renderer/src/emulator/engine/psx/pcsx_rearmed/build.sh with the patches in its patches/ folder,
+linked with Nexo's libretro frontend (nexo_frontend.c in the same folder). This module is distributed under
+the GNU General Public License version 2 (below); its complete corresponding source is that commit plus those
+files.
 
 Bundled third-party code keeps its own license: libchdr (BSD-3-Clause, deps/libchdr/LICENSE.txt),
 Zstandard (BSD), LZMA SDK (public domain), zlib (zlib license, Emscripten port), libretro-common

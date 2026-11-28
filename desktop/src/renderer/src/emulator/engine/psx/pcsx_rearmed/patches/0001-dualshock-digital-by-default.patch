@@ -1,0 +1,65 @@
+Nexo's patch to PCSX ReARMed (libretro/pcsx_rearmed @ 121fe97af5adcad840893b96b233d8f3bb9c8412) for the
+Emulator plugin (../build.sh).
+
+- pad.c: the DualShock behaves like the real one. Upstream "auto-enables" analog mode for convenience once a game
+  has used the pad's config mode and then read it 16 times in digital mode, even though the game never asked for
+  analog (0x44). Games that query the pad but only read digital ones then ignore every button: Metal Slug X sat
+  on "PRESS 1P OR 2P START". Now the pad stays digital until the game switches it or the player presses ANALOG
+  (L1+R1+Select). In digital mode the left stick also presses the d-pad past half tilt, so gamepad players can
+  steer with the stick in digital-only games.
+
+diff --git i/libpcsxcore/pad.c w/libpcsxcore/pad.c
+index 797cf370..0f002adb 100644
+--- i/libpcsxcore/pad.c
++++ w/libpcsxcore/pad.c
+@@ -173,21 +173,10 @@ static void initBufForRequest(PadDataS *pad, unsigned char value)
+ 		pad->ds.padMode = 0; // according to nocash
+ 		pad->ds.autoAnalogTried = 0;
+ 	}
+-	else if (pad->ds.padMode == 0 && value == CMD_READ_DATA_AND_VIBRATE
+-		 && pad->ds.configModeUsed
+-		 && !pad->ds.configMode
+-		 && !pad->ds.userToggled)
+-	{
+-		if (pad->ds.autoAnalogTried == 16) {
+-			// auto-enable for convenience
+-			SysPrintf("Pad%ld: Auto-enabling dualshock analog mode.\n",
+-				(long)(pad - g.pads + 1));
+-			pad->ds.padMode = 1;
+-			pad->ds.autoAnalogTried = 255;
+-		}
+-		else if (pad->ds.autoAnalogTried < 16)
+-			pad->ds.autoAnalogTried++;
+-	}
++	// Nexo: no "auto-enable for convenience" of analog mode here. It flipped the pad to analog after a game had
++	// merely queried it in config mode, and games that only read digital pads (Metal Slug X) then ignored every
++	// button. Like a real DualShock, the pad stays digital until the game switches it (0x44) or the player presses
++	// ANALOG (the L1+R1+Select combo); in digital mode the left stick drives the d-pad instead (PADstartPoll_).
+ 	pad->ds.lastUseFrame = frame_counter;
+ 
+ 	switch (value) {
+@@ -349,8 +338,22 @@ static void PADstartPoll_(PadDataS *pad)
+ 			pad->respSize = 4;
+ 			break;
+ 		case PSE_PAD_TYPE_ANALOGPAD: // scph1150
+-			if ((pad->ds.padMode | pad->ds.configMode) == 0)
+-				goto standard;
++			if ((pad->ds.padMode | pad->ds.configMode) == 0) {
++				// Nexo: digital mode: past half tilt, the left stick presses the d-pad too (buttons are active low:
++				// bit 4 up, 5 right, 6 down, 7 left), so stick players can play digital-only games.
++				int dx = (int)pad->leftJoyX - 0x80, dy = (int)pad->leftJoyY - 0x80;
++				unsigned short b = pad->buttonStatus;
++				if (dy <= -0x40) b &= ~(1u << 4);
++				if (dx >= 0x40) b &= ~(1u << 5);
++				if (dy >= 0x40) b &= ~(1u << 6);
++				if (dx <= -0x40) b &= ~(1u << 7);
++				pad->rxData[0] = 0x41;
++				pad->rxData[1] = 0x5a;
++				pad->rxData[2] = b & 0xff;
++				pad->rxData[3] = b >> 8;
++				pad->respSize = 4;
++				break;
++			}
+ 			pad->rxData[0] = 0x73;
+ 			pad->rxData[1] = 0x5a;
+ 			pad->rxData[2] = pad->buttonStatus & 0xff;
