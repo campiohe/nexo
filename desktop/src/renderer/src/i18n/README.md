@@ -206,7 +206,7 @@ is identical (the checker flags a difference). `common.ts` belongs to the i18n c
 | Area file | Source files (paths under `src/renderer/src`) |
 | --- | --- |
 | `common.ts` | `lib/time.ts`, `lib/toast.ts`, `i18n/` |
-| `settings.ts` | `components/SettingsModal.tsx`, `LanguageSettings.tsx`, `AppearanceSettings.tsx`; `lib/appearance.ts`, `lib/appIcon.ts`, `lib/locale.ts`, `lib/keybinds.ts` |
+| `settings.ts` | `components/SettingsModal.tsx`, `LanguageSettings.tsx`, `AppearanceSettings.tsx`, `AccentPicker.tsx`; `lib/appearance.ts`, `lib/appIcon.ts`, `lib/locale.ts`, `lib/keybinds.ts` |
 | `shell.ts` | `App.tsx`, `main.tsx`, `components/TitleBar`, `MainLayout`, `Sidebar`, `QuickSwitcher`, `Toasts`, `UpdateBanner`, `Splash`, `Modal`, `Floating`, `icons.tsx`; `lib/updates.ts`, `lib/notify.ts`, `lib/url.ts`; `store/ui.ts`, `store/unread.ts`, `store/settings.ts` |
 | `accounts.ts` | `components/Onboarding`, `SignInSteps`, `AccessRequestBanners`; `store/app.ts`, `store/admin.ts`, `store/signin.ts`, `store/logins.ts`; `net/accounts.ts`, `net/socket.ts`; `lib/permissions.ts` |
 | `people.ts` | `components/MemberList`, `MembersSection`, `ProfileCard`, `ProfileBanner`, `BannerSettings`, `StatusMenu`, `ActivitySettings`, `Avatar`, `AvatarCropDialog`, `ColorSwatches`, `peopleIcons`; `store/presence.ts`; `lib/presenceSync.ts`, `lib/activity.ts`, `lib/avatar*.ts`, `lib/gif*.ts`, `lib/imageCrop.ts`, `lib/imageEncode.ts`, `lib/colors.ts`, `lib/idleAnimations.ts`; `net/avatar.ts`, `net/banner.ts` |

@@ -3,6 +3,7 @@ import { useId, useRef, type KeyboardEvent } from 'react'
 import {
   ACCENTS,
   APP_ICONS,
+  CUSTOM_ACCENT_LABEL,
   hasAppIconBridge,
   useAppearance,
   ZOOM_STEPS,
@@ -12,7 +13,8 @@ import {
   type ThemeChoice,
   type TitleBarStyle,
 } from '../lib/appearance'
-import { ICON_GEOMETRY, iconColors } from '../lib/appIcon'
+import { AppIconArt } from './AppIconArt'
+import { CustomAccentSwatch } from './AccentPicker'
 import { msg, useT } from '../i18n'
 import { useLinkPreviewsPref } from '../store/chatPrefs'
 
@@ -89,7 +91,7 @@ function ThemeCard({ id, label, hint }: { id: ThemeChoice; label: string; hint?:
 function AccentRow() {
   const t = useT()
   const accent = useAppearance((s) => s.accent)
-  const label = ACCENTS.find((a) => a.id === accent)?.label
+  const label = accent === 'custom' ? CUSTOM_ACCENT_LABEL : ACCENTS.find((a) => a.id === accent)?.label
   return (
     <div className="appearance-group">
       <span id="accent-label" className="field-label">
@@ -112,6 +114,7 @@ function AccentRow() {
             onClick={() => useAppearance.getState().setAccent(a.id)}
           />
         ))}
+        <CustomAccentSwatch />
       </div>
     </div>
   )
@@ -143,26 +146,13 @@ function TitleBarRow() {
   )
 }
 
-/** One app icon variant, drawn like lib/appIcon.ts draws it for main (the accent's dark-palette shade in any theme). */
-function AppIconArt({ choice }: { choice: AppIconChoice }) {
-  const mask = `app-icon-${useId().replace(/:/g, '')}`
-  const { tile, ring, cut, dot } = ICON_GEOMETRY
-  const colors = iconColors(choice, 'var(--accent-d)', 'var(--accent-ink-d)')
-  return (
-    <svg className="app-icon-art" viewBox={`${tile.x} ${tile.y} ${tile.size} ${tile.size}`} aria-hidden="true" focusable="false">
-      <defs>
-        <mask id={mask}>
-          <rect width={ICON_GEOMETRY.size} height={ICON_GEOMETRY.size} fill="#fff" />
-          <circle cx={cut.cx} cy={cut.cy} r={cut.r} fill="#000" />
-        </mask>
-      </defs>
-      {/* The outline keeps a tile the color of the page (Mono on Midnight, Paper on Light) visible. */}
-      <rect x={tile.x} y={tile.y} width={tile.size} height={tile.size} rx={tile.radius} fill={colors.tile} stroke="var(--line-strong)" strokeWidth="12" />
-      <circle cx={ring.cx} cy={ring.cy} r={ring.r} fill="none" stroke={colors.ring} strokeWidth={ring.width} mask={`url(#${mask})`} />
-      <circle cx={dot.cx} cy={dot.cy} r={dot.r} fill={colors.dot} />
-    </svg>
-  )
-}
+/** Where the icon shows; on Windows the taskbar reads it when Nexo starts (main/appIcon.ts). */
+const APP_ICON_HINT =
+  window.nexo?.platform === 'win32'
+    ? msg('Used for the title bar, tray, taskbar and Start menu. The taskbar shows it the next time Nexo starts.')
+    : window.nexo?.platform === 'darwin'
+      ? msg('Used for the title bar, the Dock and the menu bar.')
+      : msg('Used for the title bar, the window and the tray.')
 
 function AppIconRow() {
   const t = useT()
@@ -196,12 +186,12 @@ function AppIconRow() {
             className={`app-icon-option ${appIcon === a.id ? 'is-selected' : ''}`}
             onClick={() => useAppearance.getState().setAppIcon(a.id)}
           >
-            <AppIconArt choice={a.id} />
+            <AppIconArt choice={a.id} className="app-icon-art" outline />
             <span className="app-icon-label">{t(a.label)}</span>
           </button>
         ))}
       </div>
-      <span className="muted small">{t('Used for the window, taskbar and tray. Pinned shortcuts keep the default icon.')}</span>
+      <span className="muted small">{t(APP_ICON_HINT)}</span>
     </div>
   )
 }

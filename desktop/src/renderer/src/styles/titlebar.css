@@ -21,7 +21,7 @@
   min-width: 0;
   padding: 0 12px;
 }
-.titlebar-brand svg { flex: none; }
+.titlebar-icon { flex: none; display: block; width: 18px; height: 18px; }
 .titlebar-title {
   overflow: hidden;
   text-overflow: ellipsis;

@@ -178,6 +178,14 @@ export default {
   Coral: 'Coral',
   Amber: 'Âmbar',
   Rose: 'Rosa',
+  'Custom // accent color': 'Personalizada',
+  'Custom accent color': 'Cor de destaque personalizada',
+  'Saturation and brightness': 'Saturação e brilho',
+  'Saturation {saturation}, brightness {brightness}': 'Saturação {saturation}, brilho {brightness}',
+  Hue: 'Matiz',
+  'Hex color': 'Cor em hexadecimal',
+  'Shown darker in the light theme so it stays readable.': 'Aparece mais escura no tema claro para continuar legível.',
+  'Shown lighter in dark themes so it stays readable.': 'Aparece mais clara nos temas escuros para continuar legível.',
   'Title bar': 'Barra de título',
   'With search': 'Com busca',
   Minimal: 'Mínima',
@@ -186,8 +194,10 @@ export default {
   'Accent // app icon': 'Destaque',
   Paper: 'Papel',
   Mono: 'Mono',
-  'Used for the window, taskbar and tray. Pinned shortcuts keep the default icon.':
-    'Usado na janela, na barra de tarefas e na bandeja. Atalhos fixados mantêm o ícone padrão.',
+  'Used for the title bar, tray, taskbar and Start menu. The taskbar shows it the next time Nexo starts.':
+    'Usado na barra de título, na bandeja, na barra de tarefas e no menu Iniciar. A barra de tarefas mostra o novo ícone na próxima vez que o Nexo abrir.',
+  'Used for the title bar, the Dock and the menu bar.': 'Usado na barra de título, no Dock e na barra de menus.',
+  'Used for the title bar, the window and the tray.': 'Usado na barra de título, na janela e na bandeja.',
   Zoom: 'Zoom',
   '{mod}+= and {mod}+- change it from anywhere, {mod}+0 resets it. {mod}+mouse wheel works too.':
     '{mod}+= e {mod}+- mudam o zoom de qualquer lugar, {mod}+0 volta ao normal. {mod}+roda do mouse também funciona.',

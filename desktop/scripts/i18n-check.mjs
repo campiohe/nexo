@@ -33,6 +33,7 @@ const AREAS = [
       'components/SettingsModal.tsx',
       'components/LanguageSettings.tsx',
       'components/AppearanceSettings.tsx',
+      'components/AccentPicker.tsx',
       'lib/appearance.ts',
       'lib/appIcon.ts',
       'lib/locale.ts',

@@ -7,7 +7,8 @@ import { useUi } from '../store/ui'
 import { useAppearance } from '../lib/appearance'
 import { useKeybinds } from '../voice/prefs'
 import { useT } from '../i18n'
-import { NexoMark, SearchIcon } from './icons'
+import { SearchIcon } from './icons'
+import { AppIconArt } from './AppIconArt'
 import '../styles/titlebar.css'
 
 const customFrame = window.nexo?.platform === 'win32'
@@ -18,13 +19,14 @@ export function TitleBar() {
   const inServer = useApp((s) => s.view === 'main' && s.me !== null)
   const serverName = useApp((s) => s.serverName)
   const style = useAppearance((s) => s.titleBar)
+  const appIcon = useAppearance((s) => s.appIcon)
   const switcherKey = useKeybinds((s) => s.quickSwitcher)
   const title = inServer && serverName ? serverName : 'Nexo'
 
   return (
     <header className={`titlebar ${customFrame ? 'is-window-frame' : ''}`}>
       <div className="titlebar-brand">
-        <NexoMark size={16} />
+        <AppIconArt choice={appIcon} className="titlebar-icon" />
         <span className="titlebar-title" title={title}>
           {view === 'boot' ? '' : title}
         </span>
